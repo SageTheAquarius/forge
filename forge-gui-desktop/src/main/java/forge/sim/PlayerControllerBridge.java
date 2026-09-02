@@ -321,6 +321,24 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     }
 
     /**
+     * "I was asked, and I said no."
+     *
+     * {@link BridgeCostDecision#pickPayers} has two different reasons to hand
+     * back nothing, and they are NOT interchangeable: there was no legal way to
+     * pay (fall through to the AI, which will also fail to pay), versus the
+     * player was shown the "(none = decline)" prompt and declined. Returning
+     * null for both made every decline fall through to AiCostDecision, which
+     * then paid the cost with a card of its own choosing — the player's "no"
+     * silently became "the AI picks". Flaring Cinder ("you may discard a card.
+     * If you do, draw a card.") is the report: closing the discard prompt
+     * discarded an Island anyway and drew.
+     *
+     * A distinct sentinel keeps the two apart; visit() maps it to null, which
+     * is how CostPayment is told the cost went unpaid.
+     */
+    private static final PaymentDecision DECLINED = PaymentDecision.number(0);
+
+    /**
      * Cost payment decisions. The bridge inherits {@link AiCostDecision} for all
      * ~30 cost types; this subclass takes over only the ones where the player is
      * meant to choose, and leaves the rest on the AI's (sane) defaults.
@@ -435,9 +453,12 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         /**
          * Shared shape for every "which of my cards pays this?" cost: gather the
          * legal payers, let the client pick exactly *count*, and treat anything
-         * short of that as declining. Returning null leaves the cost unpaid,
-         * which aborts the activation — the same thing cancelling the payment
-         * dialog does in Forge's own client.
+         * short of that as declining.
+         *
+         * Three outcomes, and the caller has to tell them apart:
+         *   null      — nothing legal to pay with; the AI path is no worse.
+         *   DECLINED  — the player was asked and said no. The cost goes unpaid.
+         *   otherwise — what the player picked.
          */
         private PaymentDecision pickPayers(String verb, CardCollectionView options, int count) {
             if (options == null || count <= 0 || options.size() < count) {
@@ -458,7 +479,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                     host + ": choose " + count + " to " + verb + " (none = decline)",
                     names, 0, count, true, "choose");
             if (sel.size() != count) {
-                return null;
+                return DECLINED;
             }
             CardCollection chosen = new CardCollection();
             for (int idx : sel) {
@@ -490,6 +511,9 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             list = CardLists.getValidCards(list, type.split(";"), getPlayer(),
                     ability.getHostCard(), ability);
             PaymentDecision pd = pickPayers("sacrifice", list, cost.getAbilityAmount(ability));
+            if (pd == DECLINED) {
+                return null;   // the player said no; leave the cost unpaid
+            }
             return pd != null ? pd : super.visit(cost);
         }
 
@@ -506,6 +530,9 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                     getPlayer().getCardsIn(ZoneType.Hand), type.split(";"), getPlayer(),
                     ability.getHostCard(), ability);
             PaymentDecision pd = pickPayers("discard", hand, cost.getAbilityAmount(ability));
+            if (pd == DECLINED) {
+                return null;   // the player said no; leave the cost unpaid
+            }
             return pd != null ? pd : super.visit(cost);
         }
 
@@ -525,6 +552,9 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                     ? CardPredicates.CAN_CREW : CardPredicates.CAN_TAP);
             PaymentDecision pd = pickPayers(ability.isCrew() ? "crew with" : "tap",
                     list, cost.getAbilityAmount(ability));
+            if (pd == DECLINED) {
+                return null;   // the player said no; leave the cost unpaid
+            }
             return pd != null ? pd : super.visit(cost);
         }
 
@@ -543,6 +573,9 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                     ability.getHostCard(), ability);
             list = CardLists.filter(list, CardPredicates.canExiledBy(ability, isEffect()));
             PaymentDecision pd = pickPayers("exile", list, cost.getAbilityAmount(ability));
+            if (pd == DECLINED) {
+                return null;   // the player said no; leave the cost unpaid
+            }
             return pd != null ? pd : super.visit(cost);
         }
     }
@@ -851,6 +884,12 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                 + "\"message\":\"" + escName(title == null ? "Choose" : title) + "\","
                 + "\"options\":" + opts + ","
                 + "\"multi\":" + (max > 1) + ",\"min\":" + min + ",\"max\":" + max + ","
+                // PromptModal reads min_select / max_select, not min / max. Without
+                // these it assumed min_select=1, max_select=9999 for every Forge
+                // prompt: Confirm started disabled, a single-select prompt never
+                // auto-confirmed on click, and an optional one offered "Cancel"
+                // where it should have offered "Skip".
+                + "\"min_select\":" + min + ",\"max_select\":" + max + ","
                 + "\"optional\":" + optional + ",\"prompt_type\":\"" + promptType + "\"},"
                 + "\"state\":" + stateJson() + "}";
         String reply = Channel.request(req);
