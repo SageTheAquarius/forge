@@ -2,6 +2,7 @@ package forge.sim;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -22,6 +23,8 @@ import forge.game.card.CardCollection;
 import forge.game.card.CardCollectionView;
 import forge.game.cost.Cost;
 import forge.game.cost.CostPart;
+import forge.game.keyword.Keyword;
+import forge.game.replacement.ReplacementEffect;
 import forge.game.trigger.WrappedAbility;
 import forge.game.combat.Combat;
 import forge.game.combat.CombatUtil;
@@ -682,6 +685,145 @@ public class PlayerControllerBridge extends PlayerControllerAi {
 
     private static String rangeText(int min, int max) {
         return min == max ? String.valueOf(min) : (min + "-" + max);
+    }
+
+    // ---- Combat damage order + assignment ----
+
+    /** Damage-assignment order among multiple blockers (first = damaged first). */
+    @Override
+    public CardCollection orderBlockers(Card attacker, CardCollection blockers) {
+        String host = attacker != null ? attacker.getName() : "attacker";
+        return orderCards("Damage order for " + host, blockers);
+    }
+
+    /** Insert a newly-declared blocker into the damage-assignment order. */
+    @Override
+    public CardCollection orderBlocker(Card attacker, Card blocker, CardCollection oldBlockers) {
+        CardCollection all = new CardCollection(oldBlockers);
+        if (blocker != null && !all.contains(blocker)) all.add(blocker);
+        String host = attacker != null ? attacker.getName() : "attacker";
+        return orderCards("Damage order for " + host, all);
+    }
+
+    /** Order the attackers a single blocker is blocking (which it damages first). */
+    @Override
+    public CardCollection orderAttackers(Card blocker, CardCollection attackers) {
+        String host = blocker != null ? blocker.getName() : "blocker";
+        return orderCards("Damage order for " + host, attackers);
+    }
+
+    /**
+     * Combat damage assignment. For a single blocked creature WITH trample we let
+     * the human choose how much to assign to the blocker (the rest tramples
+     * through). Everything else is assigned legally by the engine, which already
+     * respects the damage-assignment order the human chose via orderBlockers.
+     */
+    @Override
+    public Map<Card, Integer> assignCombatDamage(Card attacker, CardCollectionView blockers,
+            CardCollectionView remaining, int damageDealt, GameEntity defender, boolean overrideOrder) {
+        boolean trample = attacker != null && attacker.hasKeyword(Keyword.TRAMPLE) && defender != null;
+        if (blockers != null && blockers.size() == 1 && trample && damageDealt > 0) {
+            try {
+                Card b = blockers.get(0);
+                int lethal = Math.max(0, b.getLethalDamage());
+                int min = Math.min(lethal, damageDealt);
+                Map<Card, Integer> map = new HashMap<>();
+                if (min >= damageDealt) {          // no excess to trample
+                    map.put(b, damageDealt);
+                    return map;
+                }
+                int toBlocker = chooseNumber(null,
+                    "Assign damage to " + b.getName() + " (rest tramples to " + entityName(defender) + ")",
+                    min, damageDealt);
+                map.put(b, toBlocker);
+                if (damageDealt - toBlocker > 0) map.put(null, damageDealt - toBlocker);
+                return map;
+            } catch (Exception e) {
+                // fall through to engine default
+            }
+        }
+        return super.assignCombatDamage(attacker, blockers, remaining, damageDealt, defender, overrideOrder);
+    }
+
+    // ---- Replacement effects + simultaneous triggers ----
+
+    /** When several replacement effects could apply, choose which to apply first. */
+    @Override
+    public ReplacementEffect chooseSingleReplacementEffect(List<ReplacementEffect> possibleReplacers) {
+        if (possibleReplacers == null || possibleReplacers.isEmpty()) return null;
+        if (possibleReplacers.size() == 1) return possibleReplacers.get(0);
+        List<String> names = new ArrayList<>();
+        for (ReplacementEffect re : possibleReplacers) names.add(describeRE(re));
+        List<Integer> sel = promptIndices("Choose which replacement effect to apply first",
+            names, 1, 1, false, "choose");
+        return possibleReplacers.get(sel.isEmpty() ? 0 : sel.get(0));
+    }
+
+    /** Optional ("may") replacement effect: ask whether to apply it. */
+    @Override
+    public boolean confirmReplacementEffect(ReplacementEffect re, SpellAbility effectSA,
+            GameEntity affected, String question) {
+        String host = (re != null && re.getHostCard() != null) ? re.getHostCard().getName() : "effect";
+        return yesNo("Apply " + host + "'s replacement effect?");
+    }
+
+    /** Order your own triggers that go on the stack simultaneously (APNAP). */
+    @Override
+    public List<SpellAbility> orderSimultaneousSa(List<SpellAbility> activePlayerSAs) {
+        if (activePlayerSAs == null || activePlayerSAs.size() <= 1) return activePlayerSAs;
+        List<SpellAbility> remainingSa = new ArrayList<>(activePlayerSAs);
+        List<SpellAbility> ordered = new ArrayList<>();
+        while (remainingSa.size() > 1) {
+            List<String> names = new ArrayList<>();
+            for (SpellAbility s : remainingSa) names.add(describeSa(s));
+            List<Integer> sel = promptIndices(
+                "Order simultaneous triggers — pick #" + (ordered.size() + 1)
+                    + " to place on the stack (later picks resolve first)",
+                names, 1, 1, false, "choose");
+            int idx = sel.isEmpty() ? 0 : sel.get(0);
+            ordered.add(remainingSa.remove(idx));
+        }
+        ordered.add(remainingSa.get(0));
+        return ordered;
+    }
+
+    // ---- shared ordering / describe helpers ----
+
+    /** Repeatedly ask the client to pick the next card, building a full order. */
+    private CardCollection orderCards(String label, CardCollectionView cards) {
+        CardCollection ordered = new CardCollection();
+        if (cards == null || cards.isEmpty()) return ordered;
+        CardCollection remainingCards = new CardCollection(cards);
+        while (remainingCards.size() > 1) {
+            List<String> names = new ArrayList<>();
+            for (Card c : remainingCards) names.add(c.getName());
+            List<Integer> sel = promptIndices(label + " — pick #" + (ordered.size() + 1) + " (damaged first)",
+                names, 1, 1, false, "choose");
+            int idx = sel.isEmpty() ? 0 : sel.get(0);
+            Card pick = remainingCards.get(idx);
+            ordered.add(pick);
+            remainingCards.remove(pick);
+        }
+        ordered.add(remainingCards.get(0));
+        return ordered;
+    }
+
+    private static String describeRE(ReplacementEffect re) {
+        String host = (re != null && re.getHostCard() != null) ? re.getHostCard().getName() : "";
+        String d = re != null ? re.getDescription() : "";
+        return host + (d != null && !d.isEmpty() ? ": " + d : "");
+    }
+
+    private static String describeSa(SpellAbility s) {
+        String host = (s != null && s.getHostCard() != null) ? s.getHostCard().getName() : "";
+        String d = s != null ? s.getDescription() : "";
+        return host + (d != null && !d.isEmpty() ? ": " + d : "");
+    }
+
+    private static String entityName(GameEntity ge) {
+        if (ge instanceof Card) return ((Card) ge).getName();
+        if (ge instanceof Player) return ((Player) ge).getName();
+        return ge != null ? String.valueOf(ge) : "defender";
     }
 
     private static Card findCard(Player me, int id) {
