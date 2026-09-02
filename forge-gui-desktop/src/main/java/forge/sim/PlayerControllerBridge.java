@@ -113,14 +113,10 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                 for (SpellAbility sa : chosen.getAllPossibleAbilities(me, true)) {
                     boolean isMana = sa.isManaAbility();
                     if (wantMana ? isMana : (!isMana && sa.isActivatedAbility())) {
-                        // Mana abilities are returned as payment; everything else
-                        // casts through the engine's human path so targeting/costs
-                        // route to OUR prompts (see castViaEngine).
-                        if (isMana) {
-                            return Lists.newArrayList(sa);
-                        }
-                        castViaEngine(me, sa);
-                        return null;
+                        // Return it to the engine; our playChosenSpellAbility routes
+                        // it through the human play path (taps a land for mana and
+                        // floats it, or prompts for targets), like the real human.
+                        return Lists.newArrayList(sa);
                     }
                 }
             }
@@ -136,8 +132,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                     // Optional ability index; default 0 (e.g. the land-play / main cast).
                     int idx = parseInt(reply, "\"ability\":");
                     if (idx < 0 || idx >= abs.size()) idx = 0;
-                    castViaEngine(me, abs.get(idx));
-                    return null;
+                    return Lists.newArrayList(abs.get(idx));
                 }
             }
         }
@@ -145,20 +140,23 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     }
 
     /**
-     * Cast/activate through the engine's REAL human play path
-     * ({@link PlaySpellAbility#playSpellAbility}) instead of returning the SA to
-     * the AI. This routes cast-time targeting, mode choice, X, and cost payment
-     * to OUR client prompts ({@link #chooseTargetsFor}, chooseNumber, ...) rather
-     * than letting the AI auto-decide them. Lands resolve directly inside
-     * playSpellAbility; mana abilities never reach here (they're payment).
+     * Play the chosen spell/ability through the engine's REAL human path
+     * (exactly as {@code PlayerControllerHuman.playChosenSpellAbility} does)
+     * instead of the AI's ComputerUtil path. This makes everything behave like a
+     * human: tapping a land for mana actually taps it and floats mana; a mana
+     * ability resolves immediately; a targeted spell prompts YOU for its targets
+     * ({@link #chooseTargetsFor}); X / modes hit our chooseNumber / chooseMode
+     * overrides. Lands resolve directly inside playSpellAbility.
      */
-    private void castViaEngine(Player me, SpellAbility sa) {
-        if (sa == null) return;
+    @Override
+    public boolean playChosenSpellAbility(SpellAbility sa) {
+        if (sa == null) return false;
         try {
-            PlaySpellAbility.playSpellAbility(this, me, sa);
+            return PlaySpellAbility.playSpellAbility(this, getPlayer(), sa);
         } catch (Exception e) {
-            System.err.println("[bridge] cast failed for "
+            System.err.println("[bridge] play failed for "
                 + (sa.getHostCard() != null ? sa.getHostCard().getName() : "?") + ": " + e);
+            return false;
         }
     }
 
