@@ -8,6 +8,8 @@ import com.google.common.collect.Lists;
 
 import forge.LobbyPlayer;
 import forge.ai.PlayerControllerAi;
+import forge.card.ColorSet;
+import forge.card.MagicColor;
 import forge.game.Game;
 import forge.game.GameEntity;
 import forge.game.card.Card;
@@ -214,6 +216,63 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             return "Player: " + ((Player) ge).getName();
         }
         return String.valueOf(ge);
+    }
+
+    /**
+     * Mana / effect color choice. Forge calls this when a source can produce more
+     * than one color (e.g. a land that taps for any color) or an effect asks the
+     * player to name a color. The AI auto-picks; we prompt the client's color
+     * picker instead and return the chosen color's byte mask.
+     */
+    @Override
+    public byte chooseColor(String message, SpellAbility sa, ColorSet colors) {
+        return promptColor(message, colors, false);
+    }
+
+    @Override
+    public byte chooseColorAllowColorless(String message, Card c, ColorSet colors) {
+        return promptColor(message, colors, true);
+    }
+
+    /** Ask the client to pick one color from the allowed set; returns its mask. */
+    private byte promptColor(String message, ColorSet colors, boolean allowColorless) {
+        List<String> syms = new ArrayList<>();
+        List<Byte> vals = new ArrayList<>();
+        boolean any = (colors == null);
+        if (any || colors.hasWhite()) { syms.add("W"); vals.add(MagicColor.WHITE); }
+        if (any || colors.hasBlue())  { syms.add("U"); vals.add(MagicColor.BLUE); }
+        if (any || colors.hasBlack()) { syms.add("B"); vals.add(MagicColor.BLACK); }
+        if (any || colors.hasRed())   { syms.add("R"); vals.add(MagicColor.RED); }
+        if (any || colors.hasGreen()) { syms.add("G"); vals.add(MagicColor.GREEN); }
+        if (allowColorless)           { syms.add("C"); vals.add(MagicColor.COLORLESS); }
+        if (vals.isEmpty()) { return MagicColor.WHITE; }
+        if (vals.size() == 1) { return vals.get(0); }   // no real choice; skip the prompt
+
+        StringBuilder opts = new StringBuilder("[");
+        for (int i = 0; i < syms.size(); i++) {
+            if (i > 0) opts.append(',');
+            opts.append("{\"id\":\"").append(syms.get(i)).append("\",\"name\":\"")
+                .append(syms.get(i)).append("\"}");
+        }
+        opts.append(']');
+        String req = "{\"kind\":\"prompt\",\"prompt\":{"
+            + "\"message\":\"" + escName(message == null ? "Choose a color" : message) + "\","
+            + "\"options\":" + opts + ",\"multi\":false,\"min\":1,\"max\":1,"
+            + "\"optional\":false,\"prompt_type\":\"color_select\"}}";
+        String reply = Channel.request(req);
+
+        String compact = reply.replaceAll("\\s", "").toUpperCase();
+        int i = compact.indexOf("\"SELECTION\":[");
+        if (i >= 0) {
+            int end = compact.indexOf(']', i);
+            String inner = compact.substring(i + 13, end < 0 ? compact.length() : end);
+            for (int k = 0; k < syms.size(); k++) {
+                if (inner.contains("\"" + syms.get(k) + "\"")) {
+                    return vals.get(k);
+                }
+            }
+        }
+        return vals.get(0); // default to first allowed color on empty/invalid reply
     }
 
     /**
