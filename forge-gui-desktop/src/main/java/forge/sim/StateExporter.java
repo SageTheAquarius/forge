@@ -4,11 +4,14 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
+import com.google.common.collect.Multiset;
+
 import forge.card.MagicColor;
 import forge.game.GameView;
 import forge.game.card.Card;
 import forge.game.card.CardView;
 import forge.game.card.CardView.CardStateView;
+import forge.game.card.CounterType;
 import forge.game.player.Player;
 import forge.game.player.PlayerView;
 import forge.game.spellability.SpellAbility;
@@ -140,7 +143,24 @@ public final class StateExporter {
         kvb(sb, "attacking", c.isAttacking()); sb.append(',');
         kvb(sb, "has_mana_ability", manaCards.contains(c.getId())); sb.append(',');
         kvb(sb, "has_activated_abilities", activatedCards.contains(c.getId())); sb.append(',');
-        kv(sb, "damage", c.getDamage());
+        kv(sb, "damage", c.getDamage()); sb.append(',');
+        kvCounters(sb, "counters", c);
+        sb.append('}');
+    }
+
+    /** Emit a card's counters as {"-1/-1":3, "+1/+1":1, ...} (name -> count). */
+    private static void kvCounters(StringBuilder sb, String k, CardView c) {
+        sb.append('"').append(k).append("\":{");
+        Multiset<CounterType> counters = c.getCounters();
+        if (counters != null && !counters.isEmpty()) {
+            boolean first = true;
+            for (Multiset.Entry<CounterType> e : counters.entrySet()) {
+                if (e.getCount() <= 0 || e.getElement() == null) continue;
+                if (!first) sb.append(',');
+                first = false;
+                sb.append('"').append(esc(e.getElement().getName())).append("\":").append(e.getCount());
+            }
+        }
         sb.append('}');
     }
 
