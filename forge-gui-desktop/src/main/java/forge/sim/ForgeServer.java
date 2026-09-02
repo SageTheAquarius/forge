@@ -93,7 +93,13 @@ public final class ForgeServer {
             r2.setStartingHand(0);
         }
 
-        Match mc = new Match(new GameRules(GameType.Constructed), pp, "Forge");
+        GameRules rules = new GameRules(GameType.Constructed);
+        // EconomyDraft house rule: the first mulligan is free (London mulligan
+        // with no card put on the bottom). Applies to both seats, so the AI gets
+        // it too. Second and later mulligans tuck as normal (1, 2, 3, ...).
+        rules.setFirstMulliganFree(true);
+
+        Match mc = new Match(rules, pp, "Forge");
         Game g = mc.createGame();
         Player p0 = g.getPlayers().get(0);
         p0.dangerouslySetController(new PlayerControllerBridge(g, p0, lp1));
@@ -105,6 +111,12 @@ public final class ForgeServer {
         // Production never writes this file, so live games are unaffected.
         Runnable hook = buildScenarioHook(g, deckDir);
         mc.startGame(g, hook);
+
+        // The outcome lines ("<player> has lost the game", the match summary) are
+        // logged AFTER the last decision point, so no state export has carried
+        // them yet. One final push so the player sees how the game ended.
+        Channel.request("{\"kind\":\"game_over\",\"state\":"
+                + StateExporter.toJson(g.getView(), p0) + "}");
     }
 
     /** Build a startGameHook that applies deckDir/_scenario.txt, or null if absent. */

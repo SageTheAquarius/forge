@@ -19,14 +19,30 @@ public final class Channel {
     private static Socket sock;
     private static BufferedReader in;
     private static BufferedWriter out;
+    /**
+     * Set once a bound client's socket has failed or hit EOF.
+     *
+     * The bridge answers "" to every decision after that, which reads as
+     * "pass / decline" and would let an abandoned game grind on indefinitely.
+     * ForgeServer only accepts the next match when this one ends, so
+     * PlayerControllerBridge checks this at its next priority window and
+     * concedes instead.
+     */
+    private static volatile boolean dead;
 
     private Channel() {}
 
     /** Bind an accepted client socket for the duration of one match. */
     public static synchronized void bind(Socket s) throws IOException {
         sock = s;
+        dead = false;
         in = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8));
         out = new BufferedWriter(new OutputStreamWriter(s.getOutputStream(), StandardCharsets.UTF_8));
+    }
+
+    /** True once the bound client dropped mid-match. */
+    public static boolean isDead() {
+        return dead;
     }
 
     public static synchronized void close() {
@@ -42,8 +58,13 @@ public final class Channel {
             out.write("\n");
             out.flush();
             String line = in.readLine();
-            return line == null ? "" : line;
+            if (line == null) {
+                dead = true;
+                return "";
+            }
+            return line;
         } catch (IOException e) {
+            dead = true;
             return "";
         }
     }

@@ -16,6 +16,7 @@ public class GameRules {
     private boolean AISideboardingEnabled = false;
     private boolean sideboardForAI = false;
     private boolean allowCheatShuffle = false;
+    private boolean firstMulliganFree = false;
     private final Set<GameType> appliedVariants = EnumSet.noneOf(GameType.class);
     private int simTimeout = 120;
 
@@ -115,6 +116,13 @@ public class GameRules {
 
     public void addAppliedVariant(final GameType variant) {
         this.appliedVariants.add(variant);
+    }
+
+    public boolean isFirstMulliganFree() {
+        return firstMulliganFree;
+    }
+    public void setFirstMulliganFree(final boolean firstMulliganFree) {
+        this.firstMulliganFree = firstMulliganFree;
     }
 
     public boolean hasAppliedVariant(final GameType variant) {
