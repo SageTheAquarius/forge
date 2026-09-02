@@ -1,8 +1,13 @@
 package forge.sim;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+
+import org.apache.commons.lang3.tuple.ImmutablePair;
 
 import com.google.common.collect.Lists;
 
@@ -15,6 +20,9 @@ import forge.game.GameEntity;
 import forge.game.card.Card;
 import forge.game.card.CardCollection;
 import forge.game.card.CardCollectionView;
+import forge.game.cost.Cost;
+import forge.game.cost.CostPart;
+import forge.game.trigger.WrappedAbility;
 import forge.game.combat.Combat;
 import forge.game.combat.CombatUtil;
 import forge.game.phase.PhaseHandler;
@@ -511,6 +519,169 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             if (!result.contains(possible.get(k))) result.add(possible.get(k));
         }
         return result;
+    }
+
+    // ---- Additional human decision points (were silently defaulting to the AI) ----
+
+    /** Optional ("may") triggered ability: ask the human whether to use it. */
+    @Override
+    public boolean confirmTrigger(WrappedAbility wrapper) {
+        SpellAbility sa = wrapper == null ? null : wrapper.getWrappedAbility();
+        // Triggers with a payable cost are declined by simply not paying — let the
+        // engine handle those so we don't double-prompt.
+        if (sa != null && sa.hasParam("Cost") && !"0".equals(sa.getParam("Cost"))) {
+            return true;
+        }
+        String host = (sa != null && sa.getHostCard() != null) ? sa.getHostCard().getName() : "ability";
+        return yesNo("Use " + host + "'s triggered ability?");
+    }
+
+    /** Optional cost during resolution ("Do you want to pay ...?"). */
+    @Override
+    public boolean confirmPayment(CostPart costPart, String question, SpellAbility sa) {
+        String host = (sa != null && sa.getHostCard() != null) ? sa.getHostCard().getName() : "this";
+        String cost = costPart != null ? costPart.toString() : "";
+        return yesNo("Pay " + (cost.isEmpty() ? "the cost" : cost) + " for " + host + "?");
+    }
+
+    /** Announce X (and similar numeric announcements) at cast time. */
+    @Override
+    public Integer announceRequirements(SpellAbility ability, int min, int max, String announce) {
+        try {
+            Cost cost = ability.getPayCosts();
+            if ("X".equals(announce) && cost != null) {
+                Integer costX = cost.getMaxForNonManaX(ability, getPlayer(), false);
+                if (costX != null) max = Math.min(max, costX);
+            }
+            if (min > max) return null;
+            if (min == max) return min;
+            String host = ability.getHostCard() != null ? ability.getHostCard().getName() : "";
+            return chooseNumber(ability, "Choose " + announce + " for " + host, min, max);
+        } catch (Exception e) {
+            return super.announceRequirements(ability, min, max, announce);
+        }
+    }
+
+    /** Cleanup step: choose which cards to discard down to max hand size. */
+    @Override
+    public CardCollectionView chooseCardsToDiscardToMaximumHandSize(int nDiscard) {
+        CardCollection hand = new CardCollection(getPlayer().getCardsIn(ZoneType.Hand));
+        return chooseCardsFrom("Discard down to max hand size — choose " + nDiscard + " to discard",
+            hand, nDiscard, nDiscard);
+    }
+
+    /** Effect-driven discard ("discard N cards"). */
+    @Override
+    public CardCollection chooseCardsToDiscardFrom(Player playerDiscard, SpellAbility sa,
+            CardCollection validCards, int min, int max, CardCollectionView visibleToChooser) {
+        if (playerDiscard != getPlayer()) {
+            return super.chooseCardsToDiscardFrom(playerDiscard, sa, validCards, min, max, visibleToChooser);
+        }
+        String host = (sa != null && sa.getHostCard() != null) ? sa.getHostCard().getName() : "effect";
+        return chooseCardsFrom("Discard " + rangeText(min, max) + " card(s) for " + host, validCards, min, max);
+    }
+
+    /** "Sacrifice a permanent" — let the human pick which. */
+    @Override
+    public CardCollectionView choosePermanentsToSacrifice(SpellAbility sa, int min, int max,
+            CardCollectionView valid, String message) {
+        return chooseCardsFrom("Sacrifice " + rangeText(min, max) + " permanent(s)", valid, min, max);
+    }
+
+    /** "Destroy a permanent" (chooser's choice) — let the human pick which. */
+    @Override
+    public CardCollectionView choosePermanentsToDestroy(SpellAbility sa, int min, int max,
+            CardCollectionView valid, String message) {
+        return chooseCardsFrom("Destroy " + rangeText(min, max) + " permanent(s)", valid, min, max);
+    }
+
+    /** Choose a type (creature type, land type, ...) e.g. Cavern of Souls. */
+    @Override
+    public String chooseSomeType(String kindOfType, SpellAbility sa, Collection<String> validTypes,
+            boolean isOptional) {
+        if (validTypes == null || validTypes.isEmpty()) {
+            return super.chooseSomeType(kindOfType, sa, validTypes, isOptional);
+        }
+        List<String> names = new ArrayList<>(validTypes);
+        List<Integer> sel = promptIndices("Choose a " + kindOfType + " type", names,
+            isOptional ? 0 : 1, 1, isOptional, "choose");
+        return sel.isEmpty() ? names.get(0) : names.get(sel.get(0));
+    }
+
+    /** Win the die roll: choose to play or draw. */
+    @Override
+    public Player chooseStartingPlayer(boolean isFirstGame) {
+        boolean playFirst = yesNo("You won the roll — play first? (No = draw first)");
+        if (playFirst) return getPlayer();
+        for (Player p : getPlayer().getGame().getPlayers()) {
+            if (p != getPlayer()) return p;
+        }
+        return getPlayer();
+    }
+
+    /** Scry: choose which of the top N cards go to the bottom (rest stay on top). */
+    @Override
+    public ImmutablePair<CardCollection, CardCollection> arrangeForScry(CardCollection topN) {
+        return scrySplit(topN, "Scry", "bottom of your library");
+    }
+
+    /** Surveil: choose which of the top N cards go to the graveyard (rest stay on top). */
+    @Override
+    public ImmutablePair<CardCollection, CardCollection> arrangeForSurveil(CardCollection topN) {
+        return scrySplit(topN, "Surveil", "graveyard");
+    }
+
+    private ImmutablePair<CardCollection, CardCollection> scrySplit(CardCollection topN,
+            String verb, String dest) {
+        CardCollection top = new CardCollection();
+        CardCollection bottom = new CardCollection();
+        if (topN == null || topN.isEmpty()) {
+            return ImmutablePair.of(top, bottom);
+        }
+        List<Card> list = new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        for (Card c : topN) { list.add(c); names.add(c.getName()); }
+        List<Integer> sel = promptIndices(
+            verb + ": choose card(s) to put on the " + dest + " (unpicked stay on top)",
+            names, 0, list.size(), true, "choose");
+        Set<Integer> toBottom = new HashSet<>(sel);
+        for (int i = 0; i < list.size(); i++) {
+            if (toBottom.contains(i)) bottom.add(list.get(i));
+            else top.add(list.get(i));
+        }
+        return ImmutablePair.of(top, bottom);
+    }
+
+    /** Prompt a yes/no confirmation. */
+    private boolean yesNo(String message) {
+        List<String> names = new ArrayList<>();
+        names.add("Yes");
+        names.add("No");
+        List<Integer> sel = promptIndices(message, names, 1, 1, false, "confirm");
+        return !sel.isEmpty() && sel.get(0) == 0;
+    }
+
+    /** Prompt a multi-select over a card pool; returns the chosen cards (padded to min). */
+    private CardCollection chooseCardsFrom(String message, CardCollectionView pool, int min, int max) {
+        CardCollection out = new CardCollection();
+        if (pool == null || pool.isEmpty()) return out;
+        List<Card> list = new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        for (Card c : pool) { list.add(c); names.add(c.getName()); }
+        int hi = Math.min(max, list.size());
+        int lo = Math.max(0, Math.min(min, hi));
+        List<Integer> sel = promptIndices(message, names, lo, hi, lo == 0, "choose");
+        for (int idx : sel) {
+            if (idx >= 0 && idx < list.size()) out.add(list.get(idx));
+        }
+        for (int k = 0; k < list.size() && out.size() < lo; k++) {
+            if (!out.contains(list.get(k))) out.add(list.get(k));
+        }
+        return out;
+    }
+
+    private static String rangeText(int min, int max) {
+        return min == max ? String.valueOf(min) : (min + "-" + max);
     }
 
     private static Card findCard(Player me, int id) {
