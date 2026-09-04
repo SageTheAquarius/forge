@@ -765,7 +765,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         String host = sa.getHostCard() != null ? sa.getHostCard().getName() : "ability";
         List<Integer> sel = promptIndices(
             "Choose target" + (hi > 1 ? "s" : "") + " for " + host,
-            names, min, hi, min == 0, "target_select");
+            names, cardNamesOf(candidates), min, hi, min == 0, "target_select", null);
         for (int idx : sel) {
             if (idx >= 0 && idx < candidates.size()) {
                 sa.getTargets().add(candidates.get(idx));
@@ -818,9 +818,16 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         }
         int hi = Math.min(max, candidates.size());
         String host = sa.getHostCard() != null ? sa.getHostCard().getName() : "ability";
+        // Counter-target list: these options are SpellAbilities on the stack,
+        // so the card to show is the one that cast them.
+        List<String> stackCardNames = new ArrayList<>();
+        for (SpellAbility onStack2 : candidates) {
+            Card host2 = onStack2.getHostCard();
+            stackCardNames.add(host2 != null ? host2.getName() : null);
+        }
         List<Integer> sel = promptIndices(
             "Choose target" + (hi > 1 ? "s" : "") + " for " + host,
-            names, min, hi, min == 0, "target_select");
+            names, stackCardNames, min, hi, min == 0, "target_select", null);
         for (int idx : sel) {
             if (idx >= 0 && idx < candidates.size()) {
                 sa.getTargets().add(candidates.get(idx));
@@ -1078,7 +1085,21 @@ public class PlayerControllerBridge extends PlayerControllerAi {
 
     private List<Integer> promptIndices(String title, List<String> names, int min, int max,
                                         boolean optional, String promptType) {
-        return promptIndices(title, names, min, max, optional, promptType, null);
+        return promptIndices(title, names, null, min, max, optional, promptType, null);
+    }
+
+    private List<Integer> promptIndices(String title, List<String> names, int min, int max,
+                                        boolean optional, String promptType, Card cardToShow) {
+        return promptIndices(title, names, null, min, max, optional, promptType, cardToShow);
+    }
+
+    /** Real card names for a list of entities; null entry for anything else. */
+    private static List<String> cardNamesOf(List<? extends GameEntity> entities) {
+        List<String> out = new ArrayList<>();
+        for (GameEntity ge : entities) {
+            out.add(ge instanceof Card ? ((Card) ge).getName() : null);
+        }
+        return out;
     }
 
     /**
@@ -1113,8 +1134,21 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         }
     }
 
-    private List<Integer> promptIndices(String title, List<String> names, int min, int max,
-                                        boolean optional, String promptType, Card cardToShow) {
+    /**
+     * Option labels are often DECORATED -- describeTarget renders a creature as
+     * "Grizzly Bears [AI 1]" so you can tell two copies apart, and the entity
+     * choosers use String.valueOf(entity). Those labels are worth keeping, but
+     * they defeat isKnownCard, so a target list showed no art and the client
+     * treated it as a yes/no box: click commits, no card ever visible. That is
+     * the "still can't see the cards before confirming" report.
+     *
+     * So carry the real name separately instead of trying to recover it from the
+     * label. `cardNames` is parallel to `names`, null (or a null entry) where the
+     * option is not a card -- a player, a mode, "Yes".
+     */
+    private List<Integer> promptIndices(String title, List<String> names, List<String> cardNames,
+                                        int min, int max, boolean optional, String promptType,
+                                        Card cardToShow) {
         // Say which options are CARDS. Every prompt ships the same
         // {id,name} pair whether the name is "Grizzly Bears" or "Yes", so the
         // client had no way to tell a card list from a yes/no box and could
@@ -1126,7 +1160,13 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             if (i > 0) opts.append(',');
             opts.append("{\"id\":\"").append(i).append("\",\"name\":\"")
                 .append(escName(names.get(i))).append("\"");
-            if (isKnownCard(names.get(i))) {
+            String real = cardNames != null && i < cardNames.size() ? cardNames.get(i) : null;
+            if (real != null) {
+                // Known to be a card by construction, and the label is decorated,
+                // so hand over the name the art lookup needs.
+                opts.append(",\"is_card\":true,\"card_name\":\"")
+                    .append(escName(real)).append("\"");
+            } else if (isKnownCard(names.get(i))) {
                 opts.append(",\"is_card\":true");
             }
             opts.append('}');
@@ -1176,7 +1216,8 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         for (T t : optionList) { opts.add(t); names.add(String.valueOf(t)); }
         if (opts.isEmpty()) return null;
         if (opts.size() == 1 && !isOptional) return opts.get(0);
-        List<Integer> sel = promptIndices(title, names, isOptional ? 0 : 1, 1, isOptional, "choose");
+        List<Integer> sel = promptIndices(title, names, cardNamesOf(opts),
+                isOptional ? 0 : 1, 1, isOptional, "choose", null);
         if (sel.isEmpty()) return isOptional ? null : opts.get(0);
         return opts.get(sel.get(0));
     }
@@ -1190,7 +1231,8 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         for (T t : optionList) { opts.add(t); names.add(String.valueOf(t)); }
         List<T> result = new ArrayList<>();
         if (opts.isEmpty()) return result;
-        List<Integer> sel = promptIndices(title, names, min, Math.min(max, opts.size()), min == 0, "choose");
+        List<Integer> sel = promptIndices(title, names, cardNamesOf(opts), min,
+                Math.min(max, opts.size()), min == 0, "choose", null);
         for (int idx : sel) result.add(opts.get(idx));
         for (int k = 0; k < opts.size() && result.size() < min; k++) {
             if (!result.contains(opts.get(k))) result.add(opts.get(k));
