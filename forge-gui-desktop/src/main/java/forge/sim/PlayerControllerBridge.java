@@ -22,6 +22,7 @@ import forge.ai.PlayerControllerAi;
 import forge.card.ColorSet;
 import forge.card.MagicColor;
 import forge.game.Game;
+import forge.game.GameEndReason;
 import forge.game.GameEntity;
 import forge.game.card.Card;
 import forge.game.card.CardCollection;
@@ -119,9 +120,23 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         // until this one ends. Concede at the first priority window instead:
         // the engine is free again within a turn, not whenever the AI happens
         // to finish the abandoned player off.
-        if (Channel.isDead() && !me.conceded()) {
-            me.concede();
-            me.getGame().getAction().checkGameOverCondition();
+        if (Channel.isDead()) {
+            Game g = me.getGame();
+            if (!me.conceded()) {
+                me.concede();
+                g.getAction().checkGameOverCondition();
+            }
+            // Conceding ends a DUEL, because one seat left means one winner.
+            // It does not end a POD: three AI seats carry on playing each other
+            // for minutes with nobody watching, and ForgeServer serves ONE
+            // match at a time, so every other player's "start game" sits behind
+            // it and comes back "still finishing a previous match". Forge has a
+            // reason for exactly this - "used to end multiplayer games where
+            // all humans have lost or conceded while AIs cannot end match by
+            // themselves" - so say so rather than waiting them out.
+            if (!g.isGameOver()) {
+                g.setGameOver(GameEndReason.AllHumansLost);
+            }
             return null;
         }
         PhaseHandler ph = me.getGame().getPhaseHandler();
