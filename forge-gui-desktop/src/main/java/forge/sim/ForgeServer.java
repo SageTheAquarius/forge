@@ -144,6 +144,23 @@ public final class ForgeServer {
 
         Match mc = new Match(rules, pp, "Forge");
         Game g = mc.createGame();
+
+        // Forge's 5s AI_TIMEOUT is a budget PER AI DECISION, and it was chosen
+        // for a duel, where one AI seat decides between the human's windows. A
+        // pod has three, so a single game step can cost 3 x 5s before the human
+        // is asked anything -- measured at 13.5s per window on turn 25 of a live
+        // four-player game, against 0.2s on turn 5. The cost is Forge's own
+        // multiplayer attack logic (AiAttackController.choosePreferredDefenderPlayer
+        // runs a full block-assignment prediction per opponent, and only ever
+        // does so when there IS more than one opponent), and it grows with the
+        // board, so late Commander turns are exactly where it bites.
+        //
+        // Share the duel's budget across the seats instead of handing it to each
+        // of them, which keeps a game STEP at roughly the pace Forge intended.
+        // Timing out is not a failure mode: AiController returns null and that
+        // seat simply plays nothing that window, which is already what happened
+        // repeatedly in the log this came from.
+        g.AI_TIMEOUT = Math.max(2, 5 / aiSeats);
         Player p0 = g.getPlayers().get(0);
         p0.dangerouslySetController(new PlayerControllerBridge(g, p0, lp1));
 
