@@ -105,6 +105,40 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     }
 
     /**
+     * The client is gone: concede this seat and end the match. True if it did.
+     *
+     * Every further Channel.request() answers "" -- pass / decline -- so the
+     * game would grind on with a seat nobody is driving, and ForgeServer serves
+     * ONE match per accepted connection, so the next player's game sits behind
+     * it and comes back "still finishing a previous match".
+     *
+     * Conceding alone is not enough. It ends a DUEL, because one seat left
+     * means one winner, but a POD still has three AI seats that will happily
+     * play each other out for minutes. Forge has a reason for exactly this
+     * case, documented as "used to end multiplayer games where all humans have
+     * lost or conceded while AIs cannot end match by themselves".
+     *
+     * Called from every point where the engine blocks on this player, not just
+     * priority: the mulligan prompt is the FIRST thing a game shows and so the
+     * most likely place for someone to close the tab.
+     */
+    private boolean endIfAbandoned() {
+        if (!Channel.isDead()) {
+            return false;
+        }
+        Player me = getPlayer();
+        Game g = me.getGame();
+        if (!me.conceded()) {
+            me.concede();
+            g.getAction().checkGameOverCondition();
+        }
+        if (!g.isGameOver()) {
+            g.setGameOver(GameEndReason.AllHumansLost);
+        }
+        return true;
+    }
+
+    /**
      * Priority control point (PhaseHandler:1056). Push the live board to the
      * client and block for its action. Returning null = pass priority.
      *
@@ -114,29 +148,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     @Override
     public List<SpellAbility> chooseSpellAbilityToPlay() {
         Player me = getPlayer();
-        // The client dropped mid-match. Every further Channel.request() answers
-        // "" -- i.e. pass / decline -- so the game would keep grinding with a
-        // seat nobody is driving, and ForgeServer cannot accept the NEXT match
-        // until this one ends. Concede at the first priority window instead:
-        // the engine is free again within a turn, not whenever the AI happens
-        // to finish the abandoned player off.
-        if (Channel.isDead()) {
-            Game g = me.getGame();
-            if (!me.conceded()) {
-                me.concede();
-                g.getAction().checkGameOverCondition();
-            }
-            // Conceding ends a DUEL, because one seat left means one winner.
-            // It does not end a POD: three AI seats carry on playing each other
-            // for minutes with nobody watching, and ForgeServer serves ONE
-            // match at a time, so every other player's "start game" sits behind
-            // it and comes back "still finishing a previous match". Forge has a
-            // reason for exactly this - "used to end multiplayer games where
-            // all humans have lost or conceded while AIs cannot end match by
-            // themselves" - so say so rather than waiting them out.
-            if (!g.isGameOver()) {
-                g.setGameOver(GameEndReason.AllHumansLost);
-            }
+        if (endIfAbandoned()) {
             return null;
         }
         PhaseHandler ph = me.getGame().getPhaseHandler();
@@ -1033,8 +1045,20 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     /** Ask the client to Keep or Mulligan. Reply {"keep":true/false}. */
     @Override
     public boolean mulliganKeepHand(Player firstPlayer, int cardsToReturn) {
+        // Abandoning at the mulligan prompt is the COMMON case, not an edge
+        // one: the game window opens, the Keep/Mulligan modal is the first
+        // thing shown, and that is exactly where a player closes the tab or
+        // refreshes. Checking only at the priority window let those pods run
+        // on, which is what put the next player back in the deck editor with
+        // "still finishing a previous match".
+        if (endIfAbandoned()) {
+            return true;            // keep; the game is over either way
+        }
         String state = StateExporter.toJson(getPlayer().getGame().getView(), getPlayer());
         String reply = Channel.request("{\"kind\":\"mulligan\",\"state\":" + state + "}");
+        if (endIfAbandoned()) {
+            return true;            // the client vanished while we were asking
+        }
         // Default to keep on anything unexpected.
         return !reply.replaceAll("\\s", "").contains("\"keep\":false");
     }
