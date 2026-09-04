@@ -110,6 +110,44 @@ public final class ForgeServer {
             }
         }
 
+        // How many seats are driven by a human client. Absent means one, which
+        // is every duel and every solo pod played until now - so the file being
+        // missing has to keep behaving exactly as before.
+        int humanSeats = 1;
+        File humansFlag = new File(deckDir + "_humans.txt");
+        if (humansFlag.exists()) {
+            try {
+                String raw = new String(java.nio.file.Files.readAllBytes(
+                        humansFlag.toPath()), "UTF-8").trim();
+                humanSeats = Math.max(1, Math.min(4, Integer.parseInt(raw)));
+            } catch (Exception e) {
+                humanSeats = 1;   // a malformed flag means the old single-human game
+            }
+        }
+        // One display name per human seat, in seat order. Absent for a solo
+        // game, in which case the seat keeps its old "you" label.
+        List<String> seatNames = new ArrayList<>();
+        File namesFlag = new File(deckDir + "_seat_names.txt");
+        if (namesFlag.exists()) {
+            try {
+                for (String raw : new String(java.nio.file.Files.readAllBytes(
+                        namesFlag.toPath()), "UTF-8").split("\n")) {
+                    seatNames.add(raw.trim());
+                }
+            } catch (Exception e) {
+                seatNames.clear();   // unreadable: fall back to the old labels
+            }
+        }
+
+        // _commander.txt is the AI seat count and _humans.txt the human one, so
+        // the table is simply the sum - no arithmetic between them. A 4-seat pod
+        // with two humans is _humans.txt=2 alongside _commander.txt=2.
+        // (Going past 3 humans would need that flag's clamp to allow zero AI;
+        // nothing asks for it yet.)
+        if (humanSeats + aiSeats < 2) {
+            aiSeats = 1;   // never build a one-player game
+        }
+
         File bridgeDeck = new File(deckDir + "_bridge.dck");
         Deck d1 = DeckSerializer.fromFile(bridgeDeck.exists() ? bridgeDeck
                 : new File(ForgeConstants.DECK_CONSTRUCTED_DIR + "sliver_shandalar.dck"));
@@ -120,15 +158,36 @@ public final class ForgeServer {
         boolean scenario = new File(deckDir + "_scenario.txt").exists();
 
         List<RegisteredPlayer> pp = new ArrayList<>();
-        RegisteredPlayer r1 = commander
-                ? RegisteredPlayer.forCommander(d1)
-                : new RegisteredPlayer(d1);
-        // Kept: PlayerControllerBridge needs the human seat's LobbyPlayer below.
-        LobbyPlayer lp1 = GamePlayerUtil.createAiPlayer("you", 0, "");
-        r1.setPlayer(lp1);
-        pp.add(r1);
-        if (scenario) {
-            r1.setStartingHand(0);
+        // Human seats come first, so seat index == index in pp. Seat 0 keeps
+        // _bridge.dck and the name "you"; further humans read
+        // _bridge_human2.dck onward, mirroring the _bridge_opp<N>.dck naming.
+        // Kept: PlayerControllerBridge needs each human seat's LobbyPlayer below.
+        List<LobbyPlayer> humanLobby = new ArrayList<>();
+        for (int i = 0; i < humanSeats; i++) {
+            Deck dHuman = d1;
+            if (i > 0) {
+                File humanFile = new File(deckDir + "_bridge_human" + (i + 1) + ".dck");
+                dHuman = DeckSerializer.fromFile(humanFile.exists() ? humanFile
+                        : new File(ForgeConstants.DECK_CONSTRUCTED_DIR + "sliver_shandalar.dck"));
+            }
+            RegisteredPlayer rHuman = commander
+                    ? RegisteredPlayer.forCommander(dHuman)
+                    : new RegisteredPlayer(dHuman);
+            // Seat 0 is "you" in a solo game, which reads naturally when there
+            // is nobody else. In a pod that label is only unambiguous from seat
+            // 0's own chair, so _seat_names.txt carries the real usernames and
+            // everyone is named. Absent, the solo behaviour is unchanged.
+            String humanName = i == 0 ? "you" : "Player " + (i + 1);
+            if (i < seatNames.size() && !seatNames.get(i).isEmpty()) {
+                humanName = seatNames.get(i);
+            }
+            LobbyPlayer lpHuman = GamePlayerUtil.createAiPlayer(humanName, i, "");
+            rHuman.setPlayer(lpHuman);
+            humanLobby.add(lpHuman);
+            pp.add(rHuman);
+            if (scenario) {
+                rHuman.setStartingHand(0);
+            }
         }
 
         // Opponent seats. The duel reads _bridge_opp.dck as it always has; a pod
@@ -141,8 +200,12 @@ public final class ForgeServer {
             RegisteredPlayer rOpp = commander
                     ? RegisteredPlayer.forCommander(dOpp)
                     : new RegisteredPlayer(dOpp);
+            // "Computer" is the duel's name for the sole opponent; once there
+            // is more than one human at the table it is always "AI N", so the
+            // seat a player is looking at reads unambiguously.
             rOpp.setPlayer(GamePlayerUtil.createAiPlayer(
-                    aiSeats == 1 ? "Computer" : "AI " + (i + 1), i + 1, ""));
+                    (aiSeats == 1 && humanSeats == 1) ? "Computer" : "AI " + (i + 1),
+                    humanSeats + i, ""));
             pp.add(rOpp);
             if (scenario) {
                 rOpp.setStartingHand(0);
@@ -194,7 +257,12 @@ public final class ForgeServer {
         // Timing out is not a failure mode: AiController returns null and that
         // seat simply plays nothing that window, which is already what happened
         // repeatedly in the log this came from.
-        g.AI_TIMEOUT = Math.max(2, 5 / aiSeats);
+        //
+        // The divisor is the AI seat count, not the opponent count: seats driven
+        // by a human do no thinking, so sharing the budget with them would starve
+        // the seats that actually need it. With no AI at all there is nothing to
+        // budget and the guard keeps this off a divide by zero.
+        g.AI_TIMEOUT = aiSeats > 0 ? Math.max(2, 5 / aiSeats) : g.AI_TIMEOUT;
         // -Dbridge.notimeout=1: let every AI evaluation run to completion. A
         // timeout cuts the eval thread at a wall-clock moment, so it consumes a
         // different amount of RNG each run and a seeded game still diverges.
@@ -204,8 +272,16 @@ public final class ForgeServer {
         if (System.getProperty("bridge.notimeout") != null) {
             g.AI_CAN_USE_TIMEOUT = false;
         }
+        // Every human seat gets its own bridge controller, tagged with its seat
+        // index so the client on the other end of the shared Channel knows which
+        // player it is being asked about. Seats beyond humanSeats keep the AI
+        // controller they were registered with.
+        for (int i = 0; i < humanSeats && i < g.getPlayers().size(); i++) {
+            Player ph = g.getPlayers().get(i);
+            ph.dangerouslySetController(
+                    new PlayerControllerBridge(g, ph, humanLobby.get(i), i));
+        }
         Player p0 = g.getPlayers().get(0);
-        p0.dangerouslySetController(new PlayerControllerBridge(g, p0, lp1));
 
         // Test scaffold: if <deckDir>/_scenario.txt exists, apply it as an exact
         // board state at the start of the first turn (puzzle-style game state).

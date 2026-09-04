@@ -99,8 +99,38 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     private int skipTurn = -1;
     private String skipPhase = null;
 
+    /**
+     * Which seat this controller speaks for, tagged onto every request.
+     *
+     * A pod can now have more than one human, and they share the single bound
+     * Channel: Channel.request is synchronized and Forge's game loop is
+     * single-threaded, so exactly one decision is ever outstanding and one
+     * socket is still sufficient. What the bridge on the other end cannot do is
+     * guess WHICH player it is being asked about, hence this.
+     */
+    private final int seat;
+
     public PlayerControllerBridge(Game game, Player p, LobbyPlayer lp) {
+        this(game, p, lp, 0);
+    }
+
+    public PlayerControllerBridge(Game game, Player p, LobbyPlayer lp, int seat) {
         super(game, p, lp);
+        this.seat = seat;
+    }
+
+    /**
+     * Send one request tagged with this seat, and return the client's reply.
+     *
+     * Every request in this class is built as {"kind":... , so splicing the
+     * seat in after the opening brace leaves each call site exactly as it was
+     * and keeps the wire format a single flat object.
+     */
+    private String ask(String json) {
+        if (json == null || json.isEmpty() || json.charAt(0) != '{') {
+            return Channel.request(json);   // not an object; nothing to tag
+        }
+        return Channel.request("{\"seat\":" + seat + "," + json.substring(1));
     }
 
     /**
@@ -163,7 +193,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             return null; // auto-pass
         }
         lastPushedFingerprint = fingerprint;
-        String reply = Channel.request("{\"kind\":\"priority\",\"state\":"
+        String reply = ask("{\"kind\":\"priority\",\"state\":"
                 + StateExporter.toJson(me.getGame().getView(), me) + "}");
 
         String compact = reply.replaceAll("\\s", "");
@@ -300,7 +330,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             why = "Cannot play " + name + " right now - usually not enough mana, "
                     + "or no legal target.";
         }
-        Channel.request("{\"kind\":\"feed\",\"lines\":[\"" + StateExporter.esc(why) + "\"]}");
+        ask("{\"kind\":\"feed\",\"lines\":[\"" + StateExporter.esc(why) + "\"]}");
     }
 
     /** Fingerprint of the last board actually sent, so identical pushes are skipped. */
@@ -349,7 +379,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             return;
         }
         lastPushedFingerprint = fingerprint;
-        Channel.request("{\"kind\":\"state\",\"state\":"
+        ask("{\"kind\":\"state\",\"state\":"
                 + StateExporter.toJson(me.getGame().getView(), me) + "}");
     }
 
@@ -904,7 +934,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             + "\"options\":" + opts + ",\"multi\":false,\"min\":1,\"max\":1,"
             + "\"optional\":false,\"prompt_type\":\"color_select\"},"
             + "\"state\":" + stateJson() + "}";
-        String reply = Channel.request(req);
+        String reply = ask(req);
 
         String compact = reply.replaceAll("\\s", "").toUpperCase();
         int i = compact.indexOf("\"SELECTION\":[");
@@ -1019,7 +1049,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     @Override
     public boolean mulliganKeepHand(Player firstPlayer, int cardsToReturn) {
         String state = StateExporter.toJson(getPlayer().getGame().getView(), getPlayer());
-        String reply = Channel.request("{\"kind\":\"mulligan\",\"state\":" + state + "}");
+        String reply = ask("{\"kind\":\"mulligan\",\"state\":" + state + "}");
         // Default to keep on anything unexpected.
         return !reply.replaceAll("\\s", "").contains("\"keep\":false");
     }
@@ -1039,7 +1069,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                  .append(escName(c.getName())).append("\"}");
         }
         cards.append(']');
-        String reply = Channel.request("{\"kind\":\"mulligan_bottom\",\"count\":" + cardsToReturn
+        String reply = ask("{\"kind\":\"mulligan_bottom\",\"count\":" + cardsToReturn
                 + ",\"cards\":" + cards + ",\"state\":" + stateJson() + "}");
         String compact = reply.replaceAll("\\s", "");
         CardCollection chosen = new CardCollection();
@@ -1188,7 +1218,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                      + "\",\"art_slug\":\"\"}")
                 + "},"
                 + "\"state\":" + stateJson() + "}";
-        String reply = Channel.request(req);
+        String reply = ask(req);
         List<Integer> out = new ArrayList<>();
         String compact = reply.replaceAll("\\s", "");
         int i = compact.indexOf("\"selection\":[");
@@ -2605,7 +2635,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             }
         }
         String state = StateExporter.toJson(attacker.getGame().getView(), attacker);
-        String reply = Channel.request("{\"kind\":\"declare_attackers\",\"eligible\":" + idList(eligible)
+        String reply = ask("{\"kind\":\"declare_attackers\",\"eligible\":" + idList(eligible)
                 + ",\"defenders\":" + defenderList(combat) + ",\"state\":" + state + "}");
         String compact = reply.replaceAll("\\s", "");
         boolean all = compact.contains("\"attackers\":\"all\"");
@@ -2683,7 +2713,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     @Override
     public void declareBlockers(Player defender, Combat combat) {
         String state = StateExporter.toJson(defender.getGame().getView(), defender);
-        String reply = Channel.request("{\"kind\":\"declare_blockers\",\"state\":" + state + "}");
+        String reply = ask("{\"kind\":\"declare_blockers\",\"state\":" + state + "}");
         String compact = reply.replaceAll("\\s", "");
         if (compact.contains("\"blocks\":\"none\"") || !compact.contains("blocker")) {
             return; // no blocks
