@@ -11,6 +11,7 @@ import forge.game.GameType;
 import forge.game.Match;
 import forge.game.player.Player;
 import forge.game.player.RegisteredPlayer;
+import forge.game.spellability.Spell;
 import forge.gui.GuiBase;
 import forge.localinstance.properties.ForgeConstants;
 import forge.model.FModel;
@@ -41,6 +42,27 @@ public final class ForgeServer {
     public static void main(String[] args) throws Exception {
         GuiBase.setInterface(new GuiDesktop());
         FModel.initialize(null, null);
+
+        // Forge's own performance switch, off by default and read by FModel from
+        // a desktop preference we never set. Turn it on AFTER initialize(), which
+        // is what sets it from that preference.
+        //
+        // Profiling the AI worker on turn 36+ of a four-player pod (117 stacks):
+        // 98% of its time is under predictNextCombatsRemainingLife, and inside
+        // that 85% is canGainKeyword -> canPayCost -> canPayManaCost ->
+        // groupSourcesByManaColor, which ends in Card.canTap -> cantHappenCheck
+        // -> ReplacementHandler.getReplacementList -> forEachCardInGame at 70%.
+        // That last call walks EVERY card in every zone of all four players --
+        // libraries included, so ~300 of the ~400 cards can never matter -- once
+        // per mana source per cost check.
+        //
+        // ReplacementHandler's fast path skips the zones that cannot hold a live
+        // Tap/Untap/ProduceMana replacement, and its comment describes exactly
+        // the profile above as "a major hot path". It is gated on this flag
+        // purely so custom cards can put one somewhere unusual; no real card
+        // does. Setting it also skips an LKI controller-swap copy in
+        // Spell.canPlay when the activator is not the controller.
+        Spell.setPerformanceMode(true);
         int port = Integer.getInteger("bridge.port", 8781);
         ServerSocket ss = new ServerSocket(port, 4, InetAddress.getByName("127.0.0.1"));
         System.out.println("FORGE_SERVER_READY port=" + port);
