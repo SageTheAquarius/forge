@@ -1078,6 +1078,31 @@ public class PlayerControllerBridge extends PlayerControllerAi {
 
     private List<Integer> promptIndices(String title, List<String> names, int min, int max,
                                         boolean optional, String promptType) {
+        return promptIndices(title, names, min, max, optional, promptType, null);
+    }
+
+    /**
+     * As above, plus the ONE card this decision is about.
+     *
+     * Forge hands several confirm-style effects a {@code cardToShow} so the UI
+     * can put the card in front of you while you answer. Cascade is the report:
+     * PlayEffect asks "play this card without paying its mana cost?" with the
+     * exiled card attached, and DiscoverEffect does the same with what it found.
+     * The bridge dropped that argument, so the client received the card's name
+     * buried in a message string and nothing structured to render — "i cant
+     * tell much about the cards".
+     *
+     * The client already knows this shape: PromptModal calls
+     * {@code _load_texture(name, art_slug)} for reveal prompts and option
+     * payloads, so emitting the same pair alongside message/options is all it
+     * needs. art_slug stays empty deliberately — it names one exact printing and
+     * the translator only fills it for TOKENS (from Forge's set/collector pair).
+     * A cascaded or discovered card is a real card, so the name lookup is the
+     * correct path, and it resolves for double-faced names too now that
+     * card_image_fetch aliases each face to the combined name.
+     */
+    private List<Integer> promptIndices(String title, List<String> names, int min, int max,
+                                        boolean optional, String promptType, Card cardToShow) {
         StringBuilder opts = new StringBuilder("[");
         for (int i = 0; i < names.size(); i++) {
             if (i > 0) opts.append(',');
@@ -1094,7 +1119,11 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                 // auto-confirmed on click, and an optional one offered "Cancel"
                 // where it should have offered "Skip".
                 + "\"min_select\":" + min + ",\"max_select\":" + max + ","
-                + "\"optional\":" + optional + ",\"prompt_type\":\"" + promptType + "\"},"
+                + "\"optional\":" + optional + ",\"prompt_type\":\"" + promptType + "\""
+                + (cardToShow == null ? ""
+                   : ",\"card\":{\"name\":\"" + escName(cardToShow.getName())
+                     + "\",\"art_slug\":\"\"}")
+                + "},"
                 + "\"state\":" + stateJson() + "}";
         String reply = Channel.request(req);
         List<Integer> out = new ArrayList<>();
@@ -1177,7 +1206,9 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         List<String> names = new ArrayList<>();
         if (options != null && !options.isEmpty()) names.addAll(options);
         else { names.add("Yes"); names.add("No"); }
-        List<Integer> sel = promptIndices(message, names, 1, 1, false, "confirm");
+        // cardToShow is the card the question is ABOUT (cascade's exiled card,
+        // discover's find). Forwarding it is what lets the client render it.
+        List<Integer> sel = promptIndices(message, names, 1, 1, false, "confirm", cardToShow);
         return !sel.isEmpty() && sel.get(0) == 0;
     }
 
@@ -1657,7 +1688,11 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             List<String> names = new ArrayList<>();
             names.add("Cast " + what);
             names.add("Decline");
-            List<Integer> sel = promptIndices("Cast " + what + "?", names, 1, 1, false, "confirm");
+            // Cascade asks TWICE — PlayEffect's "do you want to play it?" and
+            // then this one — so both windows need the card, or the second is
+            // the bare yes/no the first one stopped being.
+            List<Integer> sel = promptIndices("Cast " + what + "?", names, 1, 1, false, "confirm",
+                    tgtSA.getHostCard());
             if (sel.isEmpty() || sel.get(0) != 0) return false;
         }
         return PlaySpellAbility.playSpellAbility(this, getPlayer(), tgtSA);
