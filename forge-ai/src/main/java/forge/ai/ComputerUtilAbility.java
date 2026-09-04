@@ -34,6 +34,8 @@ import forge.game.trigger.Trigger;
 import forge.game.trigger.TriggerType;
 import forge.game.zone.Zone;
 import forge.game.zone.ZoneType;
+import java.util.Map;
+import java.util.WeakHashMap;
 
 public class ComputerUtilAbility {
     public static CardCollection getAvailableLandsToPlay(final Game game, final Player player) {
@@ -99,7 +101,7 @@ public class ComputerUtilAbility {
      * reproduced in 45 turns of seeded local pods, so this reports it from the
      * real game rather than being guessed at.
      */
-    private static void reportSlowBuild(CardCollectionView all, long startNanos) {
+    private static void reportSlowBuild(CardCollectionView all, Player activator, long startNanos) {
         long ms = (System.nanoTime() - startNanos) / 1000000L;
         if (ms <= 150) {
             return;
@@ -115,14 +117,107 @@ public class ComputerUtilAbility {
             else if (zt == ZoneType.Command) command++;
             else other++;
         }
+        // Seat and phase, because the cost is bimodal: in a 36-turn pod, 225
+        // builds sat at ~300ms while 66 ran 1-5s and accounted for 73% of all
+        // build time. Without knowing WHICH seat and WHICH phase the slow ones
+        // land in, there is no way to tell a broad scaling problem from one
+        // seat's board or one phase's re-entry, and those want different fixes.
+        String seat = activator == null ? "?" : activator.getName();
+        String phase = "?";
+        try {
+            if (activator != null && activator.getGame() != null) {
+                phase = String.valueOf(activator.getGame().getPhaseHandler().getPhase());
+            }
+        } catch (Exception ignored) {
+            // a diagnostic must never be the thing that breaks a game
+        }
         System.out.println("[SA-BUILD] " + ms + "ms cards=" + all.size()
+                + " seat=" + seat + " phase=" + phase
                 + " hand=" + hand + " graveyard=" + graveyard + " exile=" + exile
                 + " battlefield=" + battlefield + " command=" + command
                 + " other=" + other);
         System.out.flush();
     }
 
+    // ---- lever 1: reuse the candidate list while the board has not moved ----
+    //
+    // Off unless -Dai.sacache is set. In a 36-turn four-player pod this method
+    // was 51% of all engine time (271.8s of 533.8s), rebuilt from scratch at
+    // every priority window for every AI seat -- and between consecutive windows
+    // in a phase (a chain of triggers resolving, everyone passing) the input is
+    // usually identical.
+    //
+    // The correctness risk, stated plainly: the returned SpellAbility objects
+    // are live. The card's own SAs are the same instances every call already, but
+    // the alternative-cost SAs are freshly allocated per call, and downstream
+    // code sets activating player, last-state and targets on them. Reusing them
+    // across windows could therefore carry state forward. The list itself is
+    // copied out because callers removeIf/removeAll on it.
+    //
+    // This is why it is flag-gated rather than simply switched on: the seeded
+    // replay (-Dbridge.seed with -Dbridge.notimeout) plays a deterministic game,
+    // so a safe cache must reproduce it EXACTLY -- same window count per turn,
+    // same decisions. Any divergence means the AI saw a stale list and the cache
+    // must be rejected, not tuned.
+    private static final boolean SA_CACHE_ON = System.getProperty("ai.sacache") != null;
+    private static final Map<Player, Object[]> SA_CACHE = new WeakHashMap<>();
+    /** Last observed build cost per player, in ms. Drives the gate below. */
+    private static final Map<Player, Long> SA_LAST_MS = new WeakHashMap<>();
+    /**
+     * Only cache for a player whose builds are actually expensive.
+     *
+     * Measured: on a small board the cache made a seeded 22-turn replay 15%
+     * SLOWER (15.8s -> 18.2s), because cacheKey walks every card to build a
+     * string and a ~20ms build cannot repay that. On a 30-turn replay with a
+     * developed board the same cache was 36% faster. So the cache is not
+     * universally good -- it is good exactly where the builds are slow, which
+     * is the 66 builds >=1s that made up 73% of build time in the real game.
+     *
+     * Below the threshold this method costs one map lookup and nothing else.
+     */
+    private static final long SA_CACHE_MIN_MS = 100L;
+
+    /** Cheap key: what the list depends on, without computing any of it. */
+    private static String cacheKey(final CardCollectionView all, final Player activator) {
+        Game game = activator.getGame();
+        StringBuilder b = new StringBuilder(256);
+        b.append(game.getTimestamp()).append('|')
+         .append(game.getPhaseHandler().getTurn()).append('|')
+         .append(game.getPhaseHandler().getPhase()).append('|')
+         .append(game.getStack().size()).append('|');
+        for (final Card c : all) {
+            Zone z = game.getZoneOf(c);
+            b.append(c.getId()).append(':')
+             .append(z == null ? "?" : z.getZoneType()).append(':')
+             .append(c.getLayerTimestamp()).append(',');
+        }
+        return b.toString();
+    }
+
     public static List<SpellAbility> getSpellAbilities(final CardCollectionView all, final Player activator) {
+        if (SA_CACHE_ON && activator != null && wasExpensive(activator)) {
+            String key = cacheKey(all, activator);
+            Object[] hit = SA_CACHE.get(activator);
+            if (hit != null && key.equals(hit[0])) {
+                @SuppressWarnings("unchecked")
+                List<SpellAbility> cached = (List<SpellAbility>) hit[1];
+                // Copy: AiController does removeIf/removeAll on what it gets back.
+                return Lists.newArrayList(cached);
+            }
+            List<SpellAbility> built = buildSpellAbilities(all, activator);
+            SA_CACHE.put(activator, new Object[] {key, built});
+            return Lists.newArrayList(built);
+        }
+        return buildSpellAbilities(all, activator);
+    }
+
+    /** True once this player has had at least one build worth caching. */
+    private static boolean wasExpensive(final Player activator) {
+        Long last = SA_LAST_MS.get(activator);
+        return last != null && last >= SA_CACHE_MIN_MS;
+    }
+
+    private static List<SpellAbility> buildSpellAbilities(final CardCollectionView all, final Player activator) {
         final long startNanos = System.nanoTime();
         try {
         final List<SpellAbility> spellAbilities = Lists.newArrayList();
@@ -139,7 +234,11 @@ public class ComputerUtilAbility {
         }
         return spellAbilities;
         } finally {
-            reportSlowBuild(all, startNanos);
+            long ms = (System.nanoTime() - startNanos) / 1000000L;
+            if (activator != null) {
+                SA_LAST_MS.put(activator, ms);
+            }
+            reportSlowBuild(all, activator, startNanos);
         }
     }
 
