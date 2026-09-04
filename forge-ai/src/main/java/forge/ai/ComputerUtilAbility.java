@@ -32,6 +32,7 @@ import forge.game.staticability.StaticAbility;
 import forge.game.staticability.StaticAbilityMode;
 import forge.game.trigger.Trigger;
 import forge.game.trigger.TriggerType;
+import forge.game.zone.Zone;
 import forge.game.zone.ZoneType;
 
 public class ComputerUtilAbility {
@@ -79,7 +80,51 @@ public class ComputerUtilAbility {
         return all;
     }
 
+    /**
+     * Log a slow candidate-ability build, broken down by the zone the cards came
+     * from. Off unless it actually is slow, so it costs a nanoTime in the normal
+     * case.
+     *
+     * Why it exists: a live four-player pod went 1.0s to 226.8s of engine time
+     * per turn over five turns, and eleven thread dumps taken while it was slow
+     * had NO "Game AI Eval" thread at all -- the time was on the main thread,
+     * inside this method, under Card.getAllPossibleAbilities and
+     * GameActionUtil.getAlternativeCosts. That is BEFORE the AI_TIMEOUT-guarded
+     * section, which is why capping that budget would not have touched it.
+     *
+     * getAvailableCards feeds this hand + graveyard + every library's top card +
+     * every command zone + EVERY player's exile + every battlefield, so the two
+     * zones that only ever grow are in it, and a board wipe moves a whole
+     * battlefield into one of them. Which zone actually dominates could not be
+     * reproduced in 45 turns of seeded local pods, so this reports it from the
+     * real game rather than being guessed at.
+     */
+    private static void reportSlowBuild(CardCollectionView all, long startNanos) {
+        long ms = (System.nanoTime() - startNanos) / 1000000L;
+        if (ms <= 150) {
+            return;
+        }
+        int hand = 0, graveyard = 0, exile = 0, battlefield = 0, command = 0, other = 0;
+        for (final Card c : all) {
+            Zone z = c.getGame() == null ? null : c.getGame().getZoneOf(c);
+            ZoneType zt = z == null ? null : z.getZoneType();
+            if (zt == ZoneType.Hand) hand++;
+            else if (zt == ZoneType.Graveyard) graveyard++;
+            else if (zt == ZoneType.Exile) exile++;
+            else if (zt == ZoneType.Battlefield) battlefield++;
+            else if (zt == ZoneType.Command) command++;
+            else other++;
+        }
+        System.out.println("[SA-BUILD] " + ms + "ms cards=" + all.size()
+                + " hand=" + hand + " graveyard=" + graveyard + " exile=" + exile
+                + " battlefield=" + battlefield + " command=" + command
+                + " other=" + other);
+        System.out.flush();
+    }
+
     public static List<SpellAbility> getSpellAbilities(final CardCollectionView all, final Player activator) {
+        final long startNanos = System.nanoTime();
+        try {
         final List<SpellAbility> spellAbilities = Lists.newArrayList();
         for (final Card c : all) {
             Multimap<SpellAbility, SpellAbility> unhiddenAltCost = ArrayListMultimap.create();
@@ -93,6 +138,9 @@ public class ComputerUtilAbility {
             spellAbilities.addAll(possible);
         }
         return spellAbilities;
+        } finally {
+            reportSlowBuild(all, startNanos);
+        }
     }
 
     public static List<SpellAbility> getOriginalAndAltCostAbilities(final List<SpellAbility> originList, final Player activator) {
