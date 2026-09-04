@@ -12,6 +12,7 @@ import forge.game.Match;
 import forge.game.player.Player;
 import forge.game.player.RegisteredPlayer;
 import forge.game.spellability.Spell;
+import forge.util.MyRandom;
 import forge.gui.GuiBase;
 import forge.localinstance.properties.ForgeConstants;
 import forge.model.FModel;
@@ -62,7 +63,8 @@ public final class ForgeServer {
         // purely so custom cards can put one somewhere unusual; no real card
         // does. Setting it also skips an LKI controller-swap copy in
         // Spell.canPlay when the activator is not the controller.
-        Spell.setPerformanceMode(true);
+        // -Dbridge.perfmode=false turns it back off, for A/B measurement only.
+        Spell.setPerformanceMode(!"false".equals(System.getProperty("bridge.perfmode")));
         int port = Integer.getInteger("bridge.port", 8781);
         ServerSocket ss = new ServerSocket(port, 4, InetAddress.getByName("127.0.0.1"));
         System.out.println("FORGE_SERVER_READY port=" + port);
@@ -147,6 +149,16 @@ public final class ForgeServer {
             }
         }
 
+        // ---- measurement switches; all no-ops unless the property is set ----
+        // Two different pods are not a benchmark: board complexity varies more
+        // between games than any change we make to the engine, which is how an
+        // earlier "is it faster?" reading came out backwards. Seeding makes the
+        // SAME game replay, so wall clock finally means something.
+        String seed = System.getProperty("bridge.seed");
+        if (seed != null && !seed.isEmpty()) {
+            MyRandom.setRandom(new java.util.Random(Long.parseLong(seed)));
+        }
+
         GameRules rules = new GameRules(commander
                 ? GameType.Commander : GameType.Constructed);
         if (commander) {
@@ -183,6 +195,15 @@ public final class ForgeServer {
         // seat simply plays nothing that window, which is already what happened
         // repeatedly in the log this came from.
         g.AI_TIMEOUT = Math.max(2, 5 / aiSeats);
+        // -Dbridge.notimeout=1: let every AI evaluation run to completion. A
+        // timeout cuts the eval thread at a wall-clock moment, so it consumes a
+        // different amount of RNG each run and a seeded game still diverges.
+        // Without it the replay is deterministic AND the elapsed time is a pure
+        // measure of how much work the AI actually does - which is the thing
+        // being compared. Never set in production.
+        if (System.getProperty("bridge.notimeout") != null) {
+            g.AI_CAN_USE_TIMEOUT = false;
+        }
         Player p0 = g.getPlayers().get(0);
         p0.dangerouslySetController(new PlayerControllerBridge(g, p0, lp1));
 
