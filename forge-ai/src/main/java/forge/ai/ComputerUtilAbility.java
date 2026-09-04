@@ -67,6 +67,22 @@ public class ComputerUtilAbility {
         return landList;
     }
 
+    private static final boolean TRIM_ZONES = System.getProperty("ai.trimzones") != null;
+
+    /** Could this player conceivably do anything with a card they do not control? */
+    private static boolean couldMatter(final Card c, final Player player) {
+        // Cheap test first. mayPlay() walks the static abilities that grant play
+        // permission and is dear enough that asking it per card cost more than
+        // the whole filter saved -- measured at 58% SLOWER with the order
+        // reversed. The stored ability list is just a field read.
+        for (final SpellAbility sa : c.getSpellAbilities()) {
+            if (sa.isActivatedAbility()) {
+                return true;                   // e.g. "any player may activate"
+            }
+        }
+        return !c.mayPlay(player).isEmpty();    // explicitly granted permission
+    }
+
     public static CardCollection getAvailableCards(final Game game, final Player player) {
         CardCollection all = new CardCollection(player.getCardsIn(ZoneType.Hand));
 
@@ -78,7 +94,30 @@ public class ComputerUtilAbility {
         }
         all.addAll(game.getCardsIn(ZoneType.Command));
         all.addAll(game.getCardsIn(ZoneType.Exile));
-        all.addAll(game.getCardsIn(ZoneType.Battlefield));
+        // ---- lever 2: skip opponents' permanents that offer this player nothing ----
+        //
+        // Off unless -Dai.trimzones is set. The battlefield is the bulk of this
+        // list -- 48 to 58 of 63 to 72 cards in the pod that was measured -- and
+        // most of it belongs to opponents. getSpellAbilities then runs the full
+        // getAllPossibleAbilities, including alternative-cost expansion, over
+        // every one of them.
+        //
+        // Deliberately conservative: an opponent's card is kept if it has ANY
+        // activated ability, or if this player has been granted permission to
+        // play it. What gets dropped is a vanilla permanent someone else
+        // controls, which can only ever yield candidates that canPlay rejects
+        // later anyway. Cheap to decide: getSpellAbilities() on the card is the
+        // stored list, with none of the alternative-cost work that makes the
+        // full build expensive.
+        if (TRIM_ZONES) {
+            for (final Card c : game.getCardsIn(ZoneType.Battlefield)) {
+                if (c.getController() == player || couldMatter(c, player)) {
+                    all.add(c);
+                }
+            }
+        } else {
+            all.addAll(game.getCardsIn(ZoneType.Battlefield));
+        }
         return all;
     }
 
