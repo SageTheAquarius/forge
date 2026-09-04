@@ -268,11 +268,50 @@ public class StaticAbility extends CardTraitBase implements IIdentifiable, Clone
         return view;
     }
 
+    /**
+     * Report a continuous static ability that is slow to apply.
+     *
+     * Diagnostic only -- no behaviour change, and it costs a nanoTime on a path
+     * that is already doing real work. It exists because the AI's candidate-list
+     * build (see ComputerUtilAbility's [SA-BUILD]) accounted for only half the
+     * engine time in a pathological game, and the profile for the other half
+     * pointed here: checkStaticAbilities -> getAffectedCards -> getValidCards
+     * -> Card.isValid.
+     *
+     * The suspected shape is an ability with AffectedZone$ All, whose Affected$
+     * predicate must then be re-evaluated over every card in every zone -- a
+     * whole 100-card singleton deck -- each time statics are rechecked, which is
+     * after every state change. Rukarumel, Biologist is the specific card that
+     * correlated with the slowdown, but that is a correlation from one game and
+     * this line is what would turn it into a fact, or name a different culprit.
+     *
+     * Deliberately measurement rather than a fix: Forge already caches the
+     * affected set per ability within a pass (affectedPerAbility, CR 613.6), so
+     * the obvious optimisation is taken, and anything further means changing how
+     * often the rules engine revalidates continuous effects. That is not a
+     * change to make from a guess.
+     */
+    private static final long SLOW_STATIC_MS =
+            Long.getLong("forge.slowstatic.ms", 250L);
+
     public final CardCollectionView applyContinuousAbilityBefore(final StaticAbilityLayer layer, final CardCollectionView preList) {
         if (!shouldApplyContinuousAbility(layer, false)) {
             return null;
         }
-        return StaticAbilityContinuous.applyContinuousAbility(this, layer, preList);
+        final long t0 = System.nanoTime();
+        try {
+            return StaticAbilityContinuous.applyContinuousAbility(this, layer, preList);
+        } finally {
+            long ms = (System.nanoTime() - t0) / 1000000L;
+            if (ms >= SLOW_STATIC_MS) {
+                String host = getHostCard() == null ? "?" : getHostCard().getName();
+                System.out.println("[SLOW-STATIC] " + ms + "ms layer=" + layer
+                        + " host=" + host
+                        + " zone=" + getParamOrDefault("AffectedZone", "(default)")
+                        + " affected=" + getParamOrDefault("Affected", "(none)"));
+                System.out.flush();
+            }
+        }
     }
 
     public final CardCollectionView applyContinuousAbility(final StaticAbilityLayer layer, final CardCollectionView affected) {
