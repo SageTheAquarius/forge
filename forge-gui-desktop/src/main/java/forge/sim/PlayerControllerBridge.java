@@ -1101,12 +1101,35 @@ public class PlayerControllerBridge extends PlayerControllerAi {
      * correct path, and it resolves for double-faced names too now that
      * card_image_fetch aliases each face to the combined name.
      */
+    /** True if this option label is a real card name, not "Yes" or "Pay {2}". */
+    private static boolean isKnownCard(String name) {
+        if (name == null || name.isEmpty()) {
+            return false;
+        }
+        try {
+            return StaticData.instance().getCommonCards().contains(name);
+        } catch (Exception e) {   // never let a prompt die over a label lookup
+            return false;
+        }
+    }
+
     private List<Integer> promptIndices(String title, List<String> names, int min, int max,
                                         boolean optional, String promptType, Card cardToShow) {
+        // Say which options are CARDS. Every prompt ships the same
+        // {id,name} pair whether the name is "Grizzly Bears" or "Yes", so the
+        // client had no way to tell a card list from a yes/no box and could
+        // neither show the card nor decide whether picking one should commit
+        // immediately. Asking Forge's own card DB is exact and costs a lookup:
+        // "Pay {2}", "Choose a pile" and "Yes" do not resolve, real cards do.
         StringBuilder opts = new StringBuilder("[");
         for (int i = 0; i < names.size(); i++) {
             if (i > 0) opts.append(',');
-            opts.append("{\"id\":\"").append(i).append("\",\"name\":\"").append(escName(names.get(i))).append("\"}");
+            opts.append("{\"id\":\"").append(i).append("\",\"name\":\"")
+                .append(escName(names.get(i))).append("\"");
+            if (isKnownCard(names.get(i))) {
+                opts.append(",\"is_card\":true");
+            }
+            opts.append('}');
         }
         opts.append(']');
         String req = "{\"kind\":\"prompt\",\"prompt\":{"
