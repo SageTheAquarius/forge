@@ -6,10 +6,14 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Comparator;
+import java.util.stream.Collectors;
+import java.util.function.Predicate;
 import java.util.Set;
 
 import org.apache.commons.lang3.tuple.ImmutablePair;
 
+import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Lists;
 
 import forge.LobbyPlayer;
@@ -22,6 +26,21 @@ import forge.game.GameEntity;
 import forge.game.card.Card;
 import forge.game.card.CardCollection;
 import forge.game.card.CardCollectionView;
+import forge.card.ICardFace;
+import forge.game.card.CardState;
+import forge.game.card.CounterType;
+import forge.game.ability.effects.RollDiceEffect;
+import forge.game.GameObject;
+import forge.game.spellability.TargetChoices;
+import forge.ai.ComputerUtilMana;
+import forge.card.mana.ManaCost;
+import forge.card.mana.ManaCostShard;
+import forge.game.keyword.KeywordInterface;
+import forge.game.player.PlayerController.BinaryChoiceType;
+import forge.game.spellability.SpellAbilityStackInstance;
+import forge.game.staticability.StaticAbility;
+import org.apache.commons.lang3.tuple.Pair;
+import forge.StaticData;
 import forge.game.card.CardLists;
 import forge.game.card.CardPredicates;
 import forge.game.cost.Cost;
@@ -106,13 +125,22 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             return null;
         }
         PhaseHandler ph = me.getGame().getPhaseHandler();
-        String state = StateExporter.toJson(me.getGame().getView(), me);
+        // Board fingerprint, not the full JSON. The state used to be
+        // serialised and pushed on EVERY priority window - including the
+        // auto-passing ones - and each push also costs a socket round trip
+        // and a full client re-render. That is fine on turn 2 and brutal on
+        // turn 20 of a four-player pod: measured 102ms average early in a
+        // game against 864ms late, on the same hardware. Most of those
+        // windows show a board identical to the one already on screen, so
+        // skip them.
+        String fingerprint = boardFingerprint(me, ph);
+        boolean unchanged = fingerprint.equals(lastPushedFingerprint);
 
         // Pass Turn: keep auto-passing until my turn ends (attacker declaration
         // still prompts via its own callback, so combat isn't skipped).
         if (skipTurn >= 0) {
             if (ph.getPlayerTurn() == me && ph.getTurn() == skipTurn) {
-                Channel.request("{\"kind\":\"state\",\"state\":" + state + "}");
+                pushBoard(me, fingerprint, unchanged);
                 return null;
             }
             skipTurn = -1;
@@ -120,7 +148,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         // Pass Phase: keep auto-passing until this phase ends.
         if (skipPhase != null) {
             if (skipPhase.equals(String.valueOf(ph.getPhase()))) {
-                Channel.request("{\"kind\":\"state\",\"state\":" + state + "}");
+                pushBoard(me, fingerprint, unchanged);
                 return null;
             }
             skipPhase = null;
@@ -131,10 +159,12 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         // input when it's actually your decision (see shouldPromptAtPriority);
         // otherwise push-and-continue so the game auto-advances.
         if (!shouldPromptAtPriority(me)) {
-            Channel.request("{\"kind\":\"state\",\"state\":" + state + "}"); // fire-and-forget
+            pushBoard(me, fingerprint, unchanged);
             return null; // auto-pass
         }
-        String reply = Channel.request("{\"kind\":\"priority\",\"state\":" + state + "}");
+        lastPushedFingerprint = fingerprint;
+        String reply = Channel.request("{\"kind\":\"priority\",\"state\":"
+                + StateExporter.toJson(me.getGame().getView(), me) + "}");
 
         String compact = reply.replaceAll("\\s", "");
         if (compact.contains("\"action\":\"pass_turn\"")) {
@@ -155,7 +185,20 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             // — ask for the cycling one by name rather than taking the first.
             boolean wantCycle = compact.contains("\"cycle\":true");
             if (chosen != null) {
-                for (SpellAbility sa : chosen.getAllPossibleAbilities(me, true)) {
+                List<SpellAbility> all = chosen.getAllPossibleAbilities(me, true);
+                // The client picked one item out of the card's exported ability
+                // list (StateExporter.putAbilities), so it means THAT ability,
+                // not "the first one of this kind". Both sides build the list
+                // with the same call and the game is parked waiting for this
+                // reply, so the index still points where the player pointed.
+                // Without it the scan below took the first non-mana activated
+                // ability, which is why only loyalty ability #1 of a
+                // planeswalker was ever reachable.
+                int idx = parseInt(reply, "\"ability\":");
+                if (idx >= 0 && idx < all.size()) {
+                    return Lists.newArrayList(all.get(idx));
+                }
+                for (SpellAbility sa : all) {
                     boolean isMana = sa.isManaAbility();
                     if (wantCycle ? sa.isCycling()
                             : wantMana ? isMana : (!isMana && sa.isActivatedAbility())) {
@@ -180,6 +223,14 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                     if (idx < 0 || idx >= abs.size()) idx = 0;
                     return Lists.newArrayList(abs.get(idx));
                 }
+                // Forge says this card has nothing playable right now, and the
+                // old code fell straight through to "pass priority" - so the
+                // click vanished with no message and the player could not tell
+                // "illegal" from "the button is broken". Say why, and DO NOT
+                // pass: passing priority on a rejected click hands the window
+                // away and can let a spell you meant to counter resolve.
+                explainUnplayable(me, chosen);
+                return chooseSpellAbilityToPlay();
             }
         }
         return null; // pass priority
@@ -220,6 +271,86 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             return abilities.get(0);
         }
         return abilities.get(sel.get(0));
+    }
+
+    /**
+     * Tell the player why a card they clicked could not be played.
+     *
+     * Forge's getAllPossibleAbilities(me, true) filters out anything unplayable
+     * right now - unaffordable, wrong timing, or no legal target - but it does
+     * not say which. Reconstructing the exact reason means re-running each
+     * ability's canPlay/cost check, so this reports the distinguishable cases
+     * and otherwise says plainly that Forge rejected it, which is still far
+     * better than the click vanishing.
+     */
+    private void explainUnplayable(Player me, Card c) {
+        String name = c.getName();
+        String why;
+        List<SpellAbility> any = c.getAllPossibleAbilities(me, false);
+        if (any.isEmpty()) {
+            why = name + " has nothing you can play from here.";
+        } else if (!me.canCastSorcery()) {
+            // The sorcery window is shut (not your main phase, or the stack is
+            // busy). If the card is sorcery-speed that alone explains it; if it
+            // is an instant it does not, so name both rather than assert one.
+            why = "Cannot play " + name + " right now. If it is sorcery-speed, it "
+                    + "needs your own main phase with an empty stack. Otherwise: "
+                    + "not enough mana, or no legal target.";
+        } else {
+            why = "Cannot play " + name + " right now - usually not enough mana, "
+                    + "or no legal target.";
+        }
+        Channel.request("{\"kind\":\"feed\",\"lines\":[\"" + StateExporter.esc(why) + "\"]}");
+    }
+
+    /** Fingerprint of the last board actually sent, so identical pushes are skipped. */
+    private String lastPushedFingerprint = "";
+
+    /**
+     * A cheap summary of everything the client renders.
+     *
+     * Deliberately not the exported JSON: the whole point is to decide whether
+     * serialising that JSON is worth doing at all. Covers turn, phase, stack
+     * depth, and per player life, zone sizes, and the tapped / damage / counter
+     * totals on their battlefield - which is what visibly changes between two
+     * priority windows. Anything it misses costs one stale frame that the next
+     * real change corrects, never a wrong game action.
+     */
+    private static String boardFingerprint(Player me, PhaseHandler ph) {
+        StringBuilder b = new StringBuilder(128);
+        b.append(ph.getTurn()).append('|').append(ph.getPhase()).append('|')
+         .append(me.getGame().getStack().size()).append('|');
+        for (Player p : me.getGame().getPlayers()) {
+            b.append(p.getLife()).append(',')
+             .append(p.getCardsIn(ZoneType.Hand).size()).append(',')
+             .append(p.getCardsIn(ZoneType.Graveyard).size()).append(',')
+             .append(p.getCardsIn(ZoneType.Exile).size()).append(',')
+             .append(p.getCardsIn(ZoneType.Command).size()).append(',');
+            int tapped = 0, damage = 0, counters = 0, n = 0;
+            for (Card c : p.getCardsIn(ZoneType.Battlefield)) {
+                n++;
+                if (c.isTapped()) tapped++;
+                damage += c.getDamage();
+                counters += c.getNumAllCounters();
+            }
+            b.append(n).append(',').append(tapped).append(',')
+             .append(damage).append(',').append(counters).append(';');
+        }
+        return b.toString();
+    }
+
+    /**
+     * Send the board to the client, unless it is byte-for-byte the board the
+     * client already has. Skipping saves the JSON export, the socket round trip
+     * and a full client re-render - the three costs that made late turns crawl.
+     */
+    private void pushBoard(Player me, String fingerprint, boolean unchanged) {
+        if (unchanged) {
+            return;
+        }
+        lastPushedFingerprint = fingerprint;
+        Channel.request("{\"kind\":\"state\",\"state\":"
+                + StateExporter.toJson(me.getGame().getView(), me) + "}");
     }
 
     /** Label for one branch of {@link #getAbilityToPlay}: its cost, then its text. */
@@ -1013,6 +1144,826 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         return result;
     }
 
+    /**
+     * "As this enters, choose X or Y" and every other GenericChoice effect.
+     *
+     * Monastery Siege is the clearest case: its script is
+     * {@code DB$ GenericChoice | Choices$ Khans,Dragons | AILogic$ Khans}. Without
+     * this override the call reached PlayerControllerAi, which obeys that
+     * AILogic and always chose Khans - the player watched the game decide for
+     * them. The choice is the whole card.
+     *
+     * Modal spells go through chooseModeForAbility; this is the sibling path for
+     * choices presented as a list of sub-abilities rather than modes.
+     */
+    @Override
+    public List<SpellAbility> chooseSpellAbilitiesForEffect(List<SpellAbility> spells,
+            SpellAbility sa, String title, int num, Map<String, Object> params) {
+        if (spells == null || spells.isEmpty()) return Lists.newArrayList();
+        List<String> names = new ArrayList<>();
+        for (SpellAbility s : spells) {
+            String d = s == null ? null : s.getDescription();
+            names.add(d == null || d.isEmpty() ? String.valueOf(s) : d);
+        }
+        int want = Math.min(Math.max(num, 1), spells.size());
+        // min == want: these choices are mandatory ("choose Khans or Dragons"
+        // has no "choose neither"), so the prompt must not offer a cancel.
+        List<Integer> sel = promptIndices(
+                title == null || title.isEmpty() ? "Choose" : title,
+                names, want, want, false, "choose");
+        List<SpellAbility> result = Lists.newArrayList();
+        for (int idx : sel) {
+            if (idx >= 0 && idx < spells.size()) result.add(spells.get(idx));
+        }
+        // A dropped connection or a malformed reply must not stall the game:
+        // fall back to the first option rather than returning nothing, which
+        // would silently skip the effect entirely.
+        for (int k = 0; k < spells.size() && result.size() < want; k++) {
+            if (!result.contains(spells.get(k))) result.add(spells.get(k));
+        }
+        return result;
+    }
+
+    // ---- Batch 1 of the ai_decision_allowlist sweep ---------------------------
+    // Prioritised by audit_decision_reach.py counts against the Commander pool.
+    // Two of these are worse than "the AI decided": divideShield returns an empty
+    // map for the AI (the effect simply does nothing) and the Predicate overload
+    // of chooseSingleCardFace throws UnsupportedOperationException.
+
+    /**
+     * "Divide N shields / damage / counters among any number of targets."
+     *
+     * PlayerControllerAi returns an empty HashMap with the comment "AI currently
+     * can't use this so this is not implemented" - so on the bridge these 122
+     * pool cards divided nothing at all. This is a dead effect, not a bad choice.
+     *
+     * Allocation is one prompt per point: simpler than a spinner per target, and
+     * it lets the player stack them unevenly, which is the whole reason the card
+     * says "divided as you choose".
+     */
+    @Override
+    public Map<GameEntity, Integer> divideShield(Card effectSource,
+            Map<GameEntity, Integer> affected, int shieldAmount) {
+        Map<GameEntity, Integer> result = new HashMap<>();
+        if (affected == null || affected.isEmpty() || shieldAmount <= 0) return result;
+        List<GameEntity> targets = new ArrayList<>(affected.keySet());
+        if (targets.size() == 1) {
+            result.put(targets.get(0), shieldAmount);
+            return result;
+        }
+        String host = effectSource != null ? effectSource.getName() : "effect";
+        for (int remaining = shieldAmount; remaining > 0; remaining--) {
+            List<String> names = new ArrayList<>();
+            for (GameEntity e : targets) names.add(String.valueOf(e));
+            List<Integer> sel = promptIndices(
+                    host + ": assign shield " + (shieldAmount - remaining + 1)
+                            + " of " + shieldAmount, names, 1, 1, false, "choose");
+            int idx = sel.isEmpty() ? 0 : sel.get(0);
+            if (idx < 0 || idx >= targets.size()) idx = 0;
+            result.merge(targets.get(idx), 1, Integer::sum);
+        }
+        return result;
+    }
+
+    /** Which face of a modal/split card to name (Rooms, Venture, card-face picks). */
+    @Override
+    public ICardFace chooseSingleCardFace(SpellAbility sa, List<ICardFace> faces, String message) {
+        if (faces == null || faces.isEmpty()) return null;
+        if (faces.size() == 1) return faces.get(0);
+        List<String> names = new ArrayList<>();
+        for (ICardFace f : faces) names.add(f == null ? "?" : f.getName());
+        List<Integer> sel = promptIndices(
+                message == null || message.isEmpty() ? "Choose a card face" : message,
+                names, 1, 1, false, "choose");
+        return faces.get(sel.isEmpty() ? 0 : Math.min(sel.get(0), faces.size() - 1));
+    }
+
+    /**
+     * Which card state (Room half, unlocked door, ...) to choose.
+     * 94 pool cards reach this; the AI answered every one of them.
+     */
+    @Override
+    public CardState chooseSingleCardState(SpellAbility sa, List<CardState> states,
+            String message, Map<String, Object> params) {
+        if (states == null || states.isEmpty()) return null;
+        if (states.size() == 1) return states.get(0);
+        List<String> names = new ArrayList<>();
+        for (CardState s : states) names.add(s == null ? "?" : String.valueOf(s.getName()));
+        List<Integer> sel = promptIndices(
+                message == null || message.isEmpty() ? "Choose a card state" : message,
+                names, 1, 1, false, "choose");
+        return states.get(sel.isEmpty() ? 0 : Math.min(sel.get(0), states.size() - 1));
+    }
+
+    /** Fact-or-Fiction style pile choice. The AI just took the bigger pile. */
+    @Override
+    public boolean chooseCardsPile(SpellAbility sa, CardCollectionView pile1,
+            CardCollectionView pile2, String faceUp) {
+        List<String> names = new ArrayList<>();
+        names.add("Pile 1: " + describePile(pile1, faceUp));
+        names.add("Pile 2: " + describePile(pile2, faceUp));
+        String host = (sa != null && sa.getHostCard() != null)
+                ? sa.getHostCard().getName() : "effect";
+        List<Integer> sel = promptIndices(host + ": choose a pile", names, 1, 1, false, "choose");
+        return sel.isEmpty() || sel.get(0) == 0;      // true == pile 1
+    }
+
+    /** Face-down piles are listed by size only, or the choice would be no choice. */
+    private static String describePile(CardCollectionView pile, String faceUp) {
+        int n = pile == null ? 0 : pile.size();
+        if (!"True".equals(faceUp)) return n + " card(s)";
+        StringBuilder b = new StringBuilder();
+        int shown = 0;
+        for (Card c : pile) {
+            if (shown++ > 0) b.append(", ");
+            if (shown > 4) { b.append('…'); break; }
+            b.append(c.getName());
+        }
+        return b.length() == 0 ? "(empty)" : b.toString();
+    }
+
+    /** "Put a counter of your choice" - which kind. */
+    @Override
+    public CounterType chooseCounterType(List<CounterType> options, SpellAbility sa,
+            String prompt, Map<String, Object> params) {
+        if (options == null || options.isEmpty()) return null;
+        if (options.size() == 1) return options.get(0);
+        List<String> names = new ArrayList<>();
+        for (CounterType t : options) names.add(String.valueOf(t));
+        List<Integer> sel = promptIndices(
+                prompt == null || prompt.isEmpty() ? "Choose a counter type" : prompt,
+                names, 1, 1, false, "choose");
+        return options.get(sel.isEmpty() ? 0 : Math.min(sel.get(0), options.size() - 1));
+    }
+
+    /** Council's-Judgment-style voting. The AI voted on the human's behalf. */
+    @Override
+    public Object vote(SpellAbility sa, String prompt, List<Object> options,
+            ListMultimap<Object, Player> votes, Player forPlayer, boolean optional) {
+        if (options == null || options.isEmpty()) return null;
+        if (options.size() == 1) return options.get(0);
+        List<String> names = new ArrayList<>();
+        for (Object o : options) names.add(String.valueOf(o));
+        List<Integer> sel = promptIndices(
+                prompt == null || prompt.isEmpty() ? "Vote" : prompt,
+                names, 1, 1, optional, "choose");
+        if (sel.isEmpty()) return optional ? null : options.get(0);
+        return options.get(Math.min(sel.get(0), options.size() - 1));
+    }
+
+    // ---- Batch 2 of the ai_decision_allowlist sweep ---------------------------
+
+    /** Clash: keep the revealed card on top, or put it on the bottom. */
+    @Override
+    public boolean willPutCardOnTop(Card c) {
+        List<String> names = new ArrayList<>();
+        names.add("Top of your library");
+        names.add("Bottom of your library");
+        String card = c != null ? c.getName() : "the revealed card";
+        List<Integer> sel = promptIndices("Clash — put " + card + " where?",
+                names, 1, 1, false, "choose");
+        return sel.isEmpty() || sel.get(0) == 0;
+    }
+
+    /** Delve: which cards to exile from your graveyard to pay generic mana. */
+    @Override
+    public CardCollectionView chooseCardsToDelve(int genericAmount, CardCollection grave) {
+        if (grave == null || grave.isEmpty() || genericAmount <= 0) {
+            return CardCollection.EMPTY;
+        }
+        // Optional: Delve never forces you to exile anything, so min is 0.
+        return chooseCardsFrom("Delve — exile up to " + genericAmount
+                + " card(s) from your graveyard", grave, 0,
+                Math.min(genericAmount, grave.size()));
+    }
+
+    /** Splice onto Arcane: which cards in hand to splice onto this spell. */
+    @Override
+    public List<Card> chooseCardsForSplice(SpellAbility sa, List<Card> cards) {
+        List<Card> out = new ArrayList<>();
+        if (cards == null || cards.isEmpty()) return out;
+        List<String> names = new ArrayList<>();
+        for (Card c : cards) names.add(c == null ? "?" : c.getName());
+        // Splicing costs mana, so it must be declinable - hence optional/min 0.
+        List<Integer> sel = promptIndices("Splice onto this spell? (none = no splice)",
+                names, 0, names.size(), true, "choose");
+        for (int idx : sel) {
+            if (idx >= 0 && idx < cards.size()) out.add(cards.get(idx));
+        }
+        return out;
+    }
+
+    /** "Choose a colour" for protection (Iona, Glory, ...). */
+    @Override
+    public String chooseProtectionType(SpellAbility sa, List<String> choices) {
+        if (choices == null || choices.isEmpty()) return null;
+        if (choices.size() == 1) return choices.get(0);
+        String host = (sa != null && sa.getHostCard() != null)
+                ? sa.getHostCard().getName() : "effect";
+        List<Integer> sel = promptIndices(host + ": choose protection from",
+                choices, 1, 1, false, "choose");
+        return choices.get(sel.isEmpty() ? 0 : Math.min(sel.get(0), choices.size() - 1));
+    }
+
+    /** Which spell on the stack to copy / target (CopySpellAbility effects). */
+    @Override
+    public SpellAbility chooseSingleSpellForEffect(List<SpellAbility> spells,
+            SpellAbility sa, String title, Map<String, Object> params) {
+        if (spells == null || spells.isEmpty()) return null;
+        if (spells.size() == 1) return spells.get(0);
+        List<String> names = new ArrayList<>();
+        for (SpellAbility s : spells) {
+            String d = s == null ? null : s.getDescription();
+            if (d == null || d.isEmpty()) {
+                d = (s != null && s.getHostCard() != null)
+                        ? s.getHostCard().getName() : String.valueOf(s);
+            }
+            names.add(d);
+        }
+        List<Integer> sel = promptIndices(
+                title == null || title.isEmpty() ? "Choose a spell" : title,
+                names, 1, 1, false, "choose");
+        return spells.get(sel.isEmpty() ? 0 : Math.min(sel.get(0), spells.size() - 1));
+    }
+
+    // ---- Batch 3: dice (92 pool cards) ----------------------------------------
+    // Every one of these is a stub in PlayerControllerAi, not a considered AI
+    // choice: four return Aggregates.random(), chooseDiceToReroll returns an
+    // empty list (so you never reroll) and payCostDuringRoll returns false (so
+    // you can never pay to reroll or modify). Dice cards were therefore either
+    // random or inert on the bridge.
+
+    private static List<String> intNames(List<Integer> rolls) {
+        List<String> names = new ArrayList<>();
+        for (Integer r : rolls) names.add(String.valueOf(r));
+        return names;
+    }
+
+    /** Which of the rolled dice to reroll (none is a valid answer). */
+    @Override
+    public List<Integer> chooseDiceToReroll(List<Integer> rolls) {
+        List<Integer> out = new ArrayList<>();
+        if (rolls == null || rolls.isEmpty()) return out;
+        List<Integer> sel = promptIndices("Choose dice to reroll (none = keep all)",
+                intNames(rolls), 0, rolls.size(), true, "choose");
+        for (int idx : sel) {
+            if (idx >= 0 && idx < rolls.size()) out.add(rolls.get(idx));
+        }
+        return out;
+    }
+
+    /** Which roll to ignore. */
+    @Override
+    public Integer chooseRollToIgnore(List<Integer> rolls) {
+        if (rolls == null || rolls.isEmpty()) return null;
+        if (rolls.size() == 1) return rolls.get(0);
+        List<Integer> sel = promptIndices("Choose a roll to ignore",
+                intNames(rolls), 1, 1, false, "choose");
+        return rolls.get(sel.isEmpty() ? 0 : Math.min(sel.get(0), rolls.size() - 1));
+    }
+
+    /** Which roll to modify. */
+    @Override
+    public Integer chooseRollToModify(List<Integer> rolls) {
+        if (rolls == null || rolls.isEmpty()) return null;
+        if (rolls.size() == 1) return rolls.get(0);
+        List<Integer> sel = promptIndices("Choose a roll to modify",
+                intNames(rolls), 1, 1, false, "choose");
+        return rolls.get(sel.isEmpty() ? 0 : Math.min(sel.get(0), rolls.size() - 1));
+    }
+
+    /** Which roll result to swap. */
+    @Override
+    public RollDiceEffect.DieRollResult chooseRollToSwap(
+            List<RollDiceEffect.DieRollResult> rolls) {
+        if (rolls == null || rolls.isEmpty()) return null;
+        if (rolls.size() == 1) return rolls.get(0);
+        List<String> names = new ArrayList<>();
+        for (RollDiceEffect.DieRollResult r : rolls) names.add(String.valueOf(r));
+        List<Integer> sel = promptIndices("Choose a roll to swap", names, 1, 1, false, "choose");
+        return rolls.get(sel.isEmpty() ? 0 : Math.min(sel.get(0), rolls.size() - 1));
+    }
+
+    /** What value to swap a roll to. */
+    @Override
+    public String chooseRollSwapValue(List<String> swapChoices, Integer currentResult,
+            int power, int toughness) {
+        if (swapChoices == null || swapChoices.isEmpty()) return null;
+        if (swapChoices.size() == 1) return swapChoices.get(0);
+        List<Integer> sel = promptIndices(
+                "Swap the roll (" + currentResult + ") to which value?",
+                swapChoices, 1, 1, false, "choose");
+        return swapChoices.get(sel.isEmpty() ? 0
+                : Math.min(sel.get(0), swapChoices.size() - 1));
+    }
+
+    /**
+     * Pay a cost to reroll / modify a die. The AI hardcoded false, so the option
+     * was never even offered - "you may pay {1} to reroll" silently never paid.
+     */
+    @Override
+    public boolean payCostDuringRoll(Cost cost, SpellAbility sa) {
+        String host = (sa != null && sa.getHostCard() != null)
+                ? sa.getHostCard().getName() : "effect";
+        String what = cost == null ? "the cost" : cost.toSimpleString();
+        List<String> names = new ArrayList<>();
+        names.add("Pay " + what);
+        names.add("Decline");
+        List<Integer> sel = promptIndices(host + ": pay " + what + "?",
+                names, 1, 1, false, "confirm");
+        return !sel.isEmpty() && sel.get(0) == 0;
+    }
+
+    // ---- Batch 4: combat and cast-timing --------------------------------------
+
+    /**
+     * Which attackers to exert ("you may exert this as it attacks").
+     *
+     * The AI answered via AiAttackController with its own aggression score, so
+     * the human's creatures were exerted on someone else's risk appetite.
+     *
+     * The returned list MUST be mutable and non-null: PhaseHandler reassigns it
+     * and then calls addAll() on it with the enlist list, so an immutable empty
+     * list throws UnsupportedOperationException and null throws NPE.
+     */
+    @Override
+    public List<Card> exertAttackers(List<Card> attackers) {
+        List<Card> out = new ArrayList<>();
+        if (attackers == null || attackers.isEmpty()) return out;
+        List<String> names = new ArrayList<>();
+        for (Card c : attackers) names.add(c == null ? "?" : c.getName());
+        List<Integer> sel = promptIndices("Exert which attackers? (none = exert nothing)",
+                names, 0, names.size(), true, "choose");
+        for (int idx : sel) {
+            if (idx >= 0 && idx < attackers.size()) out.add(attackers.get(idx));
+        }
+        return out;
+    }
+
+    /**
+     * Which attackers to enlist with. The AI enlisted the maximum every time;
+     * enlisting taps one of your untapped creatures, so "always max" quietly
+     * spends your blockers. Same mutability requirement as exertAttackers.
+     */
+    @Override
+    public List<Card> enlistAttackers(List<Card> attackers) {
+        List<Card> out = new ArrayList<>();
+        if (attackers == null || attackers.isEmpty()) return out;
+        List<String> names = new ArrayList<>();
+        for (Card c : attackers) names.add(c == null ? "?" : c.getName());
+        List<Integer> sel = promptIndices("Enlist with which attackers? (none = no enlist)",
+                names, 0, names.size(), true, "choose");
+        for (int idx : sel) {
+            if (idx >= 0 && idx < attackers.size()) out.add(attackers.get(idx));
+        }
+        return out;
+    }
+
+    /**
+     * Pay an attack/block tax (Propaganda, Ghostly Prison, exert and enlist
+     * costs). The AI auto-paid out of the human's resources; declining removes
+     * the creature from combat, so this has to be the player's call.
+     */
+    @Override
+    public boolean payCombatCost(Card card, Cost cost, SpellAbility sa, String prompt) {
+        String what = cost == null ? "the cost" : cost.toSimpleString();
+        String who = card != null ? card.getName() : "this creature";
+        List<String> names = new ArrayList<>();
+        names.add("Pay " + what);
+        names.add("Decline (remove " + who + " from combat)");
+        List<Integer> sel = promptIndices(
+                (prompt == null || prompt.isEmpty() ? who + ": pay " + what + "?" : prompt),
+                names, 1, 1, false, "confirm");
+        return !sel.isEmpty() && sel.get(0) == 0;
+    }
+
+    /**
+     * Opening-hand abilities (Leyline, Chancellor, Gemstone Caverns).
+     * The returned ORDER is the resolution order (CR 103.5), which is why this
+     * asks for an ordered multi-select rather than a set of checkboxes.
+     */
+    @Override
+    public List<SpellAbility> chooseSaToActivateFromOpeningHand(
+            List<SpellAbility> usableFromOpeningHand) {
+        List<SpellAbility> out = new ArrayList<>();
+        if (usableFromOpeningHand == null || usableFromOpeningHand.isEmpty()) return out;
+        List<String> names = new ArrayList<>();
+        for (SpellAbility s : usableFromOpeningHand) {
+            String d = s == null ? null : s.getDescription();
+            if (d == null || d.isEmpty()) {
+                d = (s != null && s.getHostCard() != null)
+                        ? s.getHostCard().getName() : String.valueOf(s);
+            }
+            names.add(d);
+        }
+        List<Integer> sel = promptIndices(
+                "Activate from your opening hand? (in order; none = skip)",
+                names, 0, names.size(), true, "choose");
+        for (int idx : sel) {
+            if (idx >= 0 && idx < usableFromOpeningHand.size()) {
+                out.add(usableFromOpeningHand.get(idx));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Cast a card an effect is letting you cast (cascade, Discover, PlayEffect).
+     *
+     * A MANDATORY one must not be declinable - DiscoverEffect marks its cost
+     * mandatory, and silently not casting it would be a rules violation, not a
+     * choice. Only genuinely optional ones get the prompt.
+     */
+    @Override
+    public boolean playSaFromPlayEffect(SpellAbility tgtSA) {
+        if (tgtSA == null) return false;
+        boolean mandatory = tgtSA.getPayCosts() != null && tgtSA.getPayCosts().isMandatory();
+        if (!mandatory) {
+            String what = tgtSA.getHostCard() != null
+                    ? tgtSA.getHostCard().getName() : String.valueOf(tgtSA);
+            List<String> names = new ArrayList<>();
+            names.add("Cast " + what);
+            names.add("Decline");
+            List<Integer> sel = promptIndices("Cast " + what + "?", names, 1, 1, false, "confirm");
+            if (sel.isEmpty() || sel.get(0) != 0) return false;
+        }
+        return PlaySpellAbility.playSpellAbility(this, getPlayer(), tgtSA);
+    }
+
+    /**
+     * Choose new targets for an ability (Misdirection, Deflecting Swat, any
+     * ChangeTargets effect).
+     *
+     * PlayerControllerAi returns null unconditionally - "AI currently can't do
+     * this" - so every redirect spell was a silent no-op on the bridge. The real
+     * work is a side effect: the targets on `ability` are mutated in place, and
+     * the return value only signals success. PlayerControllerHuman uses
+     * TargetSelection from forge-gui, which this module cannot see, so this
+     * reuses the bridge's own target picker instead.
+     */
+    @Override
+    public TargetChoices chooseNewTargetsFor(SpellAbility ability,
+            Predicate<GameObject> filter, boolean optional) {
+        if (ability == null) return null;
+        TargetChoices previous = ability.getTargets();
+        if (optional) {
+            List<String> names = new ArrayList<>();
+            names.add("Choose new targets");
+            names.add("Keep current targets");
+            List<Integer> sel = promptIndices("Change targets?", names, 1, 1, false, "confirm");
+            if (sel.isEmpty() || sel.get(0) != 0) return null;
+        }
+        if (!pickTargetsForSA(ability)) {
+            // Cancelled or no legal target: restore what was there rather than
+            // leaving the ability with no targets at all.
+            ability.setTargets(previous);
+            return null;
+        }
+        return ability.getTargets();
+    }
+
+    // ---- Batch 5: the rest of the sweep ---------------------------------------
+
+    /**
+     * How many times to pay an optional keyword cost (Multikicker, Replicate,
+     * Squad, Casualty, Offspring, Conspire, Harmonize).
+     *
+     * The AI paid the MAXIMUM it could afford, so every kicker spell was
+     * silently kicked to the limit of the player's mana. Callers pass
+     * max = Integer.MAX_VALUE, so the offered range needs its own cap - Forge's
+     * own human client uses 9 for exactly this reason.
+     */
+    @Override
+    public int chooseNumberForKeywordCost(SpellAbility sa, Cost cost,
+            KeywordInterface keyword, String prompt, int max) {
+        if (max <= 0) return 0;
+        String label = prompt;
+        if (label == null || label.isEmpty()) {
+            String kw = keyword == null ? "this cost" : String.valueOf(keyword.getKeyword());
+            label = "Pay " + kw + (cost == null ? "" : " (" + cost.toSimpleString() + ")") + "?";
+        }
+        if (max == 1) {
+            List<String> yn = new ArrayList<>();
+            yn.add("Pay");
+            yn.add("Decline");
+            List<Integer> sel = promptIndices(label, yn, 1, 1, false, "confirm");
+            return (!sel.isEmpty() && sel.get(0) == 0) ? 1 : 0;
+        }
+        int cap = Math.min(max, 9);          // max is often Integer.MAX_VALUE
+        List<String> names = new ArrayList<>();
+        for (int i = 0; i <= cap; i++) names.add(String.valueOf(i));
+        List<Integer> sel = promptIndices(label + " (how many times?)",
+                names, 1, 1, false, "choose");
+        return sel.isEmpty() ? 0 : Math.min(sel.get(0), cap);
+    }
+
+    /**
+     * Apply an optional static/replacement effect? The AI hardcoded true, so
+     * these were always accepted - including the four combat-damage-assignment
+     * statics ("assign damage as though it weren't blocked", "divided as you
+     * choose"), where declining is often the right play.
+     */
+    @Override
+    public boolean confirmStaticApplication(Card hostCard, PlayerActionConfirmMode mode,
+            String message, String logic) {
+        String host = hostCard != null ? hostCard.getName() : "effect";
+        List<String> yn = new ArrayList<>();
+        yn.add("Yes");
+        yn.add("No");
+        List<Integer> sel = promptIndices(
+                (message == null || message.isEmpty()) ? host + ": apply this effect?" : message,
+                yn, 1, 1, false, "confirm");
+        return !sel.isEmpty() && sel.get(0) == 0;
+    }
+
+    /** One of two named alternatives (tap/untap, play/draw, odds/evens, ...). */
+    @Override
+    public boolean chooseBinary(SpellAbility sa, String question,
+            BinaryChoiceType kindOfChoice, Boolean defaultChoice) {
+        String[] labels = binaryLabels(kindOfChoice);
+        List<String> names = new ArrayList<>();
+        names.add(labels[0]);
+        names.add(labels[1]);
+        List<Integer> sel = promptIndices(
+                (question == null || question.isEmpty()) ? "Choose" : question,
+                names, 1, 1, false, "confirm");
+        if (sel.isEmpty()) return defaultChoice != null && defaultChoice;
+        return sel.get(0) == 0;
+    }
+
+    /**
+     * The params overload. PlayerControllerAi overrides this one SEPARATELY
+     * (routing it to SpellApiToAi), so overriding only the Boolean version would
+     * leave CountersPutOrRemove and TimeTravel still answered by the AI.
+     */
+    @Override
+    public boolean chooseBinary(SpellAbility sa, String question,
+            BinaryChoiceType kindOfChoice, Map<String, Object> params) {
+        return chooseBinary(sa, question, kindOfChoice, (Boolean) null);
+    }
+
+    /** Human-readable sides for each BinaryChoiceType. */
+    private static String[] binaryLabels(BinaryChoiceType kind) {
+        if (kind == null) return new String[] {"Yes", "No"};
+        switch (kind) {
+            case HeadsOrTails:       return new String[] {"Heads", "Tails"};
+            case TapOrUntap:         return new String[] {"Tap", "Untap"};
+            case PlayOrDraw:         return new String[] {"Play", "Draw"};
+            case OddsOrEvens:        return new String[] {"Odds", "Evens"};
+            case UntapOrLeaveTapped: return new String[] {"Untap", "Leave tapped"};
+            case LeftOrRight:        return new String[] {"Left", "Right"};
+            case AddOrRemove:        return new String[] {"Add", "Remove"};
+            case IncreaseOrDecrease: return new String[] {"Increase", "Decrease"};
+            default:                 return new String[] {"Yes", "No"};
+        }
+    }
+
+    /** Which flip result to keep (Krark's Thumb and friends). AI was random. */
+    @Override
+    public boolean chooseFlipResult(SpellAbility sa, Player flipper, boolean call) {
+        List<String> names = new ArrayList<>();
+        names.add("Heads");
+        names.add("Tails");
+        List<Integer> sel = promptIndices(call ? "Call the flip" : "Keep which result?",
+                names, 1, 1, false, "confirm");
+        return sel.isEmpty() || sel.get(0) == 0;
+    }
+
+    /** Which keyword a pump effect grants. The AI picked at random. */
+    @Override
+    public String chooseKeywordForPump(List<String> options, SpellAbility sa,
+            String prompt, Card tgtCard) {
+        if (options == null || options.isEmpty()) return null;
+        if (options.size() == 1) return options.get(0);
+        String who = tgtCard != null ? tgtCard.getName() : "target";
+        List<Integer> sel = promptIndices(
+                (prompt == null || prompt.isEmpty()) ? "Grant which keyword to " + who + "?" : prompt,
+                options, 1, 1, false, "choose");
+        return options.get(sel.isEmpty() ? 0 : Math.min(sel.get(0), options.size() - 1));
+    }
+
+    /** Spellskite-style redirection: which of the spell's targets to steal. */
+    @Override
+    public Pair<SpellAbilityStackInstance, GameObject> chooseTarget(SpellAbility sa,
+            List<Pair<SpellAbilityStackInstance, GameObject>> allTargets) {
+        if (allTargets == null || allTargets.isEmpty()) return null;
+        if (allTargets.size() < 2) return allTargets.get(0);
+        List<String> names = new ArrayList<>();
+        for (Pair<SpellAbilityStackInstance, GameObject> p : allTargets) {
+            names.add(String.valueOf(p.getValue()));
+        }
+        List<Integer> sel = promptIndices("Redirect which target?", names, 1, 1, false, "choose");
+        // Never null: ChangeTargetsEffect calls .getKey() on the result.
+        return allTargets.get(sel.isEmpty() ? 0 : Math.min(sel.get(0), allTargets.size() - 1));
+    }
+
+    /** Choose colours. The AI's heuristic ignored min/max and under-filled. */
+    @Override
+    public ColorSet chooseColors(String message, SpellAbility sa, int min, int max,
+            ColorSet options) {
+        if (options == null) return ColorSet.fromMask(0);
+        List<String> names = options.stream().map(MagicColor.Color::getName)
+                .collect(Collectors.toList());
+        if (names.isEmpty()) return ColorSet.fromMask(0);
+        int hi = Math.min(Math.max(max, 1), names.size());
+        int lo = Math.min(Math.max(min, 0), hi);
+        List<Integer> sel = promptIndices(
+                (message == null || message.isEmpty()) ? "Choose colour(s)" : message,
+                names, lo, hi, lo == 0, "choose");
+        List<String> picked = new ArrayList<>();
+        for (int idx : sel) {
+            if (idx >= 0 && idx < names.size()) picked.add(names.get(idx));
+        }
+        // ChooseColorEffect NPEs on null and reads isColorless() as "declined".
+        while (picked.size() < lo && picked.size() < names.size()) {
+            for (String n : names) {
+                if (!picked.contains(n)) { picked.add(n); break; }
+            }
+        }
+        return ColorSet.fromNames(picked);
+    }
+
+    /**
+     * Ordering of competing cost-reduction statics. NOT prompted: Forge's own
+     * human client auto-answers this too. It is overridden only because
+     * returning null makes CostAdjustment loop forever - remove(null) never
+     * shrinks the list, so the game thread hangs rather than crashing.
+     */
+    @Override
+    public StaticAbility chooseSingleStaticAbility(List<StaticAbility> possibleReplacers) {
+        if (possibleReplacers == null || possibleReplacers.isEmpty()) return null;
+        return possibleReplacers.get(0);
+    }
+
+    /**
+     * Order in which cost parts are paid. NOT prompted - Forge's human client
+     * returns the list unchanged unless a full-control flag is set, and a
+     * returned list that DROPS an element silently skips paying that cost.
+     */
+    @Override
+    public List<CostPart> orderCosts(List<CostPart> costs) {
+        return costs;
+    }
+
+    /** Which cards to reveal from hand. The AI took the first N positionally. */
+    @Override
+    public CardCollectionView chooseCardsToRevealFromHand(int min, int max,
+            CardCollectionView valid) {
+        if (valid == null || valid.isEmpty()) return CardCollection.EMPTY;
+        int hi = Math.min(max, valid.size());
+        int lo = Math.min(min, hi);
+        return chooseCardsFrom("Reveal " + rangeText(lo, hi) + " card(s) from your hand",
+                valid, lo, hi);
+    }
+
+    /**
+     * "Discard N cards unless you discard a <type>." Mandatory - the player only
+     * chooses WHICH. Never return null: orderCardsByTheirOwners calls size().
+     */
+    @Override
+    public CardCollectionView chooseCardsToDiscardUnlessType(int min, CardCollectionView hand,
+            String[] unlessTypes, SpellAbility sa) {
+        if (hand == null || hand.isEmpty()) return CardCollection.EMPTY;
+        String types = unlessTypes == null ? "" : String.join(" / ", unlessTypes);
+        int hi = Math.min(Math.max(min, 1), hand.size());
+        return chooseCardsFrom("Discard " + hi + " card(s), or one "
+                + (types.isEmpty() ? "of the named type" : types), hand, hi, hi);
+    }
+
+    /**
+     * Generic "choose N cards for this effect".
+     *
+     * Combat.java, CamouflageEffect and FlipOntoBattlefieldEffect all call
+     * .get(0) / .getFirst() on the result, so an empty return is a crash there -
+     * hence the backfill when the choice is mandatory.
+     */
+    @Override
+    public CardCollectionView chooseCardsForEffect(CardCollectionView sourceList,
+            SpellAbility sa, String title, int min, int max, boolean isOptional,
+            Map<String, Object> params) {
+        if (sourceList == null || sourceList.isEmpty()) return CardCollection.EMPTY;
+        int hi = Math.min(max <= 0 ? sourceList.size() : max, sourceList.size());
+        int lo = isOptional ? 0 : Math.min(Math.max(min, 0), hi);
+        CardCollection out = chooseCardsFrom(
+                (title == null || title.isEmpty()) ? "Choose card(s)" : title,
+                sourceList, lo, hi);
+        if (out.isEmpty() && !isOptional && min >= 1) {
+            out.add(sourceList.getFirst());
+        }
+        return out;
+    }
+
+    /**
+     * One card per named category. Returning empty when the choice is MANDATORY
+     * makes DigMultipleEffect re-prompt forever, so the mandatory case is
+     * backfilled rather than allowed through empty.
+     */
+    @Override
+    public CardCollection chooseCardsForEffectMultiple(Map<String, CardCollection> validMap,
+            SpellAbility sa, String title, boolean isOptional) {
+        CardCollection chosen = new CardCollection();
+        if (validMap == null || validMap.isEmpty()) return chosen;
+        for (Map.Entry<String, CardCollection> e : validMap.entrySet()) {
+            CardCollection bucket = e.getValue();
+            if (bucket == null || bucket.isEmpty()) continue;
+            CardCollection pick = chooseCardsFrom(
+                    ((title == null || title.isEmpty()) ? "Choose" : title)
+                            + " - " + e.getKey(), bucket, 0, 1);
+            for (Card c : pick) {
+                if (!chosen.contains(c)) chosen.add(c);
+            }
+        }
+        if (chosen.isEmpty() && !isOptional) {
+            for (CardCollection bucket : validMap.values()) {
+                if (bucket != null && !bucket.isEmpty()) {
+                    chosen.add(bucket.getFirst());
+                    break;
+                }
+            }
+        }
+        return chosen;
+    }
+
+    /**
+     * Convoke / Improvise: which of your permanents tap to help pay.
+     *
+     * Distinct from the mana auto-tapper (payManaCost), which is deliberately
+     * left to Forge - this taps CREATURES, so an automatic choice spends your
+     * blockers. An empty map is a legal "convoke nothing".
+     */
+    @Override
+    public Map<Card, ManaCostShard> chooseCardsForConvokeOrImprovise(SpellAbility sa,
+            ManaCost manaCost, CardCollectionView untappedCards, boolean artifacts,
+            boolean creatures, Integer maxReduction) {
+        if (untappedCards == null || untappedCards.isEmpty()) {
+            return new HashMap<>();
+        }
+        int hi = untappedCards.size();
+        if (maxReduction != null && maxReduction > 0) hi = Math.min(hi, maxReduction);
+        CardCollection picked = chooseCardsFrom(
+                "Tap for " + (artifacts && !creatures ? "Improvise" : "Convoke")
+                        + "? (none = pay normally)", untappedCards, 0, hi);
+        if (picked.isEmpty()) return new HashMap<>();
+        // Let Forge work out which shard each chosen permanent pays; the player
+        // decides WHICH cards are spent, not the shard bookkeeping.
+        return ComputerUtilMana.getConvokeOrImproviseFromList(manaCost, picked,
+                artifacts, creatures);
+    }
+
+    // ---- Batch 6: naming a card (Meddling Mage, Nevermore, Pithing Needle) ----
+
+    /**
+     * Name any card in Magic, filtered by `cpp`.
+     *
+     * PlayerControllerAi throws UnsupportedOperationException here, so a human
+     * reaching this crashed the game outright rather than merely being decided
+     * for. The candidate set is the whole card database (~33k faces), which no
+     * plain option list can render - the client gets prompt_type "name_card"
+     * and shows a type-to-filter box instead of a scrollable list.
+     *
+     * Mirrors PlayerControllerHuman, which routes both chooseCardName overloads
+     * through chooseSingleCardFace.
+     */
+    @Override
+    public ICardFace chooseSingleCardFace(SpellAbility sa, String message,
+            Predicate<ICardFace> cpp, String name) {
+        List<ICardFace> faces = new ArrayList<>();
+        try {
+            for (ICardFace f : StaticData.instance().getCommonCards().getAllFaces()) {
+                if (f != null && (cpp == null || cpp.test(f))) faces.add(f);
+            }
+        } catch (Exception e) {
+            // No card DB reachable: better to decline than to crash the game.
+            return null;
+        }
+        if (faces.isEmpty()) return null;
+        faces.sort(Comparator.comparing(ICardFace::getName));
+        List<String> names = new ArrayList<>();
+        for (ICardFace f : faces) names.add(f.getName());
+        List<Integer> sel = promptIndices(
+                (message == null || message.isEmpty()) ? "Name a card" : message,
+                names, 1, 1, false, "name_card");
+        if (sel.isEmpty()) return null;
+        int idx = Math.min(Math.max(sel.get(0), 0), faces.size() - 1);
+        return faces.get(idx);
+    }
+
+    /** Name a card, unrestricted (Meddling Mage, Nevermore, Pithing Needle). */
+    @Override
+    public String chooseCardName(SpellAbility sa, Predicate<ICardFace> cpp, String valid,
+            String message) {
+        String host = (sa != null && sa.getHostCard() != null) ? sa.getHostCard().getName() : "";
+        ICardFace face = chooseSingleCardFace(sa, message, cpp, host);
+        return face == null ? "" : face.getName();
+    }
+
+    /** Name a card from a supplied shortlist - routes to the batch-1 override. */
+    @Override
+    public String chooseCardName(SpellAbility sa, List<ICardFace> faces, String message) {
+        ICardFace face = chooseSingleCardFace(sa, faces, message);
+        return face == null ? "" : face.getName();
+    }
+
     // ---- Additional human decision points (were silently defaulting to the AI) ----
 
     /** Optional ("may") triggered ability: ask the human whether to use it. */
@@ -1499,7 +2450,23 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         }
     }
 
-    /** Non-player defenders (planeswalkers, battles) as [{"id":n,"name":"..."}]. */
+    /**
+     * Player ids and card ids are separate spaces in Forge and both start small,
+     * so a defending player cannot be sent using its own id without risking a
+     * collision with a planeswalker's. Players are offset into a range no card
+     * id reaches instead.
+     */
+    private static final int PLAYER_DEFENDER_BASE = 1000000;
+
+    /**
+     * Every legal defender: planeswalkers and battles as themselves, and the
+     * defending PLAYERS offset by PLAYER_DEFENDER_BASE.
+     *
+     * Players used to be filtered out of this list entirely, and declareAttackers
+     * aimed every attacker at getDefendingPlayers().get(0). In a duel that is
+     * invisible - there is only one opponent. In a Commander pod it meant every
+     * attack hit the same seat with no way to see or change it.
+     */
     private static String defenderList(Combat combat) {
         StringBuilder b = new StringBuilder("[");
         boolean first = true;
@@ -1509,13 +2476,27 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             if (!first) b.append(',');
             first = false;
             b.append("{\"id\":").append(card.getId())
-             .append(",\"name\":\"").append(StateExporter.esc(card.getName())).append("\"}");
+             .append(",\"name\":\"").append(StateExporter.esc(card.getName()))
+             .append("\",\"kind\":\"card\"}");
+        }
+        FCollectionView<Player> players = combat.getDefendingPlayers();
+        for (int i = 0; i < players.size(); i++) {
+            if (!first) b.append(',');
+            first = false;
+            b.append("{\"id\":").append(PLAYER_DEFENDER_BASE + i)
+             .append(",\"name\":\"").append(StateExporter.esc(players.get(i).getName()))
+             .append("\",\"kind\":\"player\"}");
         }
         return b.append(']').toString();
     }
 
-    /** The defender with this card id (a planeswalker / battle), or null. */
+    /** The defender with this id: a planeswalker/battle, or an offset player. */
     private static GameEntity findDefender(Combat combat, int id) {
+        if (id >= PLAYER_DEFENDER_BASE) {
+            FCollectionView<Player> players = combat.getDefendingPlayers();
+            int idx = id - PLAYER_DEFENDER_BASE;
+            return (idx >= 0 && idx < players.size()) ? players.get(idx) : null;
+        }
         for (GameEntity d : combat.getDefenders()) {
             if (d instanceof Card && ((Card) d).getId() == id) return d;
         }

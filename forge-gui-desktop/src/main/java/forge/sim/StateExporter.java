@@ -23,8 +23,11 @@ import forge.game.card.Card;
 import forge.game.card.CardView;
 import forge.game.card.CardView.CardStateView;
 import forge.game.card.CounterType;
+import forge.game.combat.CombatView;
+import forge.game.keyword.KeywordView;
 import forge.game.player.Player;
 import forge.game.player.PlayerView;
+import forge.game.cost.Cost;
 import forge.game.spellability.SpellAbility;
 import forge.game.spellability.StackItemView;
 import forge.game.zone.ZoneType;
@@ -84,6 +87,44 @@ public final class StateExporter {
     private static int libraryTopOwner = -1;
 
     /**
+     * Per-card list of the ways this player could use that card right now,
+     * pre-rendered as a JSON array and keyed by card id.
+     *
+     * Forge is the only thing that knows how many ways a card can be played -- a
+     * planeswalker's three loyalty abilities, an Adventure creature's two
+     * halves, a prepared spell, a creature that can also be cycled. The client
+     * used to get two booleans (has_mana_ability / has_activated_abilities), so
+     * it offered one generic "Activate Ability" and the bridge took the FIRST
+     * match: only loyalty ability #1 of any walker was ever reachable, and an
+     * Adventure always cast its creature half.
+     *
+     * The list index is the client's handle. It comes back as {"ability":N} and
+     * PlayerControllerBridge re-derives the same getAllPossibleAbilities() list
+     * to resolve it -- safe because the game is parked waiting for this reply,
+     * so nothing between the push and the answer can reorder it. Ids are NOT
+     * usable here: getAllPossibleAbilities copies SpellAbilities for alternative
+     * and additional costs, so a fresh id is minted on every call.
+     */
+    private static Map<Integer, String> abilityLists = Collections.emptyMap();
+
+    /** Zones whose cards get an ability list. Library is handled with libraryTop. */
+    private static final ZoneType[] ABILITY_ZONES = {
+        ZoneType.Hand, ZoneType.Battlefield, ZoneType.Graveyard,
+        ZoneType.Exile, ZoneType.Command,
+    };
+
+    /**
+     * Blocker card id -> the name(s) of what it blocks, from the live combat.
+     *
+     * The translator used to hardcode is_blocking/blocking, and the relay could
+     * only echo the human's own *pending* picks while the declare-blockers
+     * window was open. So the AI's blocks never rendered at all, and the
+     * player's own vanished from the board the moment the window closed --
+     * combat damage resolved against a board that showed no blocks.
+     */
+    private static Map<Integer, String> blockingOf = Collections.emptyMap();
+
+    /**
      * Game-log entry types worth showing in the client's Feed: Forge's MEDIUM
      * verbosity (turns, lands, spells, combat, damage, life, mulligans, deaths)
      * minus PHASE/MANA, which would flood the panel with lines the board already
@@ -113,6 +154,7 @@ public final class StateExporter {
         Set<Integer> activated = new HashSet<>();
         Map<Integer, String> cycling = new HashMap<>();
         Set<Integer> elsewhere = new HashSet<>();
+        Map<Integer, String> abilities = new HashMap<>();
         CardView top = null;
         if (human != null) {
             for (Card c : human.getCardsIn(ZoneType.Battlefield)) {
@@ -154,6 +196,12 @@ public final class StateExporter {
                 }
                 if (c.mayPlayerLook(human)) {
                     top = c.getView();
+                    putAbilities(abilities, c, human);
+                }
+            }
+            for (ZoneType zt : ABILITY_ZONES) {
+                for (Card c : human.getCardsIn(zt)) {
+                    putAbilities(abilities, c, human);
                 }
             }
         }
@@ -161,6 +209,8 @@ public final class StateExporter {
         activatedCards = activated;
         cyclingCosts = cycling;
         playableElsewhere = elsewhere;
+        abilityLists = abilities;
+        blockingOf = blockAssignments(g);
         libraryTop = top;
         libraryTopOwner = human != null && human.getView() != null ? human.getView().getId() : -1;
 
@@ -174,7 +224,7 @@ public final class StateExporter {
         boolean firstP = true;
         for (PlayerView p : g.getPlayers()) {
             if (!firstP) sb.append(','); firstP = false;
-            player(sb, p);
+            player(sb, p, g);
         }
         sb.append("],");
 
@@ -228,7 +278,7 @@ public final class StateExporter {
         sb.append(']');
     }
 
-    private static void player(StringBuilder sb, PlayerView p) {
+    private static void player(StringBuilder sb, PlayerView p, GameView g) {
         sb.append('{');
         kvs(sb, "name", p.getName()); sb.append(',');
         kv(sb, "life", p.getLife()); sb.append(',');
@@ -246,6 +296,22 @@ public final class StateExporter {
         zone(sb, "battlefield", p.getCards(ZoneType.Battlefield)); sb.append(',');
         zone(sb, "graveyard", p.getCards(ZoneType.Graveyard)); sb.append(',');
         zone(sb, "exile", p.getCards(ZoneType.Exile)); sb.append(',');
+        // Commander. Empty/zero outside a Commander game, so the client can read
+        // these unconditionally. The command zone is already in PLAY_FROM_ZONES
+        // and ABILITY_ZONES, so a commander sitting there is already marked
+        // playable and already carries its ability list - it was simply in no
+        // exported zone for the client to draw.
+        zone(sb, "command_zone", p.getCards(ZoneType.Command)); sb.append(',');
+        commanderDamage(sb, p, g); sb.append(',');
+        // {2} per previous cast of that commander (CR 903.8). Reported as the
+        // tax itself, not the cast count, so the client can show it verbatim.
+        int tax = 0;
+        try {
+            for (CardView c : p.getCommanders()) {
+                tax = Math.max(tax, 2 * p.getCommanderCast(c));
+            }
+        } catch (Exception ignore) { }
+        kv(sb, "commander_tax", tax); sb.append(',');
         // null for everyone but the human, and for the human too unless an
         // effect currently lets them look at their own top card.
         sb.append("\"library_top\":");
@@ -254,6 +320,32 @@ public final class StateExporter {
         } else {
             sb.append("null");
         }
+        sb.append('}');
+    }
+
+    /**
+     * Damage this player has taken from each commander at the table, keyed by
+     * commander name (CR 903.10a - 21 from a single commander is lethal, and it
+     * is tracked per commander, not summed).
+     */
+    private static void commanderDamage(StringBuilder sb, PlayerView p, GameView g) {
+        sb.append("\"commander_damage\":{");
+        boolean first = true;
+        try {
+            for (PlayerView other : g.getPlayers()) {
+                for (CardView c : other.getCommanders()) {
+                    int dmg = p.getCommanderDamage(c);
+                    if (dmg <= 0) {
+                        continue;
+                    }
+                    if (!first) sb.append(',');
+                    first = false;
+                    // The key is a commander name, so it needs escaping; the
+                    // value is a count, so it must not be quoted.
+                    sb.append('"').append(esc(c.getName())).append("\":").append(dmg);
+                }
+            }
+        } catch (Exception ignore) { }
         sb.append('}');
     }
 
@@ -313,9 +405,152 @@ public final class StateExporter {
             kvs(sb, "token_art", tokenArt(s)); sb.append(',');
         }
         kvAttachments(sb, c); sb.append(',');
+        kvKeywords(sb, s); sb.append(',');
+        String blk = blockingOf.get(c.getId());
+        kvb(sb, "is_blocking", blk != null); sb.append(',');
+        kvs(sb, "blocking", nz(blk)); sb.append(',');
+        sb.append("\"abilities\":").append(nzList(abilityLists.get(c.getId()))).append(',');
         kvCounters(sb, "counters", c);
         sb.append('}');
     }
+
+    /**
+     * Every ability of {@code c} that {@code human} could use right now, as
+     * [{"i":0,"kind":..,"cost":..,"label":..}, ...].
+     *
+     * getAllPossibleAbilities(player, true) is deliberately the same call the
+     * bridge makes when the reply comes back -- the index is only meaningful
+     * because both sides build the list the same way.
+     */
+    private static void putAbilities(Map<Integer, String> out, Card c, Player human) {
+        List<SpellAbility> sas = c.getAllPossibleAbilities(human, true);
+        if (sas == null || sas.isEmpty()) {
+            return;
+        }
+        StringBuilder sb = new StringBuilder(64 * sas.size());
+        sb.append('[');
+        for (int i = 0; i < sas.size(); i++) {
+            SpellAbility sa = sas.get(i);
+            if (i > 0) sb.append(',');
+            sb.append('{');
+            kv(sb, "i", i); sb.append(',');
+            kvs(sb, "kind", abilityKind(sa)); sb.append(',');
+            kvs(sb, "cost", abilityCost(sa, c)); sb.append(',');
+            kvs(sb, "label", abilityLabel(sa, c));
+            sb.append('}');
+        }
+        sb.append(']');
+        out.put(c.getId(), sb.toString());
+    }
+
+    /**
+     * How the client should send this ability back: "mana" and "cycle" keep the
+     * dedicated verbs they already have (Tap for Mana taps the card visually,
+     * Cycle is its own menu item), everything else is a play or an activation
+     * carrying {"ability":i}.
+     */
+    private static String abilityKind(SpellAbility sa) {
+        if (sa.isManaAbility()) return "mana";
+        if (sa.isCycling()) return "cycle";
+        if (sa.isLandAbility()) return "land";
+        if (sa.isSpell()) return "spell";
+        if (sa.isActivatedAbility()) return "activated";
+        return "other";
+    }
+
+    /**
+     * The cost as menu text. Two Forge-isms have to go first: toSimpleString()
+     * leaves the literal "CARDNAME" in costs that spend the source (a
+     * typecycling discard, say), and a land play costs "no cost", which reads
+     * as a cost rather than as the absence of one.
+     */
+    private static String abilityCost(SpellAbility sa, Card c) {
+        Cost cost = sa.getPayCosts();
+        String s = cost == null ? "" : cost.toSimpleString();
+        if (s == null || s.isEmpty() || "no cost".equalsIgnoreCase(s.trim())) {
+            return "";
+        }
+        return subCardName(s.trim(), c);
+    }
+
+    /** Forge's own placeholder for "this card", as it appears in cost text. */
+    private static String subCardName(String s, Card c) {
+        if (c == null || s.indexOf("CARDNAME") < 0) {
+            return s;
+        }
+        return s.replace("CARDNAME", c.getName());
+    }
+
+    /** One line of menu text: what the ability does, without its cost. */
+    private static String abilityLabel(SpellAbility sa, Card c) {
+        String desc = sa.toUnsuppressedString();
+        desc = desc == null ? "" : desc.trim();
+        // getAdditionalCostSpell tags the branch with its cost; the cost is a
+        // field of its own here, so drop the duplicate.
+        int extra = desc.lastIndexOf("(Additional cost:");
+        if (extra >= 0) {
+            desc = desc.substring(0, extra).trim();
+        }
+        desc = desc.replaceAll("\\s+", " ");
+        desc = subCardName(desc, c);
+        if (desc.isEmpty()) {
+            desc = c != null ? c.getName() : "Ability";
+        }
+        return desc.length() > 90 ? desc.substring(0, 87) + "..." : desc;
+    }
+
+    /**
+     * The card's effective keywords, lowercased, e.g. ["flying","first strike"].
+     *
+     * The client draws its badge row (flying, deathtouch, first strike, menace,
+     * ward, ...) straight off this list, and the translator used to hardcode it
+     * empty -- so on Forge no creature ever showed a badge and blocks were
+     * declared blind. Parameterised keywords arrive as "Ward:2" /
+     * "Protection:Card.Blue:from blue"; the client matches the bare keyword, so
+     * the tail is cut.
+     */
+    private static void kvKeywords(StringBuilder sb, CardStateView s) {
+        sb.append("\"keywords\":[");
+        if (s != null && s.getKeywords() != null) {
+            Set<String> seen = new HashSet<>();
+            boolean first = true;
+            for (KeywordView k : s.getKeywords()) {
+                if (k == null) continue;
+                String raw = k.original();
+                if (raw == null || raw.isEmpty()) continue;
+                int colon = raw.indexOf(':');
+                String name = (colon > 0 ? raw.substring(0, colon) : raw)
+                        .trim().toLowerCase(Locale.ENGLISH);
+                if (name.isEmpty() || !seen.add(name)) continue;
+                if (!first) sb.append(',');
+                first = false;
+                sb.append('"').append(esc(name)).append('"');
+            }
+        }
+        sb.append(']');
+    }
+
+    /** Blocker id -> comma-joined names of the attackers it is blocking. */
+    private static Map<Integer, String> blockAssignments(GameView g) {
+        CombatView combat = g == null ? null : g.getCombat();
+        if (combat == null || combat.getAttackers() == null) {
+            return Collections.emptyMap();
+        }
+        Map<Integer, String> out = new HashMap<>();
+        for (CardView atk : combat.getAttackers()) {
+            if (atk == null) continue;
+            Iterable<CardView> blockers = combat.getBlockers(atk);
+            if (blockers == null) continue;
+            for (CardView b : blockers) {
+                if (b == null) continue;
+                String prior = out.get(b.getId());
+                out.put(b.getId(), prior == null ? atk.getName() : prior + ", " + atk.getName());
+            }
+        }
+        return out;
+    }
+
+    private static String nzList(String json) { return json == null ? "[]" : json; }
 
     /**
      * Who this card is attached to, and what is attached to it.

@@ -70,15 +70,25 @@ public final class ForgeServer {
         } else if (!deckDir.endsWith("/") && !deckDir.endsWith("\\")) {
             deckDir = deckDir + "/";
         }
+        // Commander mode is signalled by _commander.txt, written by the Python
+        // bridge next to the decks. Its contents are the extra AI seat count
+        // (1-3); the file's absence means the ordinary 2-player Constructed game.
+        File commanderFlag = new File(deckDir + "_commander.txt");
+        boolean commander = commanderFlag.exists();
+        int aiSeats = 1;
+        if (commander) {
+            try {
+                String raw = new String(java.nio.file.Files.readAllBytes(
+                        commanderFlag.toPath()), "UTF-8").trim();
+                aiSeats = Math.max(1, Math.min(3, Integer.parseInt(raw)));
+            } catch (Exception e) {
+                aiSeats = 3;   // a malformed flag still means "a pod", not a duel
+            }
+        }
+
         File bridgeDeck = new File(deckDir + "_bridge.dck");
-        File oppDeck = new File(deckDir + "_bridge_opp.dck");
         Deck d1 = DeckSerializer.fromFile(bridgeDeck.exists() ? bridgeDeck
                 : new File(ForgeConstants.DECK_CONSTRUCTED_DIR + "sliver_shandalar.dck"));
-        Deck d2 = DeckSerializer.fromFile(oppDeck.exists() ? oppDeck
-                : new File(ForgeConstants.DECK_CONSTRUCTED_DIR + "frogboss.dck"));
-
-        LobbyPlayer lp1 = GamePlayerUtil.createAiPlayer("you", 0, "");
-        LobbyPlayer lp2 = GamePlayerUtil.createAiPlayer("Computer", 1, "");
 
         // Scenario mode: a board is supplied via _scenario.txt, so skip drawing
         // opening hands / mulligan (as puzzle mode does) — otherwise the drawn
@@ -86,14 +96,47 @@ public final class ForgeServer {
         boolean scenario = new File(deckDir + "_scenario.txt").exists();
 
         List<RegisteredPlayer> pp = new ArrayList<>();
-        RegisteredPlayer r1 = new RegisteredPlayer(d1); r1.setPlayer(lp1); pp.add(r1);
-        RegisteredPlayer r2 = new RegisteredPlayer(d2); r2.setPlayer(lp2); pp.add(r2);
+        RegisteredPlayer r1 = commander
+                ? RegisteredPlayer.forCommander(d1)
+                : new RegisteredPlayer(d1);
+        // Kept: PlayerControllerBridge needs the human seat's LobbyPlayer below.
+        LobbyPlayer lp1 = GamePlayerUtil.createAiPlayer("you", 0, "");
+        r1.setPlayer(lp1);
+        pp.add(r1);
         if (scenario) {
             r1.setStartingHand(0);
-            r2.setStartingHand(0);
         }
 
-        GameRules rules = new GameRules(GameType.Constructed);
+        // Opponent seats. The duel reads _bridge_opp.dck as it always has; a pod
+        // reads _bridge_opp.dck, _bridge_opp2.dck, _bridge_opp3.dck in turn.
+        for (int i = 0; i < aiSeats; i++) {
+            File oppFile = new File(deckDir + (i == 0
+                    ? "_bridge_opp.dck" : "_bridge_opp" + (i + 1) + ".dck"));
+            Deck dOpp = DeckSerializer.fromFile(oppFile.exists() ? oppFile
+                    : new File(ForgeConstants.DECK_CONSTRUCTED_DIR + "frogboss.dck"));
+            RegisteredPlayer rOpp = commander
+                    ? RegisteredPlayer.forCommander(dOpp)
+                    : new RegisteredPlayer(dOpp);
+            rOpp.setPlayer(GamePlayerUtil.createAiPlayer(
+                    aiSeats == 1 ? "Computer" : "AI " + (i + 1), i + 1, ""));
+            pp.add(rOpp);
+            if (scenario) {
+                rOpp.setStartingHand(0);
+            }
+        }
+
+        GameRules rules = new GameRules(commander
+                ? GameType.Commander : GameType.Constructed);
+        if (commander) {
+            // new GameRules(GameType.Commander) sets only `gameType`; the set
+            // behind hasAppliedVariant() stays empty. Several Commander rules
+            // are gated on the VARIANT, not the game type - most visibly
+            // GameAction.stateBasedAction_Commander (CR 903.9a), which is what
+            // asks "put your commander into the command zone instead?". Without
+            // this the commander went to the graveyard and the player was never
+            // offered the choice at all.
+            rules.addAppliedVariant(GameType.Commander);
+        }
         // EconomyDraft house rule: the first mulligan is free (London mulligan
         // with no card put on the bottom). Applies to both seats, so the AI gets
         // it too. Second and later mulligans tuck as normal (1, 2, 3, ...).
