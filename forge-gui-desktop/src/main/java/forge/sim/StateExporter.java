@@ -282,6 +282,13 @@ public final class StateExporter {
         sb.append('{');
         kvs(sb, "name", p.getName()); sb.append(',');
         kv(sb, "life", p.getLife()); sb.append(',');
+        // Eliminated. The wire translator and the client have read `has_lost`
+        // all along -- the pod bar greys the seat out, focus skips it, and the
+        // attack chooser refuses to offer it as a target -- but nothing ever
+        // emitted it, so it was permanently false. A pod that lost two seats
+        // mid-game still showed four live opponents with their last life total,
+        // and offered dead players to attack.
+        sb.append("\"has_lost\":").append(p.getHasLost()); sb.append(',');
         kv(sb, "library_count", count(p.getCards(ZoneType.Library))); sb.append(',');
         // mana pool by color symbol
         sb.append("\"mana_pool\":{");
