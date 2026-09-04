@@ -745,6 +745,11 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     /** Prompt the client for one targeted ability's targets; assign the picks. */
     private boolean pickTargetsForSA(SpellAbility sa) {
         sa.resetTargets();
+        // Stack targets are a separate world — see pickStackTargetsForSA.
+        List<ZoneType> zones = sa.getTargetRestrictions().getZone();
+        if (zones != null && zones.size() == 1 && zones.get(0) == ZoneType.Stack) {
+            return pickStackTargetsForSA(sa);
+        }
         List<GameEntity> candidates = sa.getTargetRestrictions().getAllCandidates(sa);
         int min = sa.getMinTargets();
         int max = sa.getMaxTargets();
@@ -767,6 +772,74 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             }
         }
         return sa.isTargetNumberValid();
+    }
+
+    /**
+     * Targets that live on the STACK: counterspells, Fork-style copy effects,
+     * "target activated ability". Forge treats these as a wholly separate
+     * targeting path and the generic one above cannot reach them.
+     *
+     * {@code TargetRestrictions.getAllCandidates} only ever yields Players and
+     * Cards, and its sibling {@code hasCandidates} says so outright — "Stack
+     * Zone targets are considered later". A spell on the stack is targeted as
+     * the SpellAbility, not as its card: {@code CounterEffect} reads its victims
+     * back through {@code TargetChoices.getTargetSpells()}, which filters for
+     * SpellAbility instances. So the generic path returned an empty candidate
+     * list, {@link #pickTargetsForSA} saw {@code min == 1} and returned false,
+     * and {@code PlaySpellAbility} silently unwound the cast — no prompt, no
+     * feed line, the card just stayed in hand. Every Counter-API card in the
+     * pool was uncastable; Dispelling Exhale is the report.
+     *
+     * PlayerControllerHuman gets this for free by delegating to TargetSelection,
+     * whose {@code chooseCardFromStack} walks {@code game.getStack()} and filters
+     * on {@code canTargetSpellAbility}. This mirrors that, minus the interactive
+     * "[FINISH TARGETING]" loop — promptIndices already collects a whole
+     * multi-select answer in one round trip.
+     */
+    private boolean pickStackTargetsForSA(SpellAbility sa) {
+        Game game = getPlayer().getGame();
+        List<SpellAbility> candidates = new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        for (SpellAbilityStackInstance si : game.getStack()) {
+            SpellAbility onStack = si.getSpellAbility();
+            // canTargetSpellAbility unwraps WrappedAbility and enforces
+            // TargetType$ / self-target rules (115.5). Add the raw ability
+            // though, exactly as TargetSelection does.
+            if (sa.canTargetSpellAbility(onStack)) {
+                candidates.add(onStack);
+                names.add(describeStackTarget(onStack));
+            }
+        }
+        int min = sa.getMinTargets();
+        int max = sa.getMaxTargets();
+        if (max <= 0) max = candidates.size();
+        if (candidates.isEmpty()) {
+            return min == 0; // nothing counterable: only OK if targeting is optional
+        }
+        int hi = Math.min(max, candidates.size());
+        String host = sa.getHostCard() != null ? sa.getHostCard().getName() : "ability";
+        List<Integer> sel = promptIndices(
+            "Choose target" + (hi > 1 ? "s" : "") + " for " + host,
+            names, min, hi, min == 0, "target_select");
+        for (int idx : sel) {
+            if (idx >= 0 && idx < candidates.size()) {
+                sa.getTargets().add(candidates.get(idx));
+            }
+        }
+        return sa.isTargetNumberValid();
+    }
+
+    /**
+     * Label for a spell/ability on the stack. The controller matters more here
+     * than anywhere else — "counter whose spell?" is the whole decision — so it
+     * comes from getActivatingPlayer rather than the host card's controller,
+     * which can differ for a stolen or copied spell.
+     */
+    private static String describeStackTarget(SpellAbility onStack) {
+        Card host = onStack.getHostCard();
+        Player ctrl = onStack.getActivatingPlayer();
+        String name = host != null ? host.getName() : String.valueOf(onStack);
+        return name + (ctrl != null ? " [" + ctrl.getName() + "]" : "");
     }
 
     /** Human-readable label for a target candidate (creature/permanent or player). */
