@@ -86,6 +86,15 @@ public final class StateExporter {
     private static CardView libraryTop = null;
     private static int libraryTopOwner = -1;
 
+    /** PlayerView id -> that player's Start Your Engines speed (0 = not started).
+     *
+     * PlayerView does not carry speed, so it is read off the real Player objects
+     * once per export and looked up while serialising each seat. Without it the
+     * mechanic is invisible: Forge tracks the 1-4 ratchet and fires an event for
+     * a SOUND, but nothing reaches the game log, so a player had no way to see
+     * their own speed or know they had hit max. */
+    private static Map<Integer, Integer> speedById = Collections.emptyMap();
+
     /**
      * Per-card list of the ways this player could use that card right now,
      * pre-rendered as a JSON array and keyed by card id.
@@ -213,6 +222,15 @@ public final class StateExporter {
         blockingOf = blockAssignments(g);
         libraryTop = top;
         libraryTopOwner = human != null && human.getView() != null ? human.getView().getId() : -1;
+        Map<Integer, Integer> speeds = new HashMap<>();
+        if (human != null && human.getGame() != null) {
+            for (Player pl : human.getGame().getPlayers()) {
+                if (pl != null && pl.getView() != null) {
+                    speeds.put(pl.getView().getId(), pl.getSpeed());
+                }
+            }
+        }
+        speedById = speeds;
 
         StringBuilder sb = new StringBuilder(4096);
         sb.append('{');
@@ -289,6 +307,10 @@ public final class StateExporter {
         // mid-game still showed four live opponents with their last life total,
         // and offered dead players to attack.
         sb.append("\"has_lost\":").append(p.getHasLost()); sb.append(',');
+        // Start Your Engines: 0 = engine never started, 1-4 once it has, 4 = max
+        // speed. Exported for every seat so the client can show it and the
+        // bridge can announce a change.
+        kv(sb, "speed", speedById.getOrDefault(p.getId(), 0)); sb.append(',');
         kv(sb, "library_count", count(p.getCards(ZoneType.Library))); sb.append(',');
         // mana pool by color symbol
         sb.append("\"mana_pool\":{");
