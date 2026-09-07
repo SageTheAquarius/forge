@@ -32,6 +32,9 @@ import forge.game.card.CardState;
 import forge.game.card.CounterType;
 import forge.game.ability.effects.RollDiceEffect;
 import forge.game.GameObject;
+import forge.game.GameLogEntryType;
+import forge.game.event.GameEventAddLog;
+import forge.util.MessageUtil;
 import forge.game.spellability.TargetChoices;
 import forge.ai.ComputerUtilMana;
 import forge.card.mana.ManaCost;
@@ -2749,6 +2752,64 @@ public class PlayerControllerBridge extends PlayerControllerAi {
      * Combat: blockers. Reply {"blocks":"none"} = no blocks;
      * {"blocks":[{"blocker":id,"attacker":id}, ...]} assigns blockers.
      */
+    /**
+     * Put "AI 1 picked red" in the game log.
+     *
+     * PlayerControllerAi.notifyOfValue is an EMPTY method -- the AI is told
+     * about every choice another player makes and does nothing with it -- and
+     * this controller inherits from it, so every notified value was silently
+     * dropped for our players. Not just chosen colours: chosen numbers, types,
+     * players, named cards, clash results, the lot.
+     *
+     * Reported from a live pod: an opponent's Realm-Cloaked Giant was missing
+     * from a red spell's target list. It was wearing Pentarch Ward, whose AI
+     * logic picks the most prominent colour in YOUR deck -- red -- so the Giant
+     * had protection from red and was correctly untargetable. The Feed said
+     * "As Pentarch Ward enters, choose a color." and then nothing at all, so
+     * there was no way to learn that from inside the game.
+     *
+     * PlayerControllerHuman formats the same message and shows it in a modal;
+     * a modal per notification is wrong for us (they arrive constantly and
+     * nobody wants to click through them), so this goes to the game log, which
+     * flush_log already forwards to every seat's Feed.
+     *
+     * The dedupe guard: GameAction.notifyOfValue calls this once per player
+     * except the chooser, so with two humans in a pod both bridge controllers
+     * fire and the line would appear twice in a log that is shared by the whole
+     * table. Only the first controller to see a given (timestamp, message) logs
+     * it. The cost is that a genuinely repeated identical message within one
+     * timestamp is shown once -- much the better failure of the two.
+     */
+    private static String lastNotified = null;
+
+    @Override
+    public void notifyOfValue(SpellAbility saSource, GameObject relatedTarget, String value) {
+        super.notifyOfValue(saSource, relatedTarget, value);
+        try {
+            Player me = getPlayer();
+            if (me == null || me.getGame() == null) {
+                return;
+            }
+            String message = MessageUtil.formatNotificationMessage(
+                    saSource, me, relatedTarget, value);
+            if (message == null || message.trim().isEmpty()) {
+                return;
+            }
+            String key = me.getGame().getTimestamp() + "|" + message;
+            synchronized (PlayerControllerBridge.class) {
+                if (key.equals(lastNotified)) {
+                    return;
+                }
+                lastNotified = key;
+            }
+            me.getGame().fireEvent(
+                    new GameEventAddLog(GameLogEntryType.INFORMATION, message));
+        } catch (Exception e) {
+            // A log line must never be the thing that breaks a game.
+            System.out.println("[forge-bridge] notifyOfValue failed: " + e);
+        }
+    }
+
     @Override
     public void declareBlockers(Player defender, Combat combat) {
         String state = StateExporter.toJson(defender.getGame().getView(), defender);

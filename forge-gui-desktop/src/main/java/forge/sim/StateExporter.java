@@ -537,6 +537,23 @@ public final class StateExporter {
      * declared blind. Parameterised keywords arrive as "Ward:2" /
      * "Protection:Card.Blue:from blue"; the client matches the bare keyword, so
      * the tail is cut.
+     *
+     * The QUALIFIED form now goes out alongside the bare one, taken from
+     * KeywordView.title(): "protection from red", "ward {2}".
+     *
+     * For protection the parameter is the whole point, and cutting it lost the
+     * only part worth reading. Reported from a live pod: a Realm-Cloaked Giant
+     * wearing Pentarch Ward was missing from a red spell's target list, and the
+     * card showed nothing to explain why -- an untargetable creature looked
+     * exactly like a targetable one, so correct rules read as an engine bug.
+     * title() also resolves a CHOSEN colour, which the raw script form cannot:
+     * Pentarch Ward's keyword is literally "Protection:Card.ChosenColor:
+     * chosenColor", a placeholder rather than a word.
+     *
+     * Additive on purpose. The bare name is still emitted first, so every
+     * existing bare-keyword matcher on the client keeps working untouched. It
+     * also fixes a quiet loss: two different protections used to dedupe down to
+     * a single "protection".
      */
     private static void kvKeywords(StringBuilder sb, CardStateView s) {
         sb.append("\"keywords\":[");
@@ -550,10 +567,33 @@ public final class StateExporter {
                 int colon = raw.indexOf(':');
                 String name = (colon > 0 ? raw.substring(0, colon) : raw)
                         .trim().toLowerCase(Locale.ENGLISH);
-                if (name.isEmpty() || !seen.add(name)) continue;
+                if (!name.isEmpty() && seen.add(name)) {
+                    if (!first) sb.append(',');
+                    first = false;
+                    sb.append('"').append(esc(name)).append('"');
+                }
+                // Only when the bare name was actually TRUNCATED, i.e. the raw
+                // form had a colon. With no colon the raw string is already the
+                // full human text and title() double-prefixes it: innate
+                // protection is scripted "Protection from black", and
+                // Protection.getTitle() returns "Protection from " +
+                // getTypeDescription(), where the description is itself "from
+                // black" -- so the wire carried "protection from from black".
+                if (colon <= 0) {
+                    continue;
+                }
+                String title;
+                try {
+                    title = k.title();
+                } catch (Exception e) {
+                    continue;   // a label must never break a state export
+                }
+                if (title == null) continue;
+                title = title.trim().toLowerCase(Locale.ENGLISH);
+                if (title.isEmpty() || !seen.add(title)) continue;
                 if (!first) sb.append(',');
                 first = false;
-                sb.append('"').append(esc(name)).append('"');
+                sb.append('"').append(esc(title)).append('"');
             }
         }
         sb.append(']');
