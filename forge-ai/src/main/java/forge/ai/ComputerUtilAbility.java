@@ -140,9 +140,20 @@ public class ComputerUtilAbility {
      * reproduced in 45 turns of seeded local pods, so this reports it from the
      * real game rather than being guessed at.
      */
+    /**
+     * Report threshold, in ms. 150 in production so the log stays quiet.
+     *
+     * Configurable because the default hides exactly the measurement a fix
+     * needs. A 47-permanent board -- the width of the live game that was slow
+     * -- built in under 150ms on a dev box and logged NOTHING, so there was no
+     * way to tell whether a lever helped, or even what the build cost was.
+     * Matches forge.slowstatic.ms, which exists for the same reason.
+     */
+    private static final long SLOW_BUILD_MS = Long.getLong("forge.sabuild.ms", 150L);
+
     private static void reportSlowBuild(CardCollectionView all, Player activator, long startNanos) {
         long ms = (System.nanoTime() - startNanos) / 1000000L;
-        if (ms <= 150) {
+        if (ms <= SLOW_BUILD_MS) {
             return;
         }
         int hand = 0, graveyard = 0, exile = 0, battlefield = 0, command = 0, other = 0;
