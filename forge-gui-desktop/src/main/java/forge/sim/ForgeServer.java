@@ -5,10 +5,12 @@ import forge.LobbyPlayer;
 import forge.deck.Deck;
 import forge.deck.io.DeckSerializer;
 import forge.game.Game;
+import forge.game.GameEndReason;
 import forge.game.GameRules;
 import forge.game.GameState;
 import forge.game.GameType;
 import forge.game.Match;
+import forge.game.event.GameEvent;
 import forge.game.player.Player;
 import forge.game.player.RegisteredPlayer;
 import forge.game.spellability.Spell;
@@ -17,6 +19,8 @@ import forge.gui.GuiBase;
 import forge.localinstance.properties.ForgeConstants;
 import forge.model.FModel;
 import forge.player.GamePlayerUtil;
+
+import com.google.common.eventbus.Subscribe;
 
 import java.io.File;
 import java.net.InetAddress;
@@ -283,6 +287,25 @@ public final class ForgeServer {
         }
         Player p0 = g.getPlayers().get(0);
 
+        // A human seat that has lost is never asked for priority again, so the
+        // bridge has no control point left to push from -- but in a POD the
+        // surviving AI seats keep playing each other out for many more turns.
+        // Measured in prod 2026-09-08: the player died to combat damage on
+        // turn 49, the three AI seats then played through turn 59, and for 59
+        // seconds the client received nothing at all. It sat frozen on the
+        // last combat board, then took the entire backlog in one flush when
+        // the pod finally resolved. The engine was not stuck -- 69.2s engine
+        // vs 0.1s bridge on that turn -- it was simply finishing a game the
+        // player was no longer in.
+        //
+        // GameEndReason.AllHumansLost is Forge's own answer to this, the same
+        // reason PlayerControllerBridge.endIfAbandoned() uses when the socket
+        // dies: "used to end multiplayer games where all humans have lost or
+        // conceded while AIs cannot end match by themselves".
+        if (!"off".equals(System.getProperty("bridge.deathwatch"))) {
+            g.subscribeToEvents(new HumanDeathWatch(g, humanSeats));
+        }
+
         // Test scaffold: if <deckDir>/_scenario.txt exists, apply it as an exact
         // board state at the start of the first turn (puzzle-style game state).
         // Lets end-to-end tests engineer combat/replacement/trigger situations
@@ -296,6 +319,48 @@ public final class ForgeServer {
         // them yet. One final push so the player sees how the game ended.
         Channel.request("{\"kind\":\"game_over\",\"state\":"
                 + StateExporter.toJson(g.getView(), p0) + "}");
+    }
+
+    /**
+     * Ends the match the moment every human seat has lost, so the client is
+     * told it lost instead of waiting out an AI-only pod. See the subscribe
+     * call in startMatch for the prod trace that motivated this.
+     *
+     * Subscribes on the GameEvent base class: Guava's EventBus dispatches to
+     * handlers of every supertype of the posted event, so this sees all of
+     * them and reacts at whichever one fires first after the lethal
+     * state-based action -- no guessing which event a given loss produces.
+     */
+    private static final class HumanDeathWatch {
+        private final Game game;
+        private final int humanSeats;
+        private boolean fired;
+
+        HumanDeathWatch(Game game, int humanSeats) {
+            this.game = game;
+            this.humanSeats = humanSeats;
+        }
+
+        @Subscribe
+        @SuppressWarnings("unused")
+        public void onGameEvent(GameEvent ev) {
+            // humanSeats == 0 is an AI-only sim (the benchmark harness). The
+            // loop below would vacuously "find every human lost" and kill the
+            // game on its first event, so bail before it runs.
+            if (fired || humanSeats <= 0 || game.isGameOver()) {
+                return;
+            }
+            List<Player> players = game.getPlayers();
+            for (int i = 0; i < humanSeats && i < players.size(); i++) {
+                if (!players.get(i).hasLost()) {
+                    return;
+                }
+            }
+            // Latch before setGameOver: that fires GameEventGameFinished,
+            // which re-enters this handler on the same thread.
+            fired = true;
+            game.setGameOver(GameEndReason.AllHumansLost);
+        }
     }
 
     /** Build a startGameHook that applies deckDir/_scenario.txt, or null if absent. */
