@@ -232,13 +232,30 @@ public final class StateExporter {
      * verbosity (turns, lands, spells, combat, damage, life, mulligans, deaths)
      * minus PHASE/MANA, which would flood the panel with lines the board already
      * shows. GAME_OUTCOME / MATCH_RESULTS are kept so the player sees who won.
+     *
+     * INFORMATION carries the results of choices that happen off-board and
+     * leave no trace on it: coin flips, dice rolls, clash, votes, and the
+     * colour/number/type a card told someone to pick. Forge does not log those
+     * itself -- it hands them to PlayerController.notifyOfValue, which the
+     * desktop client shows in a modal -- so PlayerControllerBridge turns them
+     * into INFORMATION entries instead. Leaving the type out of this set made
+     * that whole path dead: a card that said "flip a coin" resolved its win or
+     * lose branch with nothing in the Feed to say which one happened.
+     *
+     * PLAYER_CONTROL is a Mindslaver-shaped effect taking over a seat. Rare,
+     * but if somebody else is making your plays the Feed had better say so.
+     *
+     * Still excluded, deliberately: PHASE and MANA (one line per step and per
+     * mana ability -- the board already shows both), and ANTE, which cannot
+     * happen in the formats this serves.
      */
     private static final Set<GameLogEntryType> FEED_TYPES = EnumSet.of(
             GameLogEntryType.TURN, GameLogEntryType.MULLIGAN, GameLogEntryType.LAND,
             GameLogEntryType.STACK_ADD, GameLogEntryType.STACK_RESOLVE,
             GameLogEntryType.COMBAT, GameLogEntryType.DAMAGE, GameLogEntryType.LIFE,
             GameLogEntryType.DISCARD, GameLogEntryType.ZONE_CHANGE,
-            GameLogEntryType.EFFECT_REPLACED,
+            GameLogEntryType.EFFECT_REPLACED, GameLogEntryType.INFORMATION,
+            GameLogEntryType.PLAYER_CONTROL,
             GameLogEntryType.GAME_OUTCOME, GameLogEntryType.MATCH_RESULTS);
 
     /**

@@ -68,6 +68,9 @@ import forge.game.phase.PhaseHandler;
 import forge.game.phase.PhaseType;
 import forge.game.player.DelayedReveal;
 import forge.game.player.Player;
+import forge.game.player.PlayerView;
+import forge.game.card.CardView;
+import forge.util.Localizer;
 import forge.game.player.PlayerActionConfirmMode;
 import forge.game.player.PlaySpellAbility;
 import forge.game.spellability.AbilitySub;
@@ -2790,8 +2793,18 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             if (me == null || me.getGame() == null) {
                 return;
             }
+            // Perspective-free on purpose: pass null instead of `me`.
+            // formatNotificationMessage renders the subject as "You" when it
+            // matches the player it is formatting for, but there is ONE game
+            // log shared by every seat in the pod, so "You win the flip." is
+            // right for at most one reader and wrong for the rest. With null
+            // the subject is always the player's name -- "Sage wins the flip."
+            // -- which reads correctly from every seat, and Lang.joinVerb
+            // conjugates third-person to match. It also makes the dedupe below
+            // sound: every bridge controller now produces the identical string
+            // for one event, so collapsing them keeps no arbitrary viewpoint.
             String message = MessageUtil.formatNotificationMessage(
-                    saSource, me, relatedTarget, value);
+                    saSource, null, relatedTarget, value);
             if (message == null || message.trim().isEmpty()) {
                 return;
             }
@@ -2807,6 +2820,145 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         } catch (Exception e) {
             // A log line must never be the thing that breaks a game.
             System.out.println("[forge-bridge] notifyOfValue failed: " + e);
+        }
+    }
+
+    /**
+     * Put "Revealed cards in AI 1's hand: Duress, Swamp" in THIS seat's Feed.
+     *
+     * Same bug shape as notifyOfValue above and much more common. Forge tells a
+     * player what was revealed by calling PlayerController.reveal;
+     * PlayerControllerHuman opens a modal listing the cards, and
+     * PlayerControllerAi files them in AiCardMemory and shows nothing. This
+     * controller inherited the AI's version, so ~36 call sites across the
+     * engine revealed cards to our players and they saw nothing at all: the
+     * hand a Duress made an opponent reveal, the cards Discover and Explore and
+     * every Dig effect turn up, a drawn-and-revealed card, the face-down
+     * creature a failed turn-up exposes, cards revealed to pay a cost.
+     * Impulse-draw effects were the worst of it -- the card is exiled and
+     * playable, but nothing said which card, so the effect read as a no-op.
+     *
+     * Seat-scoped on purpose -- this is the one difference from notifyOfValue,
+     * and it is a correctness issue rather than a preference. A reveal is a
+     * DISCLOSURE TO SPECIFIC PLAYERS, not a public event: GameAction.revealTo
+     * shows cards to a named subset, and GameAction.reveal skips the owner when
+     * dontRevealToOwner is set. Both arrive here through this identical
+     * signature, so the controller cannot tell a public reveal from a private
+     * one -- which means the game log is the wrong channel, because
+     * flush_log broadcasts it to the whole table and a private reveal would
+     * leak. Forge already solved the addressing for us: it calls this method
+     * once per player who is entitled to see, so writing to the caller's own
+     * Feed discloses exactly what Forge intended and nothing more.
+     *
+     * That also makes "you"/"your" correct here, where it was wrong for the
+     * shared log: this line has exactly one reader.
+     *
+     * Do NOT turn this into a prompt. ai_decision_allowlist.txt carried `reveal`
+     * for exactly that reason -- "NOT a decision: returns void. It is a display
+     * call made mid-resolution; blocking on it would stall the game thread"
+     * (audited 2026-09-03) -- and that reasoning is still right about prompting
+     * and was the thing that kept the method un-overridden. What it missed is
+     * that "do not ask the player anything" is not the same as "tell the player
+     * nothing". This override asks nothing: it writes one Feed line through the
+     * same fire-and-continue channel explainUnplayable uses, which the bridge
+     * answers with an empty reply the moment it arrives.
+     */
+    @Override
+    public void reveal(CardCollectionView cards, ZoneType zone, Player owner,
+                       String message, boolean addSuffix) {
+        super.reveal(cards, zone, owner, message, addSuffix);
+        List<String> names = new ArrayList<>();
+        if (cards != null) {
+            for (Card c : cards) {
+                names.add(c == null ? null : c.getName());
+            }
+        }
+        revealToFeed(names, zone, owner == null ? null : owner.getView(),
+                     message, addSuffix);
+    }
+
+    @Override
+    public void reveal(List<CardView> cards, ZoneType zone, PlayerView owner,
+                       String message, boolean addSuffix) {
+        super.reveal(cards, zone, owner, message, addSuffix);
+        List<String> names = new ArrayList<>();
+        if (cards != null) {
+            for (CardView cv : cards) {
+                names.add(cv == null ? null : cv.getName());
+            }
+        }
+        revealToFeed(names, zone, owner, message, addSuffix);
+    }
+
+    /** How many revealed names to print before summarising the rest. */
+    private static final int REVEAL_NAME_CAP = 12;
+
+    /**
+     * The shared tail of both reveal overloads.
+     *
+     * The title is built exactly the way PlayerControllerHuman builds its modal
+     * title -- same two localized strings, same addSuffix rule -- so the two
+     * clients say the same thing about the same event. The card names are then
+     * appended, because a Feed line is all we get: there is no modal to hold a
+     * card list next to a title.
+     */
+    private void revealToFeed(List<String> names, ZoneType zone, PlayerView owner,
+                              String message, boolean addSuffix) {
+        try {
+            Player me = getPlayer();
+            if (me == null) {
+                return;
+            }
+            String zoneName = zone == null ? "" : zone.getTranslatedName().toLowerCase();
+            String title;
+            if (message == null || message.trim().isEmpty()) {
+                title = Localizer.getInstance().getMessage(
+                        "lblLookCardInPlayerZone", "{player's}", zoneName);
+            } else if (addSuffix) {
+                title = message.trim() + " " + Localizer.getInstance().getMessage(
+                        "lblPlayerZone", "{player's}", zoneName);
+            } else {
+                title = message.trim();
+            }
+            // formatMessage only substitutes {player}/{player's} when it is
+            // handed a PlayerView; with a null owner the placeholders would
+            // survive into the Feed as literal braces, so strip them instead.
+            if (owner != null) {
+                title = MessageUtil.formatMessage(title, me.getView(), owner);
+            } else {
+                title = title.replace("{player's}", "the").replace("{player}", "a player");
+            }
+            title = title.trim();
+
+            // Face-down and tokens can name themselves as blank; a nameless
+            // entry still has to be counted or "reveals 3 cards" becomes
+            // "reveals" and the player cannot tell how many they are missing.
+            List<String> shown = new ArrayList<>();
+            for (String n : names) {
+                shown.add(n == null || n.trim().isEmpty() ? "a face-down card" : n.trim());
+            }
+
+            String line;
+            if (shown.isEmpty()) {
+                line = title + " - nothing to reveal.";
+            } else {
+                // DigUntil and mill-style reveals can turn up a big chunk of a
+                // library at once. Print a readable prefix rather than a wall.
+                StringBuilder list = new StringBuilder();
+                int n = Math.min(shown.size(), REVEAL_NAME_CAP);
+                for (int i = 0; i < n; i++) {
+                    if (i > 0) list.append(", ");
+                    list.append(shown.get(i));
+                }
+                if (shown.size() > n) {
+                    list.append(" and ").append(shown.size() - n).append(" more");
+                }
+                line = title + ": " + list + ".";
+            }
+            ask("{\"kind\":\"feed\",\"lines\":[\"" + StateExporter.esc(line) + "\"]}");
+        } catch (Exception e) {
+            // A Feed line must never be the thing that breaks a game.
+            System.out.println("[forge-bridge] reveal failed: " + e);
         }
     }
 
