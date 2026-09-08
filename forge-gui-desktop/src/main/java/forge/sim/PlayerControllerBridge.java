@@ -1055,7 +1055,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     }
 
     private static boolean canPlaySomething(Player me, Card c) {
-        for (SpellAbility sa : c.getAllPossibleAbilities(me, true)) {
+        for (SpellAbility sa : StateExporter.possibleAbilities(c, me)) {
             if (!sa.isManaAbility()) {
                 return true;
             }

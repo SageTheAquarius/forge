@@ -15,6 +15,7 @@ import forge.ImageKeys;
 import forge.StaticData;
 import forge.card.CardEdition;
 import forge.card.MagicColor;
+import forge.game.Game;
 import forge.game.GameLog;
 import forge.game.GameLogEntry;
 import forge.game.GameLogEntryType;
@@ -115,6 +116,99 @@ public final class StateExporter {
      * and additional costs, so a fresh id is minted on every call.
      */
     private static Map<Integer, String> abilityLists = Collections.emptyMap();
+
+    /**
+     * Memo for getAllPossibleAbilities, invalidated by the game's own timestamp.
+     *
+     * Profiled (JFR, 4685 samples on the real turn-40 board): Card.isValid is
+     * 57% of all gameplay CPU, and 80% of that sits under
+     * GameActionUtil.getAlternativeCosts -> GameAction.checkStaticAbilities --
+     * a full static-abilities pass run PER CARD to work out that card's
+     * characteristics in its alternate state (CR 601.3e). Two callers in this
+     * bridge each walk the same five zones and pay it independently:
+     *
+     *     StateExporter.putAbilities          33.5% of isValid samples
+     *     PlayerControllerBridge.canPlaySomething   8.6%
+     *
+     * hasLegalPlay only wants a boolean and the exporter wants the list, but
+     * both ask the identical question about the identical cards, back to back,
+     * while the game is parked waiting on this player. So the second walk is
+     * pure duplicate work.
+     *
+     * Keyed on the game timestamp AND the timing state the playability filter
+     * reads -- see the comment on the stamp below, and note that the first
+     * version of this keyed on the timestamp alone and broke equip. No
+     * call-site plumbing and nothing to remember to invalidate. The cached
+     * lists are handed to readers only; the reply path still re-derives the
+     * list from Forge when it resolves an ability index, so the index contract
+     * in abilityLists is untouched.
+     */
+    private static long abilityMemoStamp = Long.MIN_VALUE;
+    private static final Map<Long, List<SpellAbility>> abilityMemo = new HashMap<>();
+
+    /** -Dbridge.nomemo=1 bypasses the memo, for A/B measurement only. */
+    private static final boolean MEMO_OFF = System.getProperty("bridge.nomemo") != null;
+
+    /** getAllPossibleAbilities(player, true), memoised for this game state. */
+    static List<SpellAbility> possibleAbilities(Card c, Player p) {
+        if (MEMO_OFF) {
+            return c == null ? Collections.emptyList()
+                             : c.getAllPossibleAbilities(p, true);
+        }
+        if (c == null || p == null || c.getGame() == null) {
+            return c == null ? Collections.emptyList()
+                             : c.getAllPossibleAbilities(p, true);
+        }
+        // The stamp is NOT just the game timestamp. possibleAbilities passes
+        // removeUnplayable=true, so the list is filtered by what is legal RIGHT
+        // NOW -- and that is timing-dependent, not only state-dependent.
+        //
+        // test_scenario_equip_timing caught this: equip is sorcery-speed, so
+        // Forge offers "Equip {1}" in a main phase and nothing in combat. With
+        // only the game timestamp in the key, the combat-phase push was served
+        // the main-phase list and the Equipment looked activatable when it was
+        // not. Exactly the bug this bridge had just finished fixing from the
+        // other direction.
+        //
+        // So fold in everything the playability filter reads: the phase, the
+        // stack (an empty stack is part of sorcery speed), and canCastSorcery
+        // itself, which also covers whose turn it is.
+        // Null-safe throughout: this runs during the MULLIGAN too, where there
+        // is no phase yet. An unguarded getPhase().ordinal() took out
+        // test_abandon_releases_engine, test_abandon_pod_releases_engine and
+        // test_mulligan_free together -- all three sit at that moment.
+        Game game = c.getGame();
+        long stamp;
+        try {
+            stamp = game.getTimestamp() * 1000003L;
+            if (game.getPhaseHandler() != null
+                    && game.getPhaseHandler().getPhase() != null) {
+                stamp += game.getPhaseHandler().getPhase().ordinal() * 37L;
+            }
+            if (game.getStack() != null) {
+                stamp += game.getStack().size() * 7L;
+            }
+            stamp += p.canCastSorcery() ? 1L : 0L;
+        } catch (Exception e) {
+            return c.getAllPossibleAbilities(p, true);   // never cache blind
+        }
+        if (stamp != abilityMemoStamp) {
+            abilityMemo.clear();
+            abilityMemoStamp = stamp;
+        }
+        // Layer timestamp too: a card whose characteristics were re-applied
+        // within one game timestamp must not be served from before that.
+        long key = (((long) c.getId()) << 40)
+                 ^ (((long) p.getId()) << 32)
+                 ^ c.getLayerTimestamp();
+        List<SpellAbility> hit = abilityMemo.get(key);
+        if (hit != null) {
+            return hit;
+        }
+        List<SpellAbility> built = c.getAllPossibleAbilities(p, true);
+        abilityMemo.put(key, built);
+        return built;
+    }
 
     /** Zones whose cards get an ability list. Library is handled with libraryTop. */
     private static final ZoneType[] ABILITY_ZONES = {
@@ -452,7 +546,7 @@ public final class StateExporter {
      * because both sides build the list the same way.
      */
     private static void putAbilities(Map<Integer, String> out, Card c, Player human) {
-        List<SpellAbility> sas = c.getAllPossibleAbilities(human, true);
+        List<SpellAbility> sas = possibleAbilities(c, human);
         if (sas == null || sas.isEmpty()) {
             return;
         }
