@@ -27,6 +27,7 @@ import forge.game.player.Player;
 import forge.game.spellability.OptionalCost;
 import forge.game.spellability.OptionalCostValue;
 import forge.game.spellability.SpellAbility;
+import forge.game.spellability.SpellAbilityRestriction;
 import forge.game.spellability.SpellAbilityStackInstance;
 import forge.game.staticability.StaticAbility;
 import forge.game.staticability.StaticAbilityMode;
@@ -76,11 +77,43 @@ public class ComputerUtilAbility {
         // the whole filter saved -- measured at 58% SLOWER with the order
         // reversed. The stored ability list is just a field read.
         for (final SpellAbility sa : c.getSpellAbilities()) {
-            if (sa.isActivatedAbility()) {
+            if (sa.isActivatedAbility() && activatableByAnyone(sa)) {
                 return true;                   // e.g. "any player may activate"
             }
         }
         return !c.mayPlay(player).isEmpty();    // explicitly granted permission
+    }
+
+    /**
+     * Could a player who does NOT control this card activate this ability?
+     *
+     * This is what made the filter above worth having. It used to return true
+     * for any activated ability at all, and the comment claimed that meant
+     * "any player may activate" -- but an ordinary tap-for-mana on an opponent's
+     * Forest is an activated ability too, and every land has one. So the filter
+     * kept essentially the whole battlefield, dropped almost nothing, and
+     * measured as pure noise against the no-filter arm.
+     *
+     * SpellAbilityVariables.activator defaults to "You", and
+     * checkActivatorRestrictions resolves that against the card's CONTROLLER:
+     *
+     *     activator.isValid(getActivator(), c.getController(), c, sa)
+     *
+     * so a default ability on a card you do not control is never activatable by
+     * you, and building its full ability list -- alternative-cost expansion and
+     * all -- can only produce candidates canPlay() rejects later anyway. Cards
+     * that really are open to the table say so explicitly (Activator$ Player),
+     * and those are kept.
+     *
+     * Costs one string comparison per ability, against a stored field.
+     */
+    private static boolean activatableByAnyone(final SpellAbility sa) {
+        SpellAbilityRestriction r = sa.getRestrictions();
+        if (r == null) {
+            return true;        // no restrictions to read: keep it, be safe
+        }
+        String who = r.getActivator();
+        return who != null && !"You".equals(who);
     }
 
     public static CardCollection getAvailableCards(final Game game, final Player player) {
@@ -102,13 +135,17 @@ public class ComputerUtilAbility {
         // getAllPossibleAbilities, including alternative-cost expansion, over
         // every one of them.
         //
-        // Deliberately conservative: an opponent's card is kept if it has ANY
-        // activated ability, or if this player has been granted permission to
-        // play it. What gets dropped is a vanilla permanent someone else
-        // controls, which can only ever yield candidates that canPlay rejects
-        // later anyway. Cheap to decide: getSpellAbilities() on the card is the
-        // stored list, with none of the alternative-cost work that makes the
-        // full build expensive.
+        // An opponent's card is kept if it has an activated ability THIS player
+        // could actually activate (see activatableByAnyone), or if they have
+        // been granted permission to play it. Everything else can only yield
+        // candidates canPlay() rejects later. Cheap to decide:
+        // getSpellAbilities() is the stored list, with none of the
+        // alternative-cost work that makes the full build expensive.
+        //
+        // The "could actually activate" part is the whole lever. Keeping every
+        // card with any activated ability kept every LAND -- they all tap for
+        // mana -- so the filter dropped almost nothing and measured as noise
+        // against the unfiltered arm.
         if (TRIM_ZONES) {
             for (final Card c : game.getCardsIn(ZoneType.Battlefield)) {
                 if (c.getController() == player || couldMatter(c, player)) {
