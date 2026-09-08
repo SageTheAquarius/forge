@@ -35,6 +35,7 @@ import forge.game.GameObject;
 import forge.game.GameLogEntryType;
 import forge.game.event.GameEventAddLog;
 import forge.util.MessageUtil;
+import forge.util.TextUtil;
 import forge.game.spellability.TargetChoices;
 import forge.ai.ComputerUtilMana;
 import forge.card.mana.ManaCost;
@@ -730,13 +731,88 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             return pd != null ? pd : super.visit(cost);
         }
 
-        /** "Tap N untapped creatures you control:" — crew included. */
+        /**
+         * Crew, and anything else shaped "tap any number of creatures with
+         * total power N or more".
+         *
+         * Reported from a live Commander game: "crewing vehicles seems to crew
+         * random creatures i own, not let me choose". It did. This method used
+         * to send +withTotalPowerGE straight to super -- AiCostDecision --
+         * which picks the creatures itself and taps them without asking, so
+         * every Vehicle crewed with whatever the AI heuristic liked. The
+         * comment above it even said "crew included", which it was not.
+         *
+         * Crew does not fit pickPayers, which is why it was excluded: that
+         * helper picks EXACTLY `count` cards, and crew has no count. The cost
+         * is a total-power threshold over any number of creatures, so the
+         * prompt has to be 0..all with the threshold checked afterwards.
+         *
+         * Mirrors HumanCostDecision.visit(CostTapType)'s totalPower branch
+         * (line ~1437): offer everything legal, and treat both an empty pick
+         * and a pick that falls short as declining, leaving the cost unpaid.
+         * Deliberately NOT auto-paying a short selection with extra creatures
+         * -- picking which creatures tap is the whole decision, and a Vehicle
+         * that quietly taps a blocker you were saving is the bug being fixed.
+         */
+        private PaymentDecision totalPowerDecision(CostTapType cost, String type) {
+            int need;
+            try {
+                need = Integer.parseInt(type.split("withTotalPowerGE")[1]);
+            } catch (Exception e) {
+                return super.visit(cost);   // unparseable: the AI path is no worse
+            }
+            String bare = TextUtil.fastReplace(
+                    type, TextUtil.concatNoSpace("+withTotalPowerGE",
+                            String.valueOf(need)), "");
+            CardCollection list = CardLists.getValidCards(
+                    getPlayer().getCardsIn(ZoneType.Battlefield), bare.split(";"),
+                    getPlayer(), ability.getHostCard(), ability);
+            // canPay() does this, so the offered list must too, or we would
+            // show the Vehicle itself as something to crew with.
+            if (!cost.canTapSource && ability.getHostCard() != null) {
+                list.remove(ability.getHostCard());
+            }
+            list = CardLists.filter(list, ability.isCrew()
+                    ? CardPredicates.CAN_CREW : CardPredicates.CAN_TAP);
+            if (list.isEmpty() || CardLists.getTotalPower(list, ability) < need) {
+                return null;   // cannot be paid at all
+            }
+            List<Card> pool = new ArrayList<>();
+            List<String> names = new ArrayList<>();
+            for (Card c : list) {
+                pool.add(c);
+                // Power is shown because it IS the cost. Without it the player
+                // is adding up numbers that are not on screen.
+                names.add(c.getName() + " (power " + c.getNetPower() + ")");
+            }
+            String host = ability != null && ability.getHostCard() != null
+                    ? ability.getHostCard().getName() : "this";
+            String verb = ability.isCrew() ? "crew" : "tap for";
+            List<Integer> sel = promptIndices(
+                    host + ": " + verb + " — tap creatures with total power "
+                            + need + " or more (none = decline)",
+                    names, 0, pool.size(), true, "choose");
+            CardCollection chosen = new CardCollection();
+            for (int idx : sel) {
+                if (idx >= 0 && idx < pool.size()) chosen.add(pool.get(idx));
+            }
+            if (chosen.isEmpty() || CardLists.getTotalPower(chosen, ability) < need) {
+                return null;   // declined, or not enough power: leave it unpaid
+            }
+            return PaymentDecision.card(chosen);
+        }
+
+        /** "Tap N untapped creatures you control:" — crew handled above. */
         @Override
         public PaymentDecision visit(CostTapType cost) {
             String type = cost.getType();
+            // Checked FIRST: crew also matches the "Any" amount guard below,
+            // which is how it ended up on the AI path in the first place.
+            if (type.contains("+withTotalPowerGE")) {
+                return totalPowerDecision(cost, type);
+            }
             if ("OriginalHost".equals(type) || "Any".equals(cost.getAmount())
-                    || type.contains(".sharesCreatureTypeWith")
-                    || type.contains("+withTotalPowerGE")) {
+                    || type.contains(".sharesCreatureTypeWith")) {
                 return super.visit(cost);
             }
             CardCollection list = CardLists.getValidCards(
@@ -2028,6 +2104,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                 if (!picked.contains(n)) { picked.add(n); break; }
             }
         }
+        echoOwnChoice(sa, String.join(", ", picked));
         return ColorSet.fromNames(picked);
     }
 
@@ -2408,7 +2485,9 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         List<String> names = new ArrayList<>(validTypes);
         List<Integer> sel = promptIndices("Choose a " + kindOfType + " type", names,
             isOptional ? 0 : 1, 1, isOptional, "choose");
-        return sel.isEmpty() ? names.get(0) : names.get(sel.get(0));
+        String chosen = sel.isEmpty() ? names.get(0) : names.get(sel.get(0));
+        echoOwnChoice(sa, chosen);
+        return chosen;
     }
 
     /** Win the die roll: choose to play or draw. */
@@ -2888,6 +2967,56 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             }
         }
         revealToFeed(names, zone, owner, message, addSuffix);
+    }
+
+    /**
+     * Record in THIS seat's Feed a choice the player just made themselves.
+     *
+     * Reported from a live Commander game: Secluded Courtyard asked for a
+     * creature type and the log never said which one was picked.
+     *
+     * This is a different hole from the one notifyOfValue covers, and the
+     * INFORMATION fix could not reach it. Four effects deliberately exclude the
+     * chooser from their own notification -- ChooseTypeEffect:136 and
+     * ChooseColorEffect:96 pass `noNotify = p`, DiscardEffect:170 and
+     * RollDiceEffect:499 pass the player directly -- because Forge's desktop
+     * client just showed that player a dialog and telling them again would be
+     * noise. So notifyOfValue is never called on the chooser's controller at
+     * all, and no filter change can make it appear.
+     *
+     * Worse in a solo pod: the other seats ARE told, but they are AI, and
+     * PlayerControllerAi.notifyOfValue is empty. With one human at the table
+     * nobody writes the line, so the choice vanishes completely.
+     *
+     * Our prompt is a modal that closes, so the bridge records what it asked
+     * and what came back. Seat-scoped rather than the shared game log: the
+     * other seats already get the engine's own line through notifyOfValue, and
+     * a second copy from here would double it for them. That also makes "you"
+     * correct, and keeps the wording independent of
+     * MessageUtil.formatNotificationMessage, whose phrasing is keyed on
+     * sa.getApi() -- fine for ChooseType, but chooseSomeType is also called by
+     * ChangeText, CounterEffect, RepeatEach, Untap and PlaySpellAbility, where
+     * that formatting reads oddly.
+     */
+    private void echoOwnChoice(SpellAbility sa, String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return;
+        }
+        try {
+            String host = null;
+            if (sa != null && sa.getHostCard() != null) {
+                host = sa.getHostCard().getName();
+            }
+            // Naming the card is the useful half -- "you chose Ally" on its own
+            // is unreadable three triggers later.
+            String line = (host == null || host.trim().isEmpty())
+                    ? "You chose " + value.trim() + "."
+                    : host.trim() + ": you chose " + value.trim() + ".";
+            ask("{\"kind\":\"feed\",\"lines\":[\"" + StateExporter.esc(line) + "\"]}");
+        } catch (Exception e) {
+            // A Feed line must never be the thing that breaks a game.
+            System.out.println("[forge-bridge] echoOwnChoice failed: " + e);
+        }
     }
 
     /** How many revealed names to print before summarising the rest. */
