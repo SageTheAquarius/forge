@@ -3540,6 +3540,15 @@ public class PlayerControllerBridge extends PlayerControllerAi {
      * aimed every attacker at getDefendingPlayers().get(0). In a duel that is
      * invisible - there is only one opponent. In a Commander pod it meant every
      * attack hit the same seat with no way to see or change it.
+     *
+     * Cards used to go out as a flat "kind":"card", which left the client to
+     * work out what each one was by scanning the opponents' battlefields for it.
+     * That can never find a battle: a Siege enters under the control of the
+     * player who CAST it and sits on their own battlefield, protected by an
+     * opponent. So "defender" here is the seat that will block for it -- the
+     * protector for a battle, the controller for a planeswalker -- which is also
+     * the only way the player can be told who is defending the thing they are
+     * attacking.
      */
     private static String defenderList(Combat combat) {
         StringBuilder b = new StringBuilder("[");
@@ -3549,9 +3558,12 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             Card card = (Card) d;
             if (!first) b.append(',');
             first = false;
+            Player guard = card.isBattle() ? card.getProtectingPlayer() : card.getController();
             b.append("{\"id\":").append(card.getId())
              .append(",\"name\":\"").append(StateExporter.esc(card.getName()))
-             .append("\",\"kind\":\"card\"}");
+             .append("\",\"kind\":\"").append(card.isBattle() ? "battle" : "planeswalker")
+             .append("\",\"defender\":\"").append(StateExporter.esc(guard == null ? "" : guard.getName()))
+             .append("\"}");
         }
         FCollectionView<Player> players = combat.getDefendingPlayers();
         for (int i = 0; i < players.size(); i++) {
