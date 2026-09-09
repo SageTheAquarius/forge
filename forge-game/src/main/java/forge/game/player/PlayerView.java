@@ -297,8 +297,17 @@ public class PlayerView extends GameEntityView {
     public int getNumDrawnThisTurn() {
         return get(TrackableProperty.NumDrawnThisTurn);
     }
+    /** Cards drawn all game, excluding the opening hand. Never reset. */
+    public int getNumDrawnThisGame() {
+        return get(TrackableProperty.NumDrawnThisGame);
+    }
     void updateNumDrawnThisTurn(Player p) {
         set(TrackableProperty.NumDrawnThisTurn, p.getNumDrawnThisTurn());
+        // Piggy-backs on the per-turn update because Player calls that on every
+        // draw AND on every turn reset -- so the game total is pushed to the view
+        // at exactly the moments it can have changed, with no second call site to
+        // keep in sync.
+        set(TrackableProperty.NumDrawnThisGame, p.getNumDrawnThisGame());
     }
 
     public int getAdditionalVote() {

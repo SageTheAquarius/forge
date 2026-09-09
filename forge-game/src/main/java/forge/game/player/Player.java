@@ -91,6 +91,14 @@ public class Player extends GameEntity implements Comparable<Player> {
     private boolean unlimitedHandSize = false;
     private Card lastDrawnCard;
     private int numDrawnThisTurn;
+    // Cards drawn across the WHOLE game. Forge tracks only per-turn and per-draw-step
+    // counts and resets them every turn, so nothing here could answer "how many
+    // cards did I draw this game" -- the stats dashboard was inferring it from
+    // hand-size increases, which undercounts a card drawn and spent in the same
+    // window. Incremented at the same choke point as numDrawnThisTurn and never
+    // reset. Opening hands are drawn before gameStarted and so are excluded, which
+    // is the intended meaning: draws made during the game, not the starting seven.
+    private int numDrawnThisGame;
     private int numExtraDrawnThisTurn;
     private int numDrawnLastTurn;
     private int numDrawnThisDrawStep;
@@ -1233,6 +1241,7 @@ public class Player extends GameEntity implements Comparable<Player> {
                 setLastDrawnCard(c);
                 c.setDrawnThisTurn(true);
                 numDrawnThisTurn++;
+                numDrawnThisGame++;
                 numExtraDrawnThisTurn++;
                 if (game.getPhaseHandler().is(PhaseType.DRAW)) {
                     numDrawnThisDrawStep++;
@@ -1278,6 +1287,10 @@ public class Player extends GameEntity implements Comparable<Player> {
 
     public final int getNumDrawnThisTurn() {
         return numDrawnThisTurn;
+    }
+    /** Cards drawn so far this game, excluding the opening hand. Never reset. */
+    public final int getNumDrawnThisGame() {
+        return numDrawnThisGame;
     }
     public final int getNumDrawnLastTurn() {
         return numDrawnLastTurn;

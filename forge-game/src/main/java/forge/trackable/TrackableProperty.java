@@ -175,6 +175,7 @@ public enum TrackableProperty {
     NumManaShards(TrackableTypes.IntegerType),
     DraftNotes(TrackableTypes.StringMapType),
     NumDrawnThisTurn(TrackableTypes.IntegerType),
+    NumDrawnThisGame(TrackableTypes.IntegerType),
     AdditionalVote(TrackableTypes.IntegerType),
     OptionalAdditionalVote(TrackableTypes.IntegerType),
     ControlVotes(TrackableTypes.BooleanType),
