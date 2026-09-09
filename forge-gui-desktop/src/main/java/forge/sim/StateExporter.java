@@ -348,6 +348,16 @@ public final class StateExporter {
         kv(sb, "turn", g.getTurn()); sb.append(',');
         kvs(sb, "phase", String.valueOf(g.getPhase())); sb.append(',');
         kvs(sb, "turn_player", g.getPlayerTurn() != null ? g.getPlayerTurn().getName() : ""); sb.append(',');
+        // Day/night. GameView does not carry it: Forge keeps `daytime` on Game as a
+        // nullable tri-state (null = neither, false = day, true = night) and never
+        // mirrors it into the view layer. Reading it off the human Player's Game keeps
+        // us out of Forge's trackable sync -- adding a TrackableProperty would mean
+        // editing two more engine files for one string.
+        //
+        // Empty means "neither day nor night", which is every game with no daybound
+        // permanent and every game before the first one enters. The client draws
+        // nothing at all in that case, so untouched games look exactly as they did.
+        kvs(sb, "daytime", dayTime(human)); sb.append(',');
 
         sb.append("\"players\":[");
         boolean firstP = true;
@@ -871,6 +881,16 @@ public final class StateExporter {
     }
 
     private static String nz(String s) { return s == null ? "" : s; }
+
+    /** "day", "night", or "" for neither -- see the daytime field in toJson. */
+    private static String dayTime(Player human) {
+        if (human == null) return "";
+        Game game = human.getGame();
+        if (game == null) return "";
+        if (game.isDay()) return "day";
+        if (game.isNight()) return "night";
+        return "";
+    }
 
     private static void kv(StringBuilder sb, String k, int v) { sb.append('"').append(k).append("\":").append(v); }
     private static void kvb(StringBuilder sb, String k, boolean v) { sb.append('"').append(k).append("\":").append(v); }
