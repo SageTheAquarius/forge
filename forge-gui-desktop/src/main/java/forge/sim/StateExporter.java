@@ -532,6 +532,25 @@ public final class StateExporter {
         kv(sb, "toughness", s != null ? s.getToughness() : 0); sb.append(',');
         boolean creature = s != null && s.getType() != null && s.getType().isCreature();
         kvb(sb, "is_creature", creature); sb.append(',');
+        // Battles, and who defends this one.
+        //
+        // A Siege enters under its CASTER's control and stays on their
+        // battlefield, protected by an opponent -- correct rules, and correct
+        // here, but it reads as a bug at the table: the player who has to
+        // defend the thing sees it sitting across the board on someone else's
+        // side. The translator uses these two fields to render a battle in the
+        // PROTECTOR's row instead. Nothing about control changes; only where
+        // the card is drawn.
+        //
+        // Both fall away by themselves when it is defeated: the battle is
+        // exiled and cast transformed, and the transformed side is not a
+        // battle, so it comes back under the caster with no protector and
+        // renders on the caster's side again.
+        boolean battle = s != null && s.getType() != null && s.getType().isBattle();
+        kvb(sb, "is_battle", battle); sb.append(',');
+        kvs(sb, "protected_by",
+            battle && c.getProtectingPlayer() != null
+                ? nz(c.getProtectingPlayer().getName()) : ""); sb.append(',');
         kvb(sb, "tapped", c.isTapped()); sb.append(',');
         kvb(sb, "sick", c.isSick()); sb.append(',');
         kvb(sb, "attacking", c.isAttacking()); sb.append(',');
