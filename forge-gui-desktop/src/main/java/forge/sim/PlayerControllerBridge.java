@@ -1979,16 +1979,25 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         return !sel.isEmpty() && sel.get(0) == 0;
     }
 
-    // The bail-out used to be 50, which handed X back to the AI on any spell
-    // cast with more than 50 mana available -- reachable in a Commander pod, and
-    // silent when it happens. The client renders a filter box past 60 options,
-    // so a long numeric list is typed into rather than scrolled; 300 is past any
-    // real X and still an answerable prompt.
+    // The widest numeric range we render as a list of options. The bail-out
+    // used to be 50, which handed X back to the AI on any spell cast with more
+    // than 50 mana available -- reachable in a Commander pod, and silent when it
+    // happens. The client renders a filter box past 60 options, so a long
+    // numeric list is typed into rather than scrolled; 300 is past any real X
+    // and still an answerable prompt.
+    private static final int NUMBER_PROMPT_SPAN = 300;
+
+    // Never delegates to super. AiController.chooseNumber defaults to AILogic
+    // "Max" and ends in `return max`, so an unbounded range came back as
+    // Integer.MAX_VALUE with the player never asked at all -- and an announced X
+    // that large kills the JVM when it is paid (see announceCeiling). A range
+    // too wide to render is clamped to a window and still asked.
     @Override
     public int chooseNumber(SpellAbility sa, String title, int min, int max) {
-        if (min >= max || max - min > 300) return super.chooseNumber(sa, title, min, max);
+        if (min >= max) return min;
+        int top = max - min > NUMBER_PROMPT_SPAN ? min + NUMBER_PROMPT_SPAN : max;
         List<String> names = new ArrayList<>();
-        for (int n = min; n <= max; n++) names.add(String.valueOf(n));
+        for (int n = min; n <= top; n++) names.add(String.valueOf(n));
         List<Integer> sel = promptIndices(title, names, 1, 1, false, "number");
         return sel.isEmpty() ? min : min + sel.get(0);
     }
@@ -3071,13 +3080,44 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                 Integer costX = cost.getMaxForNonManaX(ability, getPlayer(), false);
                 if (costX != null) max = Math.min(max, costX);
             }
+            max = Math.min(max, announceCeiling(ability, min, max));
             if (min > max) return null;
             if (min == max) return min;
             String host = ability.getHostCard() != null ? ability.getHostCard().getName() : "";
             return chooseNumber(ability, "Choose " + announce + " for " + host, min, max);
         } catch (Exception e) {
-            return super.announceRequirements(ability, min, max, announce);
+            // super is PlayerControllerAi, which answers an unbounded
+            // announcement with `max`. Clamp whatever comes back rather than
+            // letting Integer.MAX_VALUE out of this method.
+            Integer fallback = super.announceRequirements(ability, min, max, announce);
+            if (fallback == null) return null;
+            return Math.max(min, Math.min(fallback, min + NUMBER_PROMPT_SPAN));
         }
+    }
+
+    /**
+     * A ceiling for an announcement whose declared maximum is unbounded.
+     *
+     * AbilityUtils.getAnnouncementBounds hands out Integer.MAX_VALUE for any X
+     * the card does not cap itself (XMax / AnnounceMax) -- which is every plain
+     * {X} mana cost. PlayerControllerHuman lives with that because its Swing
+     * prompt takes a typed integer; ours renders a list of options, and the AI
+     * underneath it answers `max`. Torch the Witness ({X}{R}) was announced as
+     * X = 2147483647 and took the JVM down in ManaCostBeingPaid.getUnpaidShards,
+     * which allocates one list entry per X: OutOfMemoryError, and the match
+     * dropped with no game_over.
+     *
+     * For an X in the mana cost the honest ceiling is the mana actually on hand,
+     * from the same helper the auto-tapper reasons with -- so we never offer an
+     * X that the payment step then cannot cover. Anything else unbounded gets
+     * PlayerControllerHuman's own default cutoff of min + 9.
+     */
+    private int announceCeiling(SpellAbility ability, int min, int max) {
+        Cost cost = ability.getPayCosts();
+        if (cost != null && cost.hasManaCost() && cost.getTotalMana().countX() > 0) {
+            return Math.max(min, ComputerUtilMana.determineLeftoverMana(ability, getPlayer(), false));
+        }
+        return max - min > NUMBER_PROMPT_SPAN ? min + 9 : max;
     }
 
     /**
