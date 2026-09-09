@@ -423,6 +423,16 @@ public final class StateExporter {
         // bridge can announce a change.
         kv(sb, "speed", speedById.getOrDefault(p.getId(), 0)); sb.append(',');
         kv(sb, "library_count", count(p.getCards(ZoneType.Library))); sb.append(',');
+        // Cards drawn all game. The stats recorder used to infer this from
+        // hand-size increases, which cannot see a card drawn and spent inside the
+        // same priority window; this is Forge's own count, taken at the one place
+        // a draw happens. Excludes the opening hand.
+        kv(sb, "cards_drawn", p.getNumDrawnThisGame()); sb.append(',');
+        // Poison, energy, experience, rad -- see kvPlayerCounters. Poison is a
+        // LOSS CONDITION and was invisible: nothing exported it and nothing
+        // logged it, so ten counters could arrive without a number or a Feed
+        // line anywhere along the way.
+        kvPlayerCounters(sb, "counters", p); sb.append(',');
         // mana pool by color symbol
         sb.append("\"mana_pool\":{");
         sb.append("\"W\":").append(p.getMana(MagicColor.WHITE)).append(',');
@@ -815,8 +825,35 @@ public final class StateExporter {
 
     /** Emit a card's counters as {"-1/-1":3, "+1/+1":1, ...} (name -> count). */
     private static void kvCounters(StringBuilder sb, String k, CardView c) {
+        kvCounterMultiset(sb, k, c == null ? null : c.getCounters());
+    }
+
+    /**
+     * Emit a PLAYER's counters, same shape as a card's.
+     *
+     * Poison, energy, experience and rad all live here, and none of them
+     * reached the client before. Player.java writes exactly ONE log line in the
+     * whole class (DISCARD), so none of them is announced either -- a player
+     * could be one counter from losing to poison with nothing on screen and
+     * nothing in the Feed ever having mentioned it.
+     *
+     * Generic rather than four named fields on purpose: it is the same Multiset
+     * the card path already handles, so every counter type Forge has -- and any
+     * it gains -- comes across without another edit here.
+     *
+     * The MAP's presence is what says this jar supports the field at all. An
+     * older jar sends no "counters" key, which the translator reads as unknown
+     * rather than as zero; a current jar with no poison sends the map without a
+     * poison entry, which is a genuine zero. Those must stay distinguishable --
+     * see _opt_counter in forge_state_to_wire.
+     */
+    private static void kvPlayerCounters(StringBuilder sb, String k, PlayerView p) {
+        kvCounterMultiset(sb, k, p == null ? null : p.getCounters());
+    }
+
+    private static void kvCounterMultiset(StringBuilder sb, String k,
+                                          Multiset<CounterType> counters) {
         sb.append('"').append(k).append("\":{");
-        Multiset<CounterType> counters = c.getCounters();
         if (counters != null && !counters.isEmpty()) {
             boolean first = true;
             for (Multiset.Entry<CounterType> e : counters.entrySet()) {
