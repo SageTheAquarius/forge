@@ -58,7 +58,29 @@ import forge.game.cost.CostPart;
 import forge.game.cost.CostPartWithList;
 import forge.game.cost.CostPutCounter;
 import forge.game.cost.CostSacrifice;
+import forge.card.CardType;
+import forge.game.cost.CostChooseColor;
+import forge.game.cost.CostChooseCreatureType;
+import forge.game.cost.CostCollectEvidence;
+import forge.game.cost.CostExileFromStack;
+import forge.game.cost.CostGainLife;
+import forge.game.cost.CostDamage;
+import forge.game.cost.CostDraw;
+import forge.game.cost.CostExert;
+import forge.game.cost.CostExiledMoveToGrave;
+import forge.game.cost.CostForage;
+import forge.game.cost.CostGainControl;
+import forge.game.cost.CostMill;
+import forge.game.cost.CostPayLife;
+import forge.game.cost.CostRemoveAnyCounter;
+import forge.game.cost.CostRemoveCounter;
+import forge.game.cost.CostReturn;
+import forge.game.cost.CostReveal;
 import forge.game.cost.CostTapType;
+import forge.game.cost.CostUnattach;
+import forge.game.cost.CostUntapType;
+import forge.game.GameEntityCounterTable;
+import forge.game.card.CounterEnumType;
 import forge.game.cost.PaymentDecision;
 import forge.game.keyword.Keyword;
 import forge.game.replacement.ReplacementEffect;
@@ -564,6 +586,22 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         @Override
         public PaymentDecision visit(CostPutCounter cost) {
             if (cost.payCostFromSource()) {
+                // Fabricate. The card names itself, so there is no WHICH left to
+                // ask -- but "put N +1/+1 counters on it" is the UnlessCost of
+                // "create N Servo tokens", and declining is how you take the
+                // Servos. Without this the AI paid the counters every time and
+                // the Servo half of the mechanic was unreachable; the modal
+                // never even opened. HumanCostDecision guards this exact branch
+                // the same way, with a comment naming the mechanic.
+                if (isEffect() && ability != null && ability.hasParam("UnlessCost")) {
+                    int n = cost.getAbilityAmount(ability);
+                    String cn = cost.getCounter() != null ? cost.getCounter().getName() : "counter";
+                    String self = ability.getHostCard() != null ? ability.getHostCard().getName() : "it";
+                    if (!yesNo("Put " + n + " " + cn + " counter" + (n == 1 ? "" : "s")
+                            + " on " + self + "?")) {
+                        return null;
+                    }
+                }
                 return super.visit(cost);
             }
             CardCollection options = CardLists.getValidCards(
@@ -696,7 +734,13 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         @Override
         public PaymentDecision visit(CostSacrifice cost) {
             String type = cost.getType();
-            if (cost.payCostFromSource() || "OriginalHost".equals(type)
+            if (cost.payCostFromSource()) {
+                if (!confirmSourceCost("sacrifice " + sourceName())) {
+                    return null;
+                }
+                return super.visit(cost);
+            }
+            if ("OriginalHost".equals(type)
                     || "All".equals(cost.getAmount()) || type.contains("+WithDifferentNames")) {
                 return super.visit(cost);
             }
@@ -832,7 +876,15 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         @Override
         public PaymentDecision visit(CostExile cost) {
             String type = cost.getType();
-            if (cost.payCostFromSource() || "OriginalHost".equals(type) || "All".equals(type)
+            if (cost.payCostFromSource()) {
+                // Same shape as fabricate: no WHICH, but during resolution this
+                // is an "unless you exile it" and the answer is the player's.
+                if (!confirmSourceCost("exile " + sourceName())) {
+                    return null;
+                }
+                return super.visit(cost);
+            }
+            if ("OriginalHost".equals(type) || "All".equals(type)
                     || type.contains("+with") || type.contains("FromTopGrave")) {
                 return super.visit(cost);
             }
@@ -847,6 +899,505 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                 return null;   // the player said no; leave the cost unpaid
             }
             return pd != null ? pd : super.visit(cost);
+        }
+
+        /** The host card's name, for a prompt about a cost it pays itself. */
+        private String sourceName() {
+            return ability != null && ability.getHostCard() != null
+                    ? ability.getHostCard().getName() : "it";
+        }
+
+        /**
+         * The WHETHER question for a cost with no WHICH in it -- the card pays
+         * with itself, or the cost is "pay 3 life" and there is nothing to pick.
+         *
+         * Only asked while the cost is being paid during RESOLUTION. For an
+         * activated ability the player answered this question by activating it,
+         * and asking again would put a confirm in front of every painland tap.
+         * An unless cost during resolution is the opposite case: the whole
+         * decision is whether to pay, and it was going to the AI.
+         */
+        private boolean confirmSourceCost(String what) {
+            if (!isEffect()) {
+                return true;
+            }
+            if (ability != null && ability.getPayCosts() != null
+                    && ability.getPayCosts().isMandatory()) {
+                return true;
+            }
+            String host = ability != null && ability.getHostCard() != null
+                    ? ability.getHostCard().getName() : "this";
+            return yesNo(host + ": " + what + "?");
+        }
+
+        /**
+         * Which permanent loses counters. SubCounter is on 940 cards in the
+         * Commander pool -- the biggest hole left in this class -- and
+         * AiCostDecision picked the permanent, so "remove a counter from a
+         * creature you control" quietly took one off whatever the AI valued
+         * least.
+         *
+         * Only the "choose one of yours" branch is ours. Paying from the source
+         * or the original host names the permanent already, and a null counter
+         * type is a second question (which KIND of counter) that the AI declines
+         * outright -- both stay where they were.
+         */
+        @Override
+        public PaymentDecision visit(CostRemoveCounter cost) {
+            if (cost.counter == null || cost.payCostFromSource()
+                    || "OriginalHost".equals(cost.getType())) {
+                return super.visit(cost);
+            }
+            boolean all = "All".equals(cost.getAmount());
+            int need = all ? 1 : cost.getAbilityAmount(ability);
+            if (need <= 0) {
+                return super.visit(cost);
+            }
+            CardCollectionView valid = CardLists.getValidCards(
+                    getPlayer().getCardsIn(cost.zone), cost.getType().split(";"),
+                    getPlayer(), ability.getHostCard(), ability);
+            valid = CardLists.filter(valid, CardPredicates.hasCounter(cost.counter, need));
+            if (valid.isEmpty()) {
+                return super.visit(cost);
+            }
+            List<Card> pool = new ArrayList<>();
+            List<String> names = new ArrayList<>();
+            for (Card c : valid) {
+                pool.add(c);
+                names.add(c.getName() + " (" + c.getCounters(cost.counter) + " "
+                        + cost.counter.getName() + ")");
+            }
+            Card chosen;
+            if (pool.size() == 1) {
+                chosen = pool.get(0);          // no decision to make
+            } else {
+                List<Integer> sel = promptIndices(
+                        sourceName() + ": remove " + (all ? "all" : String.valueOf(need)) + " "
+                                + cost.counter.getName() + " from which permanent?",
+                        names, 1, 1, false, "choose");
+                if (sel.isEmpty()) {
+                    return null;
+                }
+                chosen = pool.get(sel.get(0));
+            }
+            int take = all ? chosen.getCounters(cost.counter) : need;
+            if (take <= 0) {
+                return super.visit(cost);
+            }
+            GameEntityCounterTable table = new GameEntityCounterTable();
+            table.put(null, chosen, cost.counter, take);
+            return PaymentDecision.counters(table);
+        }
+
+        /**
+         * "Remove N counters from among permanents you control": both WHICH
+         * permanent and which KIND of counter, which is why Forge's own client
+         * has a bespoke input for it. One permanent and one kind here -- every
+         * card in the pool that uses this cost asks for a single counter, and
+         * splitting a cost across permanents is a prompt nobody wants.
+         */
+        @Override
+        public PaymentDecision visit(CostRemoveAnyCounter cost) {
+            int need = cost.getAbilityAmount(ability);
+            if (need <= 0) {
+                return super.visit(cost);
+            }
+            CardCollectionView list = cost.payCostFromSource()
+                    ? new CardCollection(ability.getHostCard())
+                    : CardLists.getValidCards(getPlayer().getCardsIn(ZoneType.Battlefield),
+                            cost.getType().split(";"), getPlayer(), ability.getHostCard(), ability);
+            list = CardLists.filter(list, CardPredicates.hasCounters());
+            List<Card> pool = new ArrayList<>();
+            List<String> names = new ArrayList<>();
+            for (Card c : list) {
+                if (c.getNumAllCounters() < need) {
+                    continue;
+                }
+                pool.add(c);
+                names.add(c.getName() + " (" + c.getNumAllCounters() + " counters)");
+            }
+            if (pool.isEmpty()) {
+                return super.visit(cost);
+            }
+            Card chosen;
+            if (pool.size() == 1) {
+                chosen = pool.get(0);
+            } else {
+                List<Integer> sel = promptIndices(
+                        sourceName() + ": remove " + need + " counter" + (need == 1 ? "" : "s")
+                                + " from which permanent?", names, 1, 1, false, "choose");
+                if (sel.isEmpty()) {
+                    return null;
+                }
+                chosen = pool.get(sel.get(0));
+            }
+            List<CounterType> kinds = new ArrayList<>();
+            List<String> kindNames = new ArrayList<>();
+            for (CounterType ct : chosen.getCounters().elementSet()) {
+                int have = chosen.getCounters(ct);
+                if (have >= need && chosen.canRemoveCounters(ct)) {
+                    kinds.add(ct);
+                    kindNames.add(ct.getName() + " (" + have + ")");
+                }
+            }
+            if (kinds.isEmpty()) {
+                return super.visit(cost);
+            }
+            CounterType kind = kinds.get(0);
+            if (kinds.size() > 1) {
+                List<Integer> sel = promptIndices(chosen.getName() + ": remove which counters?",
+                        kindNames, 1, 1, false, "choose");
+                if (sel.isEmpty()) {
+                    return null;
+                }
+                kind = kinds.get(sel.get(0));
+            }
+            GameEntityCounterTable table = new GameEntityCounterTable();
+            table.put(null, chosen, kind, need);
+            return PaymentDecision.counters(table);
+        }
+
+        /** Which permanent goes back to your hand. */
+        @Override
+        public PaymentDecision visit(CostReturn cost) {
+            if (cost.payCostFromSource()) {
+                Card self = ability.getHostCard();
+                if (self == null || self.getController() != getPlayer() || !self.isInPlay()) {
+                    return super.visit(cost);
+                }
+                return confirmSourceCost("return " + self.getName() + " to your hand")
+                        ? PaymentDecision.card(self) : null;
+            }
+            CardCollectionView valid = CardLists.getValidCards(
+                    getPlayer().getCardsIn(ZoneType.Battlefield), cost.getType().split(";"),
+                    getPlayer(), ability.getHostCard(), ability);
+            PaymentDecision pd = pickPayers("return to hand", valid, cost.getAbilityAmount(ability));
+            if (pd == DECLINED) {
+                return null;
+            }
+            return pd != null ? pd : super.visit(cost);
+        }
+
+        /**
+         * Which creature exerts. Reached through payCombatCost now that it pays
+         * the cost instead of only asking about it -- without this the exert
+         * would go back to AiCostDecision the moment it was actually paid.
+         */
+        @Override
+        public PaymentDecision visit(CostExert cost) {
+            if (cost.payCostFromSource()) {
+                Card self = ability.getHostCard();
+                if (self == null || self.getController() != ability.getActivatingPlayer()
+                        || !self.isInPlay()) {
+                    return null;
+                }
+                return yesNo("Exert " + self.getName()
+                        + "? (it won't untap during your next untap step)")
+                        ? PaymentDecision.card(self) : null;
+            }
+            int c = cost.getAbilityAmount(ability);
+            if (c == 0) {
+                return PaymentDecision.number(0);
+            }
+            CardCollectionView valid = CardLists.getValidCards(
+                    getPlayer().getCardsIn(ZoneType.Battlefield), cost.getType().split(";"),
+                    getPlayer(), ability.getHostCard(), ability);
+            PaymentDecision pd = pickPayers("exert", valid, c);
+            if (pd == DECLINED) {
+                return null;
+            }
+            return pd != null ? pd : super.visit(cost);
+        }
+
+        /** Which card you reveal to pay. */
+        @Override
+        public PaymentDecision visit(CostReveal cost) {
+            String type = cost.getType();
+            if (cost.payCostFromSource() || "Hand".equals(type) || "SameColor".equals(type)) {
+                return super.visit(cost);
+            }
+            int c = cost.getAbilityAmount(ability);
+            if (c <= 0) {
+                return super.visit(cost);
+            }
+            CardCollectionView from = CardLists.getValidCards(
+                    getPlayer().getCardsIn(cost.getRevealFrom()), type.split(";"),
+                    getPlayer(), ability.getHostCard(), ability);
+            PaymentDecision pd = pickPayers("reveal", from, c);
+            if (pd == DECLINED) {
+                return null;
+            }
+            return pd != null ? pd : super.visit(cost);
+        }
+
+        /**
+         * Forage: sacrifice a Food OR exile three cards from your graveyard.
+         * The AI took whichever branch its heuristics liked, which is a real
+         * choice -- a Food is worth keeping, and so is a graveyard.
+         */
+        @Override
+        public PaymentDecision visit(CostForage cost) {
+            CardCollection food = CardLists.filter(getPlayer().getCardsIn(ZoneType.Battlefield),
+                    CardPredicates.isType("Food"), CardPredicates.canBeSacrificedBy(ability, isEffect()));
+            CardCollection grave = CardLists.filter(getPlayer().getCardsIn(ZoneType.Graveyard),
+                    CardPredicates.canExiledBy(ability, isEffect()));
+            boolean canFood = !food.isEmpty();
+            boolean canExile = grave.size() >= 3;
+            if (!canFood && !canExile) {
+                return super.visit(cost);
+            }
+            boolean useFood = canFood;
+            if (canFood && canExile) {
+                List<String> how = new ArrayList<>();
+                how.add("Sacrifice a Food");
+                how.add("Exile three cards from your graveyard");
+                List<Integer> sel = promptIndices(sourceName() + ": forage how?",
+                        how, 1, 1, false, "confirm");
+                if (sel.isEmpty()) {
+                    return null;
+                }
+                useFood = sel.get(0) == 0;
+            }
+            PaymentDecision pd = useFood ? pickPayers("sacrifice", food, 1)
+                                         : pickPayers("exile", grave, 3);
+            if (pd == DECLINED) {
+                return null;
+            }
+            return pd != null ? pd : super.visit(cost);
+        }
+
+        /**
+         * Collect evidence N: exile any number of cards from your graveyard with
+         * total mana value N or more. Not a fixed count, so pickPayers cannot
+         * express it -- the prompt is 0..all and the total is checked after.
+         */
+        @Override
+        public PaymentDecision visit(CostCollectEvidence cost) {
+            CardCollection list = CardLists.filter(getPlayer().getCardsIn(ZoneType.Graveyard),
+                    CardPredicates.canExiledBy(ability, isEffect()));
+            int total = cost.getAbilityAmount(ability);
+            if (list.isEmpty() || total <= 0) {
+                return super.visit(cost);
+            }
+            List<Card> pool = new ArrayList<>();
+            List<String> names = new ArrayList<>();
+            for (Card c : list) {
+                pool.add(c);
+                names.add(c.getName() + " (mv " + c.getCMC() + ")");
+            }
+            List<Integer> sel = promptIndices(
+                    sourceName() + ": exile cards totalling mana value " + total
+                            + " or more (none = decline)",
+                    names, 0, pool.size(), true, "choose");
+            if (sel.isEmpty()) {
+                return null;
+            }
+            CardCollection chosen = new CardCollection();
+            int sum = 0;
+            for (int idx : sel) {
+                if (idx >= 0 && idx < pool.size()) {
+                    chosen.add(pool.get(idx));
+                    sum += pool.get(idx).getCMC();
+                }
+            }
+            if (chosen.isEmpty() || sum < total) {
+                return null;   // not enough evidence: the cost goes unpaid
+            }
+            return PaymentDecision.card(chosen);
+        }
+
+        /** Which exiled card is put into your graveyard. */
+        @Override
+        public PaymentDecision visit(CostExiledMoveToGrave cost) {
+            int c = cost.getAbilityAmount(ability);
+            Player activator = ability.getActivatingPlayer();
+            if (activator == null || c <= 0) {
+                return super.visit(cost);
+            }
+            CardCollectionView list = CardLists.getValidCards(
+                    activator.getGame().getCardsIn(ZoneType.Exile), cost.getType().split(";"),
+                    activator, ability.getHostCard(), ability);
+            PaymentDecision pd = pickPayers("put into your graveyard", list, c);
+            if (pd == DECLINED) {
+                return null;
+            }
+            return pd != null ? pd : super.visit(cost);
+        }
+
+        /** Which Aura or Equipment comes off. */
+        @Override
+        public PaymentDecision visit(CostUnattach cost) {
+            CardCollection targets = cost.findCardToUnattach(ability.getHostCard(), getPlayer(), ability);
+            if (targets == null || targets.isEmpty()) {
+                return super.visit(cost);
+            }
+            if (targets.size() == 1) {
+                return confirmSourceCost("unattach " + targets.getFirst().getName())
+                        ? PaymentDecision.card(targets.getFirst()) : null;
+            }
+            PaymentDecision pd = pickPayers("unattach", targets, cost.getAbilityAmount(ability));
+            if (pd == DECLINED) {
+                return null;
+            }
+            return pd != null ? pd : super.visit(cost);
+        }
+
+        /** Which of your permanents untap to pay. */
+        @Override
+        public PaymentDecision visit(CostUntapType cost) {
+            int c = cost.getAbilityAmount(ability);
+            if (c <= 0) {
+                return super.visit(cost);
+            }
+            CardCollection valid = CardLists.getValidCards(
+                    getPlayer().getGame().getCardsIn(ZoneType.Battlefield), cost.getType().split(";"),
+                    getPlayer(), ability.getHostCard(), ability);
+            valid = CardLists.filter(valid, c2 -> c2.canUntap(null, false)
+                    && (c2.getCounters(CounterEnumType.STUN) == 0
+                        || c2.canRemoveCounters(CounterEnumType.STUN)));
+            PaymentDecision pd = pickPayers("untap", valid, c);
+            if (pd == DECLINED) {
+                return null;
+            }
+            return pd != null ? pd : super.visit(cost);
+        }
+
+        /** Which permanent you take control of to pay. */
+        @Override
+        public PaymentDecision visit(CostGainControl cost) {
+            int c = cost.getAbilityAmount(ability);
+            if (c <= 0) {
+                return super.visit(cost);
+            }
+            CardCollectionView valid = CardLists.getValidCards(
+                    getPlayer().getCardsIn(ZoneType.Battlefield), cost.getType().split(";"),
+                    getPlayer(), ability.getHostCard(), ability);
+            valid = CardLists.filter(valid, crd -> crd.canBeControlledBy(getPlayer()));
+            PaymentDecision pd = pickPayers("gain control of", valid, c);
+            if (pd == DECLINED) {
+                return null;
+            }
+            return pd != null ? pd : super.visit(cost);
+        }
+
+        /**
+         * A colour named as a COST (Painter's Servant-shaped cards). chooseColors
+         * is one of ours, so routing through it is all this needs -- but
+         * AiCostDecision does not route, it picks.
+         */
+        @Override
+        public PaymentDecision visit(CostChooseColor cost) {
+            int c = cost.getAbilityAmount(ability);
+            return PaymentDecision.colors(chooseColors(
+                    sourceName() + ": choose a colour", ability, c, c, ColorSet.WUBRG));
+        }
+
+        /** A creature type named as a COST; chooseSomeType is likewise ours. */
+        @Override
+        public PaymentDecision visit(CostChooseCreatureType cost) {
+            String choice = chooseSomeType("Creature", ability,
+                    CardType.getAllCreatureTypes(), true);
+            return choice == null ? null : PaymentDecision.type(choice);
+        }
+
+        /**
+         * Which opponent gains the life. Free in a duel, a real decision in a
+         * pod -- and the AI was making it.
+         */
+        @Override
+        public PaymentDecision visit(CostGainLife cost) {
+            List<Player> opts = new ArrayList<>();
+            for (Player opp : cost.getPotentialTargets(getPlayer(), ability)) {
+                if (opp.canGainLife()) {
+                    opts.add(opp);
+                }
+            }
+            if (opts.isEmpty()) {
+                return super.visit(cost);
+            }
+            if (cost.getCntPlayers() == Integer.MAX_VALUE || opts.size() == 1) {
+                return PaymentDecision.players(opts);   // everyone, or no choice
+            }
+            List<String> names = new ArrayList<>();
+            for (Player p : opts) {
+                names.add(p.getName());
+            }
+            List<Integer> sel = promptIndices(sourceName() + ": which player gains life?",
+                    names, 1, 1, false, "choose");
+            if (sel.isEmpty()) {
+                return null;
+            }
+            List<Player> chosen = new ArrayList<>();
+            chosen.add(opts.get(sel.get(0)));
+            return PaymentDecision.players(chosen);
+        }
+
+        /** Which spell on the stack gets exiled to pay. */
+        @Override
+        public PaymentDecision visit(CostExileFromStack cost) {
+            List<SpellAbility> sas = new ArrayList<>();
+            List<String> names = new ArrayList<>();
+            for (SpellAbilityStackInstance si : getPlayer().getGame().getStack()) {
+                Card stC = si.getSourceCard();
+                SpellAbility stSA = si.getSpellAbility().getRootAbility();
+                if (stC != null && stSA != null && stSA.isSpell()
+                        && stC.isValid(cost.getType().split(";"), ability.getActivatingPlayer(),
+                                       ability.getHostCard(), ability)) {
+                    sas.add(stSA);
+                    names.add(stSA.getStackDescription());
+                }
+            }
+            if ("All".equals(cost.getType())) {
+                return PaymentDecision.spellabilities(sas);
+            }
+            int c = cost.getAbilityAmount(ability);
+            if (c <= 0 || sas.size() < c) {
+                return super.visit(cost);
+            }
+            List<Integer> sel = promptIndices(
+                    sourceName() + ": exile which spell from the stack?", names, c, c, false, "choose");
+            if (sel.size() != c) {
+                return null;
+            }
+            List<SpellAbility> chosen = new ArrayList<>();
+            for (int idx : sel) {
+                if (idx >= 0 && idx < sas.size()) {
+                    chosen.add(sas.get(idx));
+                }
+            }
+            return PaymentDecision.spellabilities(chosen);
+        }
+
+        // --- costs with no WHICH, only a WHETHER ---------------------------
+        // AiCostDecision pays these on its own read of the board. That is right
+        // for an activation cost the player already opted into, and wrong for an
+        // unless cost during resolution, where whether to pay is the decision.
+        // confirmSourceCost draws that line.
+
+        @Override
+        public PaymentDecision visit(CostPayLife cost) {
+            int c = cost.getAbilityAmount(ability);
+            return confirmSourceCost("pay " + c + " life") ? super.visit(cost) : null;
+        }
+
+        @Override
+        public PaymentDecision visit(CostMill cost) {
+            int c = cost.getAbilityAmount(ability);
+            return confirmSourceCost("mill " + c + " card" + (c == 1 ? "" : "s"))
+                    ? super.visit(cost) : null;
+        }
+
+        @Override
+        public PaymentDecision visit(CostDamage cost) {
+            int c = cost.getAbilityAmount(ability);
+            return confirmSourceCost("take " + c + " damage") ? super.visit(cost) : null;
+        }
+
+        @Override
+        public PaymentDecision visit(CostDraw cost) {
+            int c = cost.getAbilityAmount(ability);
+            return confirmSourceCost("draw " + c + " card" + (c == 1 ? "" : "s"))
+                    ? super.visit(cost) : null;
         }
     }
 
@@ -903,7 +1454,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         int hi = Math.min(max, candidates.size());
         String host = sa.getHostCard() != null ? sa.getHostCard().getName() : "ability";
         List<Integer> sel = promptIndices(
-            "Choose target" + (hi > 1 ? "s" : "") + " for " + host,
+            "Choose target" + (hi > 1 ? "s" : "") + " for " + host + targetingContext(sa),
             names, cardNamesOf(candidates), min, hi, min == 0, "target_select", null);
         for (int idx : sel) {
             if (idx >= 0 && idx < candidates.size()) {
@@ -1428,9 +1979,14 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         return !sel.isEmpty() && sel.get(0) == 0;
     }
 
+    // The bail-out used to be 50, which handed X back to the AI on any spell
+    // cast with more than 50 mana available -- reachable in a Commander pod, and
+    // silent when it happens. The client renders a filter box past 60 options,
+    // so a long numeric list is typed into rather than scrolled; 300 is past any
+    // real X and still an answerable prompt.
     @Override
     public int chooseNumber(SpellAbility sa, String title, int min, int max) {
-        if (min >= max || max - min > 50) return super.chooseNumber(sa, title, min, max);
+        if (min >= max || max - min > 300) return super.chooseNumber(sa, title, min, max);
         List<String> names = new ArrayList<>();
         for (int n = min; n <= max; n++) names.add(String.valueOf(n));
         List<Integer> sel = promptIndices(title, names, 1, 1, false, "number");
@@ -1781,6 +2337,9 @@ public class PlayerControllerBridge extends PlayerControllerAi {
      * Pay a cost to reroll / modify a die. The AI hardcoded false, so the option
      * was never even offered - "you may pay {1} to reroll" silently never paid.
      */
+    // Asked the question and threw the answer away, exactly as payCombatCost
+    // did: "you may pay {1} to reroll" charged nothing, so the reroll was free
+    // and anything keyed on the cost actually being paid never happened.
     @Override
     public boolean payCostDuringRoll(Cost cost, SpellAbility sa) {
         String host = (sa != null && sa.getHostCard() != null)
@@ -1791,7 +2350,18 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         names.add("Decline");
         List<Integer> sel = promptIndices(host + ": pay " + what + "?",
                 names, 1, 1, false, "confirm");
-        return !sel.isEmpty() && sel.get(0) == 0;
+        if (sel.isEmpty() || sel.get(0) != 0) {
+            return false;
+        }
+        if (cost == null || sa == null) {
+            return true;
+        }
+        try {
+            return PlaySpellAbility.payCostDuringAbilityResolve(this, getPlayer(), cost, sa, null);
+        } catch (Exception e) {
+            System.err.println("[bridge] roll cost payment failed for " + host + ": " + e);
+            return false;
+        }
     }
 
     // ---- Batch 4: combat and cast-timing --------------------------------------
@@ -1840,9 +2410,25 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     }
 
     /**
-     * Pay an attack/block tax (Propaganda, Ghostly Prison, exert and enlist
-     * costs). The AI auto-paid out of the human's resources; declining removes
-     * the creature from combat, so this has to be the player's call.
+     * Pay an attack tax. Two different things wear this method: a
+     * Propaganda-style tax, and the OPTIONAL attack costs -- exert and enlist --
+     * which CombatUtil.checkPropagandaEffects routes here as well.
+     *
+     * Answering the question was never the whole job. This asked "Pay {2}?" and
+     * returned the answer, and nothing ever paid the cost: the attack went in
+     * for free past Ghostly Prison, and -- because a cost that is never paid is
+     * a cost that never happened -- Exert<1/CARDNAME> left the creature
+     * unexerted, so the Exerted trigger never fired. Glorybringer attacked,
+     * dealt its combat damage, and never asked for the 4-damage target. That is
+     * the report this fixes.
+     *
+     * PlayerControllerHuman hands the whole thing to
+     * PlaySpellAbility.payCostDuringAbilityResolve, which walks the cost parts
+     * through getCostDecisionMaker (our BridgeCostDecision, so each part is the
+     * player's choice) and finishes any mana part on the auto-tapper. Do the
+     * same, but keep the explicit Pay/Decline question in front of it: the mana
+     * branch is answered by the AI's payManaCost, which never declines, and
+     * declining a tax is a real decision -- it costs you the attack.
      */
     @Override
     public boolean payCombatCost(Card card, Cost cost, SpellAbility sa, String prompt) {
@@ -1854,7 +2440,20 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         List<Integer> sel = promptIndices(
                 (prompt == null || prompt.isEmpty() ? who + ": pay " + what + "?" : prompt),
                 names, 1, 1, false, "confirm");
-        return !sel.isEmpty() && sel.get(0) == 0;
+        if (sel.isEmpty() || sel.get(0) != 0) {
+            return false;
+        }
+        if (cost == null || sa == null) {
+            return true;
+        }
+        try {
+            return PlaySpellAbility.payCostDuringAbilityResolve(this, getPlayer(), cost, sa, prompt);
+        } catch (Exception e) {
+            // Returning true is what the old code did by omission, and it is the
+            // wrong side to fail on: it puts an unpaid attacker into combat.
+            System.err.println("[bridge] combat cost payment failed for " + who + ": " + e);
+            return false;
+        }
     }
 
     /**
@@ -2291,7 +2890,26 @@ public class PlayerControllerBridge extends PlayerControllerAi {
 
     // ---- Additional human decision points (were silently defaulting to the AI) ----
 
-    /** Optional ("may") triggered ability: ask the human whether to use it. */
+    /**
+     * Optional ("may") triggered ability: ask the human whether to use it.
+     *
+     * This question ALWAYS arrives after the target prompt, and that is correct
+     * even though it reads backwards. An optional trigger goes on the stack with
+     * its targets already chosen (CR 603.3c); the "you may" is part of the
+     * effect and is not decided until the ability resolves, which is what lets
+     * you decline after seeing what everyone did in response. Forge implements
+     * exactly that -- TriggerHandler.runSingleTrigger puts the wrapper on the
+     * stack, and WrappedAbility.resolve() calls this method.
+     *
+     * What was wrong is that the question did not say so. "Use Hissing
+     * Iguanar's triggered ability?" names no target, mentions no trigger, and
+     * lands minutes of game-time after the thing that caused it -- so it reads
+     * as a brand new offer to activate something. That is the report: "my
+     * hissing iguanar triggers, i choose target for the damage, then i get
+     * another prompt asking if i want to activate its ability."
+     *
+     * So say what is resolving and at whom, and put the card on screen with it.
+     */
     @Override
     public boolean confirmTrigger(WrappedAbility wrapper) {
         SpellAbility sa = wrapper == null ? null : wrapper.getWrappedAbility();
@@ -2300,8 +2918,53 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         if (sa != null && sa.hasParam("Cost") && !"0".equals(sa.getParam("Cost"))) {
             return true;
         }
-        String host = (sa != null && sa.getHostCard() != null) ? sa.getHostCard().getName() : "ability";
-        return yesNo("Use " + host + "'s triggered ability?");
+        Card host = sa != null ? sa.getHostCard() : null;
+        String name = host != null ? host.getName() : "ability";
+        String what = triggerResolveText(wrapper, sa);
+        List<String> names = new ArrayList<>();
+        names.add("Yes, use it");
+        names.add("No, decline");
+        List<Integer> sel = promptIndices(
+                name + "'s trigger is resolving" + what + " Use it?",
+                names, 1, 1, false, "confirm", host);
+        return !sel.isEmpty() && sel.get(0) == 0;
+    }
+
+    /**
+     * ", targeting AI 2." for the confirm above -- the one fact the player needs
+     * to connect this question to the target prompt they answered earlier.
+     *
+     * Deliberately NOT getStackDescription. That reads
+     * "Whenever another creature dies, you may have Hissing Iguanar deal 1
+     * damage to target player or planeswalker. (Targeting: [[Computer]])
+     * [Zone Changer: Grizzly Bears (89)]" -- the card's whole rules text, which
+     * the card image beside the prompt is already showing, wrapped around two
+     * kinds of engine annotation. The targets alone say the new thing.
+     */
+    private static String triggerResolveText(WrappedAbility wrapper, SpellAbility sa) {
+        try {
+            SpellAbility targeted = sa;
+            if (targeted == null || targeted.getTargets() == null
+                    || !targeted.getTargets().getTargetEntities().iterator().hasNext()) {
+                targeted = wrapper;
+            }
+            if (targeted == null || targeted.getTargets() == null) {
+                return ".";
+            }
+            StringBuilder names = new StringBuilder();
+            for (GameEntity ge : targeted.getTargets().getTargetEntities()) {
+                if (ge == null) {
+                    continue;
+                }
+                if (names.length() > 0) {
+                    names.append(" and ");
+                }
+                names.append(entityName(ge));
+            }
+            return names.length() == 0 ? "." : ", targeting " + names + ".";
+        } catch (Exception e) {   // a prompt must never be the thing that breaks
+            return ".";
+        }
     }
 
     /** Optional cost during resolution ("Do you want to pay ...?"). */
@@ -2333,6 +2996,19 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             prompt = "Pay echo";
         } else if (sa != null && sa.isKeyword(Keyword.CUMULATIVE_UPKEEP)) {
             prompt = "Cumulative upkeep for " + sa.getHostCard();
+        }
+        // A mana-only unless cost never reaches a cost visitor: it goes straight
+        // to payManaCost, which is the AI's -- deliberately, so the auto-tapper
+        // picks the lands. But WHICH lands and WHETHER to pay at all are
+        // different questions, and only the first is meant to be automatic.
+        // Without this, every "unless you pay {1}" -- Rhystic Study being the
+        // famous one -- paid itself out of your mana with no prompt.
+        if (cost != null && sa != null && cost.isOnlyManaCost()
+                && !cost.getTotalMana().isZero() && !cost.isMandatory()) {
+            String host = sa.getHostCard() != null ? sa.getHostCard().getName() : "this";
+            if (!yesNo("Pay " + cost.toSimpleString() + " for " + host + "?")) {
+                return false;
+            }
         }
         try {
             return PlaySpellAbility.payCostDuringAbilityResolve(this, getPlayer(), cost, sa, prompt);
@@ -2592,36 +3268,67 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     }
 
     /**
-     * Combat damage assignment. For a single blocked creature WITH trample we let
-     * the human choose how much to assign to the blocker (the rest tramples
-     * through). Everything else is assigned legally by the engine, which already
-     * respects the damage-assignment order the human chose via orderBlockers.
+     * Combat damage assignment. Only a lone blocker plus trample used to reach
+     * the player; two blockers went to super, which is
+     * ComputerUtilCombat.distributeAIDamage -- so the AI decided which of your
+     * attacker's blockers died, and how much of a trampler got through, on its
+     * own risk appetite.
+     *
+     * The list arrives in the damage-assignment order the player already chose
+     * through orderBlockers, so walking it in order and asking for each is the
+     * whole decision. CR 510.1c holds by construction: the minimum offered for a
+     * blocker is lethal damage to it (or everything left, if that is less),
+     * because assigning less than lethal is only legal when nothing is assigned
+     * past it -- and then the remainder has nowhere else to go anyway.
      */
     @Override
     public Map<Card, Integer> assignCombatDamage(Card attacker, CardCollectionView blockers,
             CardCollectionView remaining, int damageDealt, GameEntity defender, boolean overrideOrder) {
         boolean trample = attacker != null && attacker.hasKeyword(Keyword.TRAMPLE) && defender != null;
-        if (blockers != null && blockers.size() == 1 && trample && damageDealt > 0) {
-            try {
-                Card b = blockers.get(0);
-                int lethal = Math.max(0, b.getLethalDamage());
-                int min = Math.min(lethal, damageDealt);
-                Map<Card, Integer> map = new HashMap<>();
-                if (min >= damageDealt) {          // no excess to trample
-                    map.put(b, damageDealt);
-                    return map;
-                }
-                int toBlocker = chooseNumber(null,
-                    "Assign damage to " + b.getName() + " (rest tramples to " + entityName(defender) + ")",
-                    min, damageDealt);
-                map.put(b, toBlocker);
-                if (damageDealt - toBlocker > 0) map.put(null, damageDealt - toBlocker);
-                return map;
-            } catch (Exception e) {
-                // fall through to engine default
-            }
+        if (blockers == null || blockers.isEmpty() || damageDealt <= 0) {
+            return super.assignCombatDamage(attacker, blockers, remaining, damageDealt, defender, overrideOrder);
         }
-        return super.assignCombatDamage(attacker, blockers, remaining, damageDealt, defender, overrideOrder);
+        try {
+            Map<Card, Integer> map = new HashMap<>();
+            int left = damageDealt;
+            int n = blockers.size();
+            for (int i = 0; i < n && left > 0; i++) {
+                Card b = blockers.get(i);
+                boolean last = (i == n - 1);
+                if (last && !trample) {          // nowhere else for it to go
+                    map.put(b, left);
+                    left = 0;
+                    break;
+                }
+                int lethal = Math.max(0, b.getLethalDamage());
+                int lo = Math.min(lethal, left);
+                if (lo >= left) {                // no spare damage to place
+                    map.put(b, left);
+                    left = 0;
+                    break;
+                }
+                String where = last
+                        ? " (rest tramples to " + entityName(defender) + ")"
+                        : " (rest goes to the blockers behind it)";
+                int toBlocker = chooseNumber(null,
+                        "Assign damage to " + b.getName() + where, lo, left);
+                if (toBlocker > 0) {
+                    map.put(b, toBlocker);
+                }
+                left -= toBlocker;
+            }
+            if (left > 0) {
+                if (trample) {
+                    map.put(null, left);         // null is the defending entity
+                } else {
+                    Card lastBlocker = blockers.get(n - 1);
+                    map.put(lastBlocker, map.getOrDefault(lastBlocker, 0) + left);
+                }
+            }
+            return map;
+        } catch (Exception e) {
+            return super.assignCombatDamage(attacker, blockers, remaining, damageDealt, defender, overrideOrder);
+        }
     }
 
     // ---- Replacement effects + simultaneous triggers ----
@@ -3091,21 +3798,123 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         }
     }
 
+    /**
+     * Evasion was not enforced. This checked each block with
+     * CombatUtil.canBlock(blocker, combat) -- the overload that takes no
+     * attacker and only answers "can this creature block ANYTHING right now":
+     * untapped, no "can't block", within its block-count limits. Every
+     * attacker-relative restriction lives behind the three-argument
+     * canBlock(attacker, blocker, combat), which ends at
+     * StaticAbilityCantAttackBlock.cantBlockBy -- and flying is exactly that,
+     * since Keyword.FLYING is defined as "can't be blocked except by creatures
+     * with flying or reach". So a ground creature could block a Dragon and the
+     * block stood. Protection, shadow, intimidate and landwalk were open the
+     * same way.
+     *
+     * Menace is a property of the whole SET of blocks rather than of any one
+     * pair, so it needs CombatUtil.validateBlocks on top -- the same call
+     * Forge's own human client makes before it will let you leave the blocking
+     * step. PhaseHandler does NOT do this for us: declareBlockersTurnBasedAction
+     * only strips "can't block alone" cases and unpaid block costs.
+     *
+     * A rejected block is reported rather than silently dropped. A block that
+     * just vanishes reads as a UI bug -- which is exactly how the native
+     * engine's version of this ("X cannot block Y." to stdout) reads today.
+     */
     @Override
     public void declareBlockers(Player defender, Combat combat) {
         String state = StateExporter.toJson(defender.getGame().getView(), defender);
-        String reply = ask("{\"kind\":\"declare_blockers\",\"state\":" + state + "}");
+        // Which attacker each of this player's creatures may legally block, so
+        // the client can stop OFFERING a flier to a ground creature. Refusing
+        // the block below is the rules fix; this is the half that keeps the
+        // player from being told no in the first place.
+        StringBuilder legal = new StringBuilder("[");
+        for (Card blk : defender.getCreaturesInPlay()) {
+            StringBuilder ids = new StringBuilder();
+            for (Card atk : combat.getAttackers()) {
+                if (CombatUtil.canBlock(atk, blk, combat)) {
+                    if (ids.length() > 0) ids.append(',');
+                    ids.append(atk.getId());
+                }
+            }
+            if (legal.length() > 1) legal.append(',');
+            legal.append("{\"blocker\":").append(blk.getId())
+                 .append(",\"attackers\":[").append(ids).append("]}");
+        }
+        legal.append(']');
+        String reply = ask("{\"kind\":\"declare_blockers\",\"legal\":" + legal
+                + ",\"state\":" + state + "}");
         String compact = reply.replaceAll("\\s", "");
         if (compact.contains("\"blocks\":\"none\"") || !compact.contains("blocker")) {
             return; // no blocks
         }
+        List<String> rejected = new ArrayList<>();
+        List<Card> assigned = new ArrayList<>();
         for (Card blk : defender.getCreaturesInPlay()) {
             int atkId = parseInt(compact, "\"blocker\":" + blk.getId() + ",\"attacker\":");
             if (atkId < 0) continue;
             Card atk = findAttacker(combat, atkId);
-            if (atk != null && CombatUtil.canBlock(blk, combat)) {
-                combat.addBlocker(atk, blk);
+            if (atk == null) continue;
+            if (!CombatUtil.canBlock(atk, blk, combat)) {
+                rejected.add(blk.getName() + " can't block " + atk.getName() + ".");
+                continue;
             }
+            combat.addBlocker(atk, blk);
+            assigned.add(blk);
+        }
+        // Menace and friends: legal one pair at a time, illegal as a set. Drop
+        // the most recent block until the set is legal rather than re-asking --
+        // the player is mid-combat, and a prompt that repeats with no way to
+        // satisfy it is worse than being told what was dropped.
+        String why = safeValidateBlocks(combat, defender);
+        while (why != null && !assigned.isEmpty()) {
+            Card drop = assigned.remove(assigned.size() - 1);
+            combat.undoBlockingAssignment(drop);
+            rejected.add(drop.getName() + " could not block: " + why);
+            why = safeValidateBlocks(combat, defender);
+        }
+        if (!rejected.isEmpty()) {
+            StringBuilder lines = new StringBuilder();
+            for (int i = 0; i < rejected.size(); i++) {
+                if (i > 0) lines.append(',');
+                lines.append('"').append(StateExporter.esc(rejected.get(i))).append('"');
+            }
+            ask("{\"kind\":\"feed\",\"lines\":[" + lines + "]}");
+        }
+    }
+
+    /** The reason a set of blocks is illegal, or null when it is fine. */
+    private static String safeValidateBlocks(Combat combat, Player defender) {
+        try {
+            String why = CombatUtil.validateBlocks(combat, defender);
+            return (why == null || why.trim().isEmpty()) ? null : why.trim();
+        } catch (Exception e) {   // never let combat die over a validation call
+            System.out.println("[forge-bridge] validateBlocks failed: " + e);
+            return null;
+        }
+    }
+
+    /**
+     * Says which kind of thing you are aiming, when it is not a spell you just
+     * chose to cast.
+     *
+     * An optional trigger is targeted BEFORE you are asked whether to use it --
+     * the rules order, see confirmTrigger -- so a bare "Choose target for
+     * Hissing Iguanar" asks you to aim something you never agreed to do, and
+     * the confirm that follows reads as an unrelated second prompt. Naming the
+     * trigger and warning that the confirm is coming turns two mystery prompts
+     * into one sequence.
+     */
+    private static String targetingContext(SpellAbility sa) {
+        try {
+            if (sa == null || !sa.isTrigger()) {
+                return "";
+            }
+            return sa.isOptionalTrigger()
+                    ? "'s trigger (you choose whether to use it when it resolves)"
+                    : "'s trigger";
+        } catch (Exception e) {
+            return "";
         }
     }
 
