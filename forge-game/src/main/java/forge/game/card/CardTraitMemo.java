@@ -38,6 +38,8 @@ public final class CardTraitMemo {
         final Map<CardState, FCollectionView<ReplacementEffect>> replacementsNoRules = new IdentityHashMap<>();
         /** Game -> its STATIC_ABILITIES_SOURCE_ZONES scan; see staticSourceCards. */
         final Map<Game, CardCollectionView> zoneScans = new IdentityHashMap<>();
+        /** Game -> zone -> every player's cards there; see cardsIn. */
+        final Map<Game, Map<forge.game.zone.ZoneType, CardCollectionView>> zoneLists = new IdentityHashMap<>();
         long hits, misses, zoneHits, zoneMisses;
     }
 
@@ -112,11 +114,51 @@ public final class CardTraitMemo {
         return v;
     }
 
-    /** A zone changed on this thread: forget every remembered zone scan. */
+    /**
+     * Game.getCardsIn(zone) -- every player's cards in one zone -- remembered
+     * for one evaluation, as a list that refuses mutation.
+     *
+     * The second cliff on v124 (Sage's 08:00 pod, turns 34-35 at 119s and
+     * 113s engine, 20 timeouts): per candidate spell the AI runs a full
+     * block/attack simulation, and every combat trigger's requirement check
+     * inside it calls game.getCardsIn(Battlefield), which copies all four
+     * battlefields into a fresh set. Same fix as the static-source scan, one
+     * level down; see {@link ReadOnlyCardCollection} for why the shared list
+     * throws on mutation instead of trusting several hundred callers.
+     */
+    public static CardCollectionView cardsIn(Game game, forge.game.zone.ZoneType zone,
+            java.util.function.Supplier<CardCollectionView> build) {
+        Memo m = ACTIVE.get();
+        if (m == null || !ZONE_MEMO) {
+            return build.get();
+        }
+        Map<forge.game.zone.ZoneType, CardCollectionView> byZone = m.zoneLists.get(game);
+        if (byZone == null) {
+            byZone = new java.util.EnumMap<>(forge.game.zone.ZoneType.class);
+            m.zoneLists.put(game, byZone);
+        }
+        CardCollectionView v = byZone.get(zone);
+        if (v == null) {
+            m.zoneMisses++;
+            v = new ReadOnlyCardCollection(build.get());
+            byZone.put(zone, v);
+        } else {
+            m.zoneHits++;
+        }
+        return v;
+    }
+
+    /** A zone changed on this thread: forget every remembered zone list. */
     public static void zonesChanged() {
         Memo m = ACTIVE.get();
-        if (m != null && !m.zoneScans.isEmpty()) {
+        if (m == null) {
+            return;
+        }
+        if (!m.zoneScans.isEmpty()) {
             m.zoneScans.clear();
+        }
+        if (!m.zoneLists.isEmpty()) {
+            m.zoneLists.clear();
         }
     }
 

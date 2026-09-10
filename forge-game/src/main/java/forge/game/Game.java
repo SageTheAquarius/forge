@@ -607,7 +607,9 @@ public class Game {
         if (zone == ZoneType.Stack) {
             return getStackZone().getCards();
         }
-        return getPlayers().getCardsIn(zone);
+        // Every player's cards in the zone, copied into one list. Remembered
+        // per AI evaluation (CardTraitMemo.cardsIn); fresh for everyone else.
+        return CardTraitMemo.cardsIn(this, zone, () -> getPlayers().getCardsIn(zone));
     }
 
     public CardCollectionView getCardsIncludePhasingIn(final ZoneType zone) {
