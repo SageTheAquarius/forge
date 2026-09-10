@@ -211,6 +211,9 @@ public class AiAttackController {
         for (Player opp : opponents) {
             final int life = opp.getLife();
             int score = ComputerUtil.evaluateBoardPosition(ai, opp);
+            // EconomyDraft: a seat with a temper attacks who it is angry at,
+            // not only who is winning. Zero when moods are off.
+            score += AiMood.grudgeBonus(ai, opp);
             int lowLifeThreshold = Math.min(20, opp.getStartingLife());
             if (life > 0 && life < lowLifeThreshold) {
                 // TODO commander damage
@@ -1328,6 +1331,10 @@ public class AiAttackController {
         } else {
             aiAggression = 0;
         } // stay at home to block
+
+        // EconomyDraft: temper shifts the ladder -- furious seats swing into
+        // trades, demoralised ones keep blockers home. Identity when off.
+        aiAggression = AiMood.adjustAggression(ai, aiAggression, defendingOpponent);
 
         if ( LOG_AI_ATTACKS )
             System.out.println(aiAggression + " = ai aggression");

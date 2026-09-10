@@ -108,6 +108,15 @@ public class AiController {
         game = game0;
         memory = new AiCardMemory();
         simPicker = new SpellAbilityPicker(player);
+        mood = new AiMood(this);
+    }
+
+    // EconomyDraft: this seat's temper (grudges / anger / morale). Off, and
+    // free, unless ForgeServer enables it -- see AiMood.
+    private final AiMood mood;
+
+    public AiMood getMood() {
+        return mood;
     }
 
     public boolean usesHybridSimulation() {

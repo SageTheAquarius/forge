@@ -158,6 +158,20 @@ public final class ForgeServer {
             }
         }
 
+        // AI temper, from the Commander editor's Temperament picker: 0 (or the
+        // file absent) = stock Forge, 1 = mild, 2 = volatile. See forge.ai.AiMood.
+        int moodLevel = 0;
+        File moodFlag = new File(deckDir + "_ai_mood.txt");
+        if (moodFlag.exists()) {
+            try {
+                String raw = new String(java.nio.file.Files.readAllBytes(
+                        moodFlag.toPath()), "UTF-8").trim();
+                moodLevel = Math.max(0, Math.min(2, Integer.parseInt(raw)));
+            } catch (Exception e) {
+                moodLevel = 0;   // unreadable: stock behaviour, never a surprise
+            }
+        }
+
         // _commander.txt is the AI seat count and _humans.txt the human one, so
         // the table is simply the sum - no arithmetic between them. A 4-seat pod
         // with two humans is _humans.txt=2 alongside _commander.txt=2.
@@ -265,6 +279,7 @@ public final class ForgeServer {
         Match mc = new Match(rules, pp, "Forge");
         Game g = mc.createGame();
         forge.ai.AiPerf.reset();
+        forge.ai.AiMood.resetAll();
 
         // Forge's 5s AI_TIMEOUT is a budget PER AI DECISION, and it was chosen
         // for a duel, where one AI seat decides between the human's windows. A
@@ -304,6 +319,16 @@ public final class ForgeServer {
             Player ph = g.getPlayers().get(i);
             ph.dangerouslySetController(
                     new PlayerControllerBridge(g, ph, humanLobby.get(i), i));
+        }
+        // Give every AI-driven seat its temper. Human seats were just handed a
+        // bridge controller, so attach() finds no AiController there and does
+        // nothing; with moodLevel 0 it is a no-op everywhere.
+        if (moodLevel > 0) {
+            for (int i = humanSeats; i < g.getPlayers().size(); i++) {
+                forge.ai.AiMood.attach(g.getPlayers().get(i), moodLevel);
+            }
+            System.out.println("[MOOD] level " + moodLevel + " on "
+                    + Math.max(0, g.getPlayers().size() - humanSeats) + " AI seat(s)");
         }
         Player p0 = g.getPlayers().get(0);
 

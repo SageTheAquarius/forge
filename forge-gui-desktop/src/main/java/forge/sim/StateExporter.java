@@ -483,6 +483,9 @@ public final class StateExporter {
         // mid-game still showed four live opponents with their last life total,
         // and offered dead players to attack.
         sb.append("\"has_lost\":").append(p.getHasLost()); sb.append(',');
+        // AI temper, e.g. "furious at Sage". Empty for humans, for calm seats
+        // and whenever moods are off, so the client can print it unconditionally.
+        kvs(sb, "mood", forge.ai.AiMood.describeFor(p.getId())); sb.append(',');
         // Start Your Engines: 0 = engine never started, 1-4 once it has, 4 = max
         // speed. Exported for every seat so the client can show it and the
         // bridge can announce a change.
