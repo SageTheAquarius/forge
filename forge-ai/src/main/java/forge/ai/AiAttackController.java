@@ -417,7 +417,48 @@ public class AiAttackController {
             // try to use strongest as attacker first
             CardLists.sortByPowerDesc(blockers);
 
-            for (Card c : blockers) {
+            // EconomyDraft (AiPerf.PREDICT_BOUND): the loop below runs one full
+            // combat prediction - a block simulation against every opponent - per
+            // candidate blocker. Ask the cheapest question first: is holding
+            // NOTHING back safe? Usually yes, and every candidate is then free.
+            // For aggro decks the loop is a pure prefix search (add the next
+            // strongest, stop at the first unsafe one), so when the answer is no
+            // the prefix is found by bisection instead of by walking it.
+            boolean settled = false;
+            if (AiPerf.PREDICT_BOUND) {
+                final List<Card> candidates = new ArrayList<>();
+                for (Card c : blockers) {
+                    if (!vigilantes.contains(c)) {
+                        candidates.add(c);
+                    }
+                }
+                if (!candidates.isEmpty()) {
+                    CardCollection allOut = new CardCollection(notNeededAsBlockers);
+                    allOut.addAll(candidates);
+                    int lifeAllOut = ComputerUtil.predictNextCombatsRemainingLife(ai, playAggro, pilotsNonAggroDeck, 0, allOut);
+                    if (lifeAllOut != Integer.MIN_VALUE && (!pilotsNonAggroDeck || lifeAllOut >= lastAcceptableBaselineLife)) {
+                        notNeededAsBlockers.addAll(candidates);
+                        settled = true;
+                    } else if (!pilotsNonAggroDeck) {
+                        int lo = 0;
+                        int hi = candidates.size() - 1;
+                        while (lo < hi) {
+                            int mid = (lo + hi + 1) / 2;
+                            CardCollection trial = new CardCollection(notNeededAsBlockers);
+                            trial.addAll(candidates.subList(0, mid));
+                            if (ComputerUtil.predictNextCombatsRemainingLife(ai, playAggro, pilotsNonAggroDeck, 0, trial) == Integer.MIN_VALUE) {
+                                hi = mid - 1;
+                            } else {
+                                lo = mid;
+                            }
+                        }
+                        notNeededAsBlockers.addAll(candidates.subList(0, lo));
+                        settled = true;
+                    }
+                }
+            }
+
+            for (Card c : settled ? java.util.Collections.<Card>emptyList() : blockers) {
                 if (vigilantes.contains(c)) {
                     // TODO predict the chance it might die if attacking
                     continue;

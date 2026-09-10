@@ -100,6 +100,8 @@ public class AiController {
     private boolean useLivingEnd;
     private List<SpellAbility> skipped;
     private volatile boolean timeoutReached;
+    /** Fingerprint of the last window this seat answered "nothing" to; see AiPerf.fingerprint. */
+    private String idleFingerprint;
 
     public AiController(final Player computerPlayer, final Game game0) {
         player = computerPlayer;
@@ -1364,6 +1366,10 @@ public class AiController {
         sampler.setDaemon(true);
         sampler.start();
         String memo = "";
+        // The global AiCache still holds the last evaluation's board-position
+        // scores; the board may have moved since. Clear it as the eval path does.
+        AiCache.clear();
+        AiPerf.scopeBegin();
         if (useMemo) {
             CardTraitMemo.begin();
         }
@@ -1388,7 +1394,16 @@ public class AiController {
             if (useMemo && CardTraitMemo.isActive()) {
                 memo = CardTraitMemo.end();
             }
+            AiPerf.scopeEnd();
             long ms = System.currentTimeMillis() - t0;
+            AiPerf.spent(player, ms);
+            if ("declare_attackers".equals(what)) {
+                AiPerf.declAttackN.increment();
+                AiPerf.declAttackMs.add(ms);
+            } else {
+                AiPerf.declBlockN.increment();
+                AiPerf.declBlockMs.add(ms);
+            }
             if (ms >= 500) {
                 System.out.println("[AI-DECISION] " + what + " " + ms + "ms seat=" + player.getName()
                         + (memo.isEmpty() ? "" : " memo=" + memo));
@@ -1457,6 +1472,26 @@ public class AiController {
     }
 
     public List<SpellAbility> chooseSpellAbilityToPlay() {
+        // EconomyDraft (AiPerf.IDLE_PASS): three AI seats used to run a full
+        // evaluation at every one of the human's priority windows, most of them
+        // identical to the last (a chain of triggers resolving, everyone passing).
+        // If nothing this answer depends on has changed since this seat last
+        // answered "nothing", answer "nothing" again without evaluating. Only
+        // a null answer is remembered - a play is never replayed from memory.
+        String fp = null;
+        if (AiPerf.IDLE_PASS && !usesFullSimulation()) {
+            fp = AiPerf.fingerprint(game, player);
+            if (fp.equals(idleFingerprint)) {
+                AiPerf.idlePasses.increment();
+                return null;
+            }
+        }
+        List<SpellAbility> chosen = chooseSpellAbilityToPlayNow();
+        idleFingerprint = chosen == null ? fp : null;
+        return chosen;
+    }
+
+    private List<SpellAbility> chooseSpellAbilityToPlayNow() {
         AiCache.clear();
         // Reset cached predicted combat, as it may be stale. It will be
         // re-created if needed and used for any AI logic that needs it.
@@ -1713,6 +1748,7 @@ public class AiController {
             // length of the evaluation instead of rebuilt per question - see
             // forge.game.card.CardTraitMemo. Thread-local: nothing else sees it.
             CardTraitMemo.begin();
+            AiPerf.scopeBegin();
             try {
             //avoid ComputerUtil.aiLifeInDanger in loops as it slows down a lot.. call this outside loops will generally be fast...
             boolean isLifeInDanger = useLivingEnd && ComputerUtil.aiLifeInDanger(player, true, 0);
@@ -1797,6 +1833,7 @@ public class AiController {
 
             return null;
             } finally {
+                AiPerf.scopeEnd();
                 String memo = CardTraitMemo.end();
                 if (Boolean.getBoolean("bridge.traitmemo.log")) {
                     System.out.println("[TRAIT-MEMO] hits/misses=" + memo);
@@ -1805,12 +1842,15 @@ public class AiController {
         });
 
         Thread t = new Thread(future, "Game AI Eval");
+        final long evalT0 = System.currentTimeMillis();
+        AiPerf.evals.increment();
         t.start();
         try {
             return future.get(game.getAITimeout(), TimeUnit.SECONDS);
         } catch (InterruptedException | ExecutionException | TimeoutException e) {
             e.printStackTrace();
             if (e instanceof TimeoutException) {
+                AiPerf.timeouts.increment();
                 // log where the eval thread currently is - each timeout doubles as a
                 // profiler sample for diagnosing remaining AI slowdowns from user logs
                 StringBuilder sb = new StringBuilder("AI eval thread at timeout:");
@@ -1840,6 +1880,13 @@ public class AiController {
             }
             // TODO mark some as skipped to increase chance to find something playable next priority
             return null;
+        } finally {
+            final long evalMs = System.currentTimeMillis() - evalT0;
+            AiPerf.evalMs.add(evalMs);
+            if (evalMs >= 1000) {
+                AiPerf.evalsSlow.increment();
+            }
+            AiPerf.spent(player, evalMs);
         }
     }
 

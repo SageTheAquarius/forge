@@ -387,6 +387,9 @@ public final class StateExporter {
         // permanent and every game before the first one enters. The client draws
         // nothing at all in that case, so untouched games look exactly as they did.
         kvs(sb, "daytime", dayTime(human)); sb.append(',');
+        // AI pace counters, cumulative for this game (forge.ai.AiPerf). The relay
+        // prints the per-turn deltas next to its pace line.
+        sb.append("\"perf\":").append(forge.ai.AiPerf.json()).append(',');
 
         sb.append("\"players\":[");
         boolean firstP = true;

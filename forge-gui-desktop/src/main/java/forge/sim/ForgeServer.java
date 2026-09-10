@@ -256,6 +256,7 @@ public final class ForgeServer {
 
         Match mc = new Match(rules, pp, "Forge");
         Game g = mc.createGame();
+        forge.ai.AiPerf.reset();
 
         // Forge's 5s AI_TIMEOUT is a budget PER AI DECISION, and it was chosen
         // for a duel, where one AI seat decides between the human's windows. A

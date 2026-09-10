@@ -3171,6 +3171,59 @@ public class ComputerUtil {
         return predictNextCombatsRemainingLife(ai, serious, checkDiff, payment, excludedBlockers, ai.getOpponents());
     }
     public static int predictNextCombatsRemainingLife(Player ai, boolean serious, boolean checkDiff, int payment, final CardCollection excludedBlockers, final List<Player> opps) {
+        // EconomyDraft (AiPerf.PREDICT_CACHE): within one decision the same
+        // question is asked once per candidate spell and once per creature the
+        // attack controller considers holding back. The board is frozen for the
+        // decision, so the answer is too.
+        AiPerf.predicts.increment();
+        final java.util.Map<String, Object> scope = AiPerf.PREDICT_CACHE ? AiPerf.scope() : null;
+        String key = null;
+        if (scope != null) {
+            StringBuilder b = new StringBuilder(96).append("predict|").append(ai.getId())
+                    .append(serious ? 'S' : 's').append(checkDiff ? 'D' : 'd').append(payment).append('|');
+            if (excludedBlockers != null && !excludedBlockers.isEmpty()) {
+                int[] ids = new int[excludedBlockers.size()];
+                int i = 0;
+                for (Card c : excludedBlockers) {
+                    ids[i++] = c.getId();
+                }
+                java.util.Arrays.sort(ids);
+                for (int id : ids) {
+                    b.append(id).append(',');
+                }
+            }
+            b.append('|');
+            for (Player p : opps) {
+                b.append(p.getId()).append(',');
+            }
+            key = b.toString();
+            Object hit = scope.get(key);
+            if (hit != null) {
+                AiPerf.predictHits.increment();
+                return (Integer) hit;
+            }
+        }
+        int result = predictNextCombatsRemainingLifeNow(ai, serious, checkDiff, payment, excludedBlockers, opps);
+        if (scope != null) {
+            scope.put(key, result);
+        }
+        return result;
+    }
+
+    /** Can any creature of this player, outside the excluded set, block in this combat? */
+    private static boolean hasPossibleBlocker(Player ai, Combat combat, CardCollection excluded) {
+        for (Card b : ai.getCreaturesInPlay()) {
+            if (excluded != null && excluded.contains(b)) {
+                continue;
+            }
+            if (CombatUtil.canBlock(b, combat)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int predictNextCombatsRemainingLifeNow(Player ai, boolean serious, boolean checkDiff, int payment, final CardCollection excludedBlockers, final List<Player> opps) {
         // life won't change
         int remainingLife = Integer.MAX_VALUE;
 
@@ -3199,6 +3252,35 @@ public class ComputerUtil {
             }
             if (!containsAttacker) {
                 continue;
+            }
+            // EconomyDraft (AiPerf.PREDICT_BOUND): blocking never increases the
+            // damage a player takes, so if the AI is not in danger with NO blocks
+            // assigned, no block assignment can change that verdict - skip the
+            // simulation. Exact for the danger verdicts; exact for the numeric
+            // answer only when there is no blocker to assign. A seat over its
+            // per-turn thinking budget takes the unblocked estimate regardless.
+            final boolean fast = AiPerf.fast(ai);
+            if (AiPerf.PREDICT_BOUND || fast) {
+                final boolean dangerUnblocked = serious
+                        ? ComputerUtilCombat.lifeInSeriousDanger(ai, combat, payment)
+                        : ComputerUtilCombat.lifeInDanger(ai, combat, payment);
+                if (!dangerUnblocked) {
+                    final boolean exact = !checkDiff || !hasPossibleBlocker(ai, combat, excludedBlockers);
+                    if (exact || fast) {
+                        AiPerf.predictBounded.increment();
+                        if (!exact) {
+                            AiPerf.governed.increment();
+                        }
+                        if (checkDiff && !ai.cantLoseForZeroOrLessLife()) {
+                            remainingLife = Math.min(ComputerUtilCombat.lifeThatWouldRemain(ai, combat), remainingLife);
+                        }
+                        continue;
+                    }
+                } else if (fast) {
+                    AiPerf.predictBounded.increment();
+                    AiPerf.governed.increment();
+                    return Integer.MIN_VALUE;
+                }
             }
             // TODO if it's next turn ignore mustBlockCards
             AiBlockController block = new AiBlockController(ai, false);

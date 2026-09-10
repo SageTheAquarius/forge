@@ -1050,6 +1050,7 @@ public class AiBlockController {
         if (attackers.isEmpty()) {
             return;
         }
+        AiPerf.blockSims.increment();
 
         clearBlockers(combat, possibleBlockers);
 

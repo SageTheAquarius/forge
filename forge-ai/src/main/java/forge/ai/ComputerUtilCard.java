@@ -841,10 +841,46 @@ public class ComputerUtilCard {
      * @return creature will be attack
      */
     public static boolean doesSpecifiedCreatureAttackAI(final Player ai, final Card card) {
+        // EconomyDraft (AiPerf.CHEAP_PUMP): pump, counter, animate and damage AI
+        // ask this once per candidate target, and each answer used to build a new
+        // attack controller and solve a whole combat. The answer for one creature
+        // at one size is remembered for the decision; a seat over its thinking
+        // budget reads it off the window's already-predicted combat instead.
+        AiPerf.pumpChecks.increment();
+        if (AiPerf.CHEAP_PUMP && AiPerf.fast(ai) && ai.getController().isAI()) {
+            AiPerf.governed.increment();
+            Combat predicted = ((PlayerControllerAi) ai.getController()).getAi().getPredictedCombat();
+            for (Card a : predicted.getAttackers()) {
+                if (a.getId() == card.getId()) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        final Map<String, Object> scope = AiPerf.CHEAP_PUMP ? AiPerf.scope() : null;
+        String key = null;
+        if (scope != null) {
+            StringBuilder b = new StringBuilder(64).append("dsca|").append(ai.getId()).append('|')
+                    .append(card.getId()).append('|').append(card.getNetPower()).append('/')
+                    .append(card.getNetToughness()).append('|');
+            for (KeywordInterface k : card.getKeywords()) {
+                b.append(k.getOriginal()).append(',');
+            }
+            key = b.toString();
+            Object hit = scope.get(key);
+            if (hit != null) {
+                AiPerf.pumpHits.increment();
+                return (Boolean) hit;
+            }
+        }
         AiAttackController aiAtk = new AiAttackController(ai, card);
         Combat combat = new Combat(ai);
         aiAtk.declareAttackers(combat);
-        return combat.isAttacking(card);
+        boolean result = combat.isAttacking(card);
+        if (scope != null) {
+            scope.put(key, result);
+        }
+        return result;
     }
 
     /**
@@ -898,6 +934,20 @@ public class ComputerUtilCard {
      * @return attacker will die
      */
     public static boolean canBeBlockedProfitably(final Player ai, Card attacker, boolean checkingOther) {
+        // EconomyDraft (AiPerf.CHEAP_PUMP): a seat over its per-turn thinking
+        // budget answers from single-blocker arithmetic instead of a full block
+        // simulation - can one untapped blocker kill this attacker and live?
+        if (AiPerf.CHEAP_PUMP && AiPerf.fast(attacker.getController())) {
+            AiPerf.governed.increment();
+            for (Card b : ai.getCreaturesInPlay()) {
+                if (CombatUtil.canBlock(attacker, b)
+                        && ComputerUtilCombat.canDestroyAttacker(ai, attacker, b, null, false)
+                        && !ComputerUtilCombat.canDestroyBlocker(ai, b, attacker, null, false)) {
+                    return true;
+                }
+            }
+            return false;
+        }
         AiBlockController aiBlk = new AiBlockController(ai, checkingOther);
         Combat combat = new Combat(ai);
         // avoid removing original attacker
