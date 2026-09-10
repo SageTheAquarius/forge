@@ -86,8 +86,15 @@ import forge.game.cost.PaymentDecision;
 import forge.game.keyword.Keyword;
 import forge.game.replacement.ReplacementEffect;
 import forge.game.trigger.WrappedAbility;
+import forge.game.combat.AttackConstraints;
+import forge.game.combat.AttackRequirement;
+import forge.game.combat.AttackRestriction;
+import forge.game.combat.AttackRestrictionType;
 import forge.game.combat.Combat;
 import forge.game.combat.CombatUtil;
+import forge.game.combat.GlobalAttackRestrictions;
+import forge.game.staticability.StaticAbilityMustAttack;
+import com.google.common.collect.Multimap;
 import forge.game.phase.PhaseHandler;
 import forge.game.phase.PhaseType;
 import forge.game.player.DelayedReveal;
@@ -3675,8 +3682,19 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         String state = StateExporter.toJson(attacker.getGame().getView(), attacker);
         String reply = ask("{\"kind\":\"declare_attackers\",\"eligible\":" + idList(eligible)
                 + ",\"defenders\":" + defenderList(combat) + ",\"state\":" + state + "}");
+        if (endIfAbandoned()) {
+            // PhaseHandler re-asks until the declaration validates, and with the
+            // client gone every answer is "" = attack with nothing. When a
+            // creature MUST attack that never validates, so the engine spun on
+            // this prompt forever: the 2026-09-10 pod Sage left at declare-
+            // attackers was still "finishing a previous match" seven minutes
+            // later, and every new game was refused. Ending the game here is
+            // what the do/while checks for at the top of each pass.
+            return;
+        }
         String compact = reply.replaceAll("\\s", "");
         boolean all = compact.contains("\"attackers\":\"all\"");
+        List<String> notes = new ArrayList<>();
         for (Card c : eligible) {
             if (!all && !inArray(compact, "attackers", c.getId())) continue;
             GameEntity target = defender;
@@ -3685,9 +3703,228 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                 GameEntity chosen = findDefender(combat, pw);
                 // Fall back to the player rather than dropping the attack if the
                 // planeswalker has since left or the attack would be illegal.
-                if (chosen != null && CombatUtil.canAttack(c, chosen)) target = chosen;
+                if (chosen != null && CombatUtil.canAttack(c, chosen)) {
+                    target = chosen;
+                } else if (chosen != null) {
+                    notes.add(c.getName() + " can't attack " + defenderName(chosen)
+                            + ", so it attacks " + defenderName(defender) + " instead");
+                }
             }
-            if (CombatUtil.canAttack(c, target)) combat.addAttacker(c, target);
+            if (!CombatUtil.canAttack(c, target)) {
+                // Eligible means "can attack SOMEONE"; the seat it was aimed at
+                // may be off limits (goad, "can't attack you", must-attack-X).
+                // Keep the attack by redirecting it, and say so.
+                GameEntity other = null;
+                for (GameEntity d : combat.getDefenders()) {
+                    if (d != target && CombatUtil.canAttack(c, d)) { other = d; break; }
+                }
+                if (other == null) {
+                    notes.add(c.getName() + " can't attack " + defenderName(target) + " and was left out of the attack");
+                    continue;
+                }
+                notes.add(c.getName() + " can't attack " + defenderName(target)
+                        + ", so it attacks " + defenderName(other) + " instead");
+                target = other;
+            }
+            combat.addAttacker(c, target);
+        }
+        if (!all) {
+            // A pick the engine never offered: the client's board was stale.
+            for (Card c : attacker.getCreaturesInPlay()) {
+                if (!eligible.contains(c) && inArray(compact, "attackers", c.getId())) {
+                    notes.add(c.getName() + " can't attack this combat and was left out");
+                }
+            }
+        }
+        for (String n : notes) {
+            logToFeed("Attack: " + n + ".");
+        }
+        explainIfInvalid(attacker, combat);
+    }
+
+    /**
+     * Say WHY an attack is about to be refused.
+     *
+     * PhaseHandler.declareAttackersTurnBasedAction loops on
+     * CombatUtil.validateAttackers, and when it says no the player gets a bare
+     * "Attack declaration invalid" and the same prompt again -- with no hint
+     * whether it was a must-attack, a can't-attack-alone, a goad, or a
+     * cap on attackers. Reported from a live pod on 2026-09-10 ("I NEED THE
+     * LOG TO TELL ME WHY"). This reproduces the engine's own checks, one by
+     * one, and writes each violated constraint to the game log, which reaches
+     * the Feed and the session log with the re-ask's state.
+     *
+     * Never throws: an explanation must not be the thing that breaks combat.
+     */
+    private void explainIfInvalid(Player attacker, Combat combat) {
+        try {
+            if (CombatUtil.validateAttackers(combat)) {
+                return;
+            }
+            AttackConstraints ac = combat.getAttackConstraints();
+            Map<Card, GameEntity> att = combat.getAttackersAndDefenders();
+            List<String> why = new ArrayList<>();
+
+            // Restrictions: any one of these makes the attack illegal outright.
+            GlobalAttackRestrictions g = ac.getGlobalRestrictions();
+            if (g.getMax() != null && att.size() > g.getMax()) {
+                why.add("at most " + g.getMax() + (g.getMax() == 1 ? " creature" : " creatures")
+                        + " can attack this combat, " + att.size() + " were declared");
+            }
+            for (Map.Entry<GameEntity, Integer> e : g.getDefenderMax().entrySet()) {
+                long n = att.values().stream().filter(d -> d == e.getKey()).count();
+                if (n > e.getValue()) {
+                    why.add(e.getValue() == 0
+                            ? defenderName(e.getKey()) + " can't be attacked this combat"
+                            : "at most " + e.getValue() + " can attack " + defenderName(e.getKey()) + ", " + n + " were declared");
+                }
+            }
+            for (Map.Entry<Card, GameEntity> e : att.entrySet()) {
+                AttackRestriction r = ac.getRestrictions().get(e.getKey());
+                if (r == null) continue;
+                if (!r.canAttack(e.getValue())) {
+                    why.add(e.getKey().getName() + " can't attack " + defenderName(e.getValue()));
+                }
+                for (AttackRestrictionType t : r.getViolation(att)) {
+                    why.add(e.getKey().getName() + " " + restrictionText(t, att.size()));
+                }
+            }
+
+            // Requirements: legal only if no other attack satisfies more of them.
+            int mine = ac.countViolations(att);
+            Pair<Map<Card, GameEntity>, Integer> best = ac.getLegalAttackers();
+            if (mine >= 0 && mine > best.getRight()) {
+                for (Card c : attacker.getCreaturesInPlay()) {
+                    AttackRequirement req = ac.getRequirements().get(c);
+                    if (req == null || !req.hasRequirement()) continue;
+                    if (req.countViolations(att.get(c), att) <= 0) continue;
+                    why.add(requirementText(c, req, att));
+                }
+                // "You must attack X with at least one creature": private to
+                // AttackConstraints, so ask the static layer again.
+                Multimap<GameEntity, StaticAbility> mustAttack =
+                        StaticAbilityMustAttack.mustAttackSpecific(attacker, combat.getDefenders());
+                Map<StaticAbility, List<GameEntity>> bySource = new HashMap<>();
+                for (Map.Entry<GameEntity, StaticAbility> e : mustAttack.entries()) {
+                    bySource.computeIfAbsent(e.getValue(), k -> new ArrayList<>()).add(e.getKey());
+                }
+                for (Map.Entry<StaticAbility, List<GameEntity>> e : bySource.entrySet()) {
+                    boolean any = false;
+                    for (GameEntity ge : e.getValue()) {
+                        if (att.containsValue(ge)) { any = true; break; }
+                    }
+                    if (!any) {
+                        List<String> names = new ArrayList<>();
+                        for (GameEntity ge : e.getValue()) names.add(defenderName(ge));
+                        why.add("you must attack " + String.join(" or ", names)
+                                + " with at least one creature if able (" + sourceText(e.getKey()) + ")");
+                    }
+                }
+                why.add("a legal attack leaves " + best.getRight() + " requirement"
+                        + (best.getRight() == 1 ? "" : "s") + " unmet, yours leaves " + mine
+                        + "; for example: " + attackText(best.getLeft()));
+            }
+            if (why.isEmpty()) {
+                why.add("the engine refused it without naming a restriction or requirement (violations="
+                        + mine + ", best possible=" + best.getRight() + ")");
+            }
+            logToFeed("Attack declaration invalid, declare again: " + String.join("; ", why) + ".");
+        } catch (Exception e) {
+            System.out.println("[forge-bridge] explainIfInvalid failed: " + e);
+        }
+    }
+
+    private static String restrictionText(AttackRestrictionType t, int nAttackers) {
+        switch (t) {
+            case ONLY_ALONE:          return "can only attack alone, but " + nAttackers + " creatures are attacking";
+            case NOT_ALONE:           return "can't attack alone";
+            case NEED_TWO_OTHERS:     return "can't attack unless at least two other creatures attack";
+            case NEED_BLACK_OR_GREEN: return "can't attack unless a black or green creature also attacks";
+            case NEED_GREATER_POWER:  return "can't attack unless a creature with greater power also attacks";
+            case NEVER:               return "can't attack";
+            default:                  return "breaks an attack restriction (" + t + ")";
+        }
+    }
+
+    /** "Goblin must attack AI 2 if able (goaded by AI 2)" and the like. */
+    private String requirementText(Card c, AttackRequirement req, Map<Card, GameEntity> att) {
+        StringBuilder b = new StringBuilder(c.getName());
+        GameEntity now = att.get(c);
+        List<String> must = new ArrayList<>();
+        int anyone = Integer.MAX_VALUE;
+        for (Pair<GameEntity, Integer> p : req.getSortedRequirements()) {
+            anyone = Math.min(anyone, p.getRight());
+        }
+        for (Pair<GameEntity, Integer> p : req.getSortedRequirements()) {
+            if (p.getRight() > 0 && p.getRight() > anyone) {
+                must.add(defenderName(p.getLeft()));
+            }
+        }
+        if (!must.isEmpty()) {
+            b.append(" must attack ").append(String.join(" or ", must)).append(" if able");
+        } else if (anyone != Integer.MAX_VALUE && anyone > 0) {
+            b.append(" must attack if able");
+        }
+        if (now == null) {
+            b.append(" (it isn't attacking)");
+        } else if (!must.isEmpty() && !must.contains(defenderName(now))) {
+            b.append(" (it is attacking ").append(defenderName(now)).append(")");
+        }
+        if (c.isGoaded()) {
+            List<String> by = new ArrayList<>();
+            for (Player p : c.getGoaded()) by.add(p.getName());
+            b.append(", goaded by ").append(String.join(" and ", by));
+        }
+        // "If CARDNAME attacks, X attacks too": the forced creature is the key.
+        for (Map.Entry<Card, Collection<StaticAbility>> e : req.getCausesToAttack().asMap().entrySet()) {
+            if (att.containsKey(e.getKey())) continue;
+            List<String> src = new ArrayList<>();
+            for (StaticAbility s : e.getValue()) src.add(sourceText(s));
+            b.append("; ").append(e.getKey().getName()).append(" must also attack when ")
+             .append(c.getName()).append(" does (").append(String.join(", ", src)).append(")");
+        }
+        return b.toString();
+    }
+
+    private static String sourceText(StaticAbility s) {
+        try {
+            String host = s.getHostCard() != null ? s.getHostCard().getName() : "?";
+            String desc = String.valueOf(s).trim();
+            return desc.isEmpty() || desc.equals(host) ? host : host + ": " + desc;
+        } catch (Exception e) {
+            return "?";
+        }
+    }
+
+    private static String attackText(Map<Card, GameEntity> attack) {
+        if (attack == null || attack.isEmpty()) return "attack with nothing";
+        List<String> parts = new ArrayList<>();
+        for (Map.Entry<Card, GameEntity> e : attack.entrySet()) {
+            parts.add(e.getKey().getName() + " at " + defenderName(e.getValue()));
+        }
+        return String.join(", ", parts);
+    }
+
+    /** A defender as the table knows it: a seat's name, or "Jace (AI 2's planeswalker)". */
+    private static String defenderName(GameEntity ge) {
+        if (ge == null) return "nobody";
+        if (ge instanceof Card) {
+            Card c = (Card) ge;
+            Player guard = c.isBattle() ? c.getProtectingPlayer() : c.getController();
+            String kind = c.isBattle() ? "battle" : (c.isPlaneswalker() ? "planeswalker" : "permanent");
+            return c.getName() + (guard == null ? "" : " (" + guard.getName() + "'s " + kind + ")");
+        }
+        return String.valueOf(ge);
+    }
+
+    /** One line into the shared game log, which flush_log forwards to every seat's Feed. */
+    private void logToFeed(String message) {
+        try {
+            Player me = getPlayer();
+            if (me == null || me.getGame() == null || message == null || message.isEmpty()) return;
+            me.getGame().fireEvent(new GameEventAddLog(GameLogEntryType.INFORMATION, message));
+        } catch (Exception e) {
+            System.out.println("[forge-bridge] logToFeed failed: " + e);
         }
     }
 
@@ -4063,6 +4300,9 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         legal.append(']');
         String reply = ask("{\"kind\":\"declare_blockers\",\"legal\":" + legal
                 + ",\"state\":" + state + "}");
+        if (endIfAbandoned()) {
+            return;   // client gone: end the game now rather than at the next priority
+        }
         String compact = reply.replaceAll("\\s", "");
         if (compact.contains("\"blocks\":\"none\"") || !compact.contains("blocker")) {
             return; // no blocks

@@ -147,6 +147,7 @@ public class Zone implements java.io.Serializable, Iterable<Card> {
             }
         }
         onChanged();
+        CardTraitMemo.zonesChanged();
 
         game.fireEvent(new GameEventZone(zoneType, getPlayer(), EventValueChangeType.Added, c));
    }
@@ -162,6 +163,7 @@ public class Zone implements java.io.Serializable, Iterable<Card> {
     public void remove(final Card c) {
         if (cardList.remove(c)) {
             onChanged();
+            CardTraitMemo.zonesChanged();
             game.fireEvent(new GameEventZone(zoneType, getPlayer(), EventValueChangeType.Removed, c));
         }
     }
@@ -173,12 +175,14 @@ public class Zone implements java.io.Serializable, Iterable<Card> {
             cardList.add(c);
         }
         onChanged();
+        CardTraitMemo.zonesChanged();
         game.fireEvent(new GameEventZone(zoneType, getPlayer(), EventValueChangeType.ComplexUpdate, null));
     }
 
     public final void removeAllCards(boolean forcedWithoutEvents) {
         if (forcedWithoutEvents) {
             cardList.clear();
+            CardTraitMemo.zonesChanged();
         } else {
             for (Card c : cardList) {
                 remove(c);

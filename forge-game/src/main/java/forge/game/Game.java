@@ -623,6 +623,16 @@ public class Game {
     }
 
     public CardCollectionView getCardsIn(final Iterable<ZoneType> zones) {
+        if (zones == ZoneType.STATIC_ABILITIES_SOURCE_ZONES) {
+            // The static-ability source scan is remembered for the length of
+            // one AI evaluation (CardTraitMemo); the game thread and every
+            // other caller still get a fresh copy. EconomyDraft bridge patch.
+            return CardTraitMemo.staticSourceCards(this, () -> collectCardsIn(zones));
+        }
+        return collectCardsIn(zones);
+    }
+
+    private CardCollection collectCardsIn(final Iterable<ZoneType> zones) {
         CardCollection cards = new CardCollection();
         for (final ZoneType z : zones) {
             cards.addAll(getCardsIn(z));
