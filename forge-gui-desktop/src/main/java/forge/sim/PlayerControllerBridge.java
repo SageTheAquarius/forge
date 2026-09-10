@@ -1482,6 +1482,49 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         return true;
     }
 
+    /**
+     * Say why an activation is about to unwind: a mandatory target has no
+     * candidate, so PlaySpellAbility will cancel the whole thing.
+     *
+     * Reported from a live Commander pod: "it felt like my last planeswalker
+     * wasn't able to activate its -2 ability". Daretti, Scrap Savant's -2
+     * returns "target artifact card from your graveyard", and an opponent's
+     * Silent Gravestone says cards in graveyards can't be targeted. Forge was
+     * right to refuse (CR 602.2b: no legal target, no activation) -- but the
+     * refusal was a bare {@code return false} here, so the click produced no
+     * prompt, no feed line and no loyalty change, and a correct ruling read as
+     * a broken button. Two clicks vanished before the player gave up and used
+     * the +2. Same silence for any targeted ability: hexproof, shroud,
+     * protection, or a "can't be the target" static all land here.
+     *
+     * StateExporter now greys a loyalty ability in this state before it is
+     * clicked (see putAbilities); this is the backstop for everything else
+     * and for a click that raced the state push.
+     */
+    private void explainNoTarget(SpellAbility sa, String what) {
+        try {
+            SpellAbility root = sa.getRootAbility() != null ? sa.getRootAbility() : sa;
+            Card host = root.getHostCard();
+            String name = host != null ? host.getName() : "That ability";
+            String wants = "";
+            if (sa.getTargetRestrictions() != null
+                    && sa.getTargetRestrictions().getVTSelection() != null) {
+                wants = sa.getTargetRestrictions().getVTSelection().trim();
+                if (wants.regionMatches(true, 0, "Select ", 0, 7)) {
+                    wants = wants.substring(7);
+                }
+            }
+            String why = name + ": cannot activate \"" + StateExporter.abilityLabel(root, host)
+                    + "\" - " + what
+                    + (wants.isEmpty() ? "" : " (needs " + wants + ")")
+                    + ". Hexproof, shroud, protection or a \"can't be the target\" effect "
+                    + "such as Silent Gravestone can cause this.";
+            ask("{\"kind\":\"feed\",\"lines\":[\"" + StateExporter.esc(why) + "\"]}");
+        } catch (Exception e) {
+            // An explanation is never worth breaking the activation path over.
+        }
+    }
+
     /** Prompt the client for one targeted ability's targets; assign the picks. */
     private boolean pickTargetsForSA(SpellAbility sa) {
         sa.resetTargets();
@@ -1495,6 +1538,9 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         int max = sa.getMaxTargets();
         if (max <= 0) max = candidates.size();
         if (candidates.isEmpty()) {
+            if (min > 0) {
+                explainNoTarget(sa, "nothing legal to target");
+            }
             return min == 0; // no legal targets: only OK if targeting is optional
         }
         List<String> names = new ArrayList<>();
@@ -1560,6 +1606,9 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         int max = sa.getMaxTargets();
         if (max <= 0) max = candidates.size();
         if (candidates.isEmpty()) {
+            if (min > 0) {
+                explainNoTarget(sa, "nothing on the stack it can target");
+            }
             return min == 0; // nothing counterable: only OK if targeting is optional
         }
         int hi = Math.min(max, candidates.size());

@@ -1,5 +1,6 @@
 package forge.sim;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -23,13 +24,18 @@ import forge.game.GameView;
 import forge.game.card.Card;
 import forge.game.card.CardView;
 import forge.game.card.CardView.CardStateView;
+import forge.game.card.CounterEnumType;
 import forge.game.card.CounterType;
 import forge.game.combat.CombatView;
 import forge.game.keyword.KeywordView;
 import forge.game.player.Player;
 import forge.game.player.PlayerView;
 import forge.game.cost.Cost;
+import forge.game.cost.CostPart;
+import forge.game.cost.CostRemoveCounter;
 import forge.game.spellability.SpellAbility;
+import forge.game.spellability.SpellAbilityStackInstance;
+import forge.game.spellability.TargetRestrictions;
 import forge.game.spellability.StackItemView;
 import forge.game.zone.ZoneType;
 
@@ -613,23 +619,184 @@ public final class StateExporter {
      */
     private static void putAbilities(Map<Integer, String> out, Card c, Player human) {
         List<SpellAbility> sas = possibleAbilities(c, human);
-        if (sas == null || sas.isEmpty()) {
+        if (sas == null) {
+            sas = Collections.emptyList();
+        }
+        // A planeswalker you control shows ALL its loyalty abilities, always:
+        // the ones Forge filtered out come after the playable ones, with i=-1
+        // and the reason. See missingLoyaltyAbilities.
+        boolean walker = c.isPlaneswalker() && c.isInPlay() && c.getController() == human;
+        List<SpellAbility> missing = walker ? missingLoyaltyAbilities(c, sas)
+                                            : Collections.<SpellAbility>emptyList();
+        if (sas.isEmpty() && missing.isEmpty()) {
             return;
         }
-        StringBuilder sb = new StringBuilder(64 * sas.size());
+        StringBuilder sb = new StringBuilder(64 * (sas.size() + missing.size()));
         sb.append('[');
+        int n = 0;
         for (int i = 0; i < sas.size(); i++) {
             SpellAbility sa = sas.get(i);
-            if (i > 0) sb.append(',');
+            if (n++ > 0) sb.append(',');
             sb.append('{');
             kv(sb, "i", i); sb.append(',');
             kvs(sb, "kind", abilityKind(sa)); sb.append(',');
             kvs(sb, "cost", abilityCost(sa, c)); sb.append(',');
             kvs(sb, "label", abilityLabel(sa, c));
+            // Playable by Forge's filter, yet doomed: a mandatory target with
+            // no candidate. Loyalty abilities only -- see noTargetReason.
+            if (sa.isPwAbility()) {
+                String why = noTargetReason(sa);
+                if (why != null) {
+                    sb.append(',');
+                    kvs(sb, "disabled", why);
+                }
+            }
+            sb.append('}');
+        }
+        for (SpellAbility sa : missing) {
+            if (n++ > 0) sb.append(',');
+            sb.append('{');
+            kv(sb, "i", -1); sb.append(',');
+            kvs(sb, "kind", abilityKind(sa)); sb.append(',');
+            kvs(sb, "cost", abilityCost(sa, c)); sb.append(',');
+            kvs(sb, "label", abilityLabel(sa, c)); sb.append(',');
+            kvs(sb, "disabled", loyaltyUnavailableReason(sa, c, human));
             sb.append('}');
         }
         sb.append(']');
         out.put(c.getId(), sb.toString());
+    }
+
+    /**
+     * The loyalty abilities of {@code c} that getAllPossibleAbilities(.., true)
+     * left out -- already used one this turn, can't afford the -N, wrong
+     * timing.
+     *
+     * Reported from a live Commander pod: "it felt like my last planeswalker
+     * wasn't able to activate its -2 ability". The -2 in question was
+     * legitimately unusable (Silent Gravestone across the table made its
+     * graveyard target illegal), but the card offered no way to tell WHY, or
+     * even that the engine had looked at it. Listing every loyalty ability,
+     * with the unavailable ones greyed and captioned, turns "this button is
+     * broken" into "needs 10 loyalty, has 3" / "already used a loyalty ability
+     * this turn". Entries carry i=-1, which the client never sends back --
+     * the index contract on the playable list is untouched.
+     *
+     * Identity first, description second: getAllPossibleAbilities adds the
+     * very same SpellAbility objects it got from getSpellAbilities, then copies
+     * for alternative costs; loyalty abilities have none, but the description
+     * check keeps this honest if that ever changes.
+     */
+    private static List<SpellAbility> missingLoyaltyAbilities(Card c, List<SpellAbility> offered) {
+        List<SpellAbility> out = new ArrayList<>();
+        try {
+            for (SpellAbility sa : c.getSpellAbilities()) {
+                if (!sa.isPwAbility()) continue;
+                boolean present = false;
+                String desc = sa.toUnsuppressedString();
+                for (SpellAbility o : offered) {
+                    if (o == sa || o.getRootAbility() == sa
+                            || (desc != null && desc.equals(o.toUnsuppressedString()))) {
+                        present = true;
+                        break;
+                    }
+                }
+                if (!present) out.add(sa);
+            }
+        } catch (Exception e) {
+            // Best effort: a walker with an odd script just shows what Forge offered.
+        }
+        return out;
+    }
+
+    /** Why Forge filtered this loyalty ability out right now, in the player's words. */
+    private static String loyaltyUnavailableReason(SpellAbility sa, Card c, Player human) {
+        try {
+            int need = loyaltyCost(sa);
+            int have = c.getCurrentLoyalty();
+            if (need > have) {
+                return "needs " + need + " loyalty, has " + have;
+            }
+            if (c.getPlaneswalkerAbilityActivated() > 0) {
+                return "already used a loyalty ability this turn";
+            }
+            if (!human.canCastSorcery()) {
+                Game g = human.getGame();
+                boolean myTurn = g != null && g.getPhaseHandler() != null
+                        && g.getPhaseHandler().isPlayerTurn(human);
+                return myTurn ? "sorcery speed: needs your main phase with an empty stack"
+                              : "sorcery speed: only on your own turn";
+            }
+            String tgt = noTargetReason(sa);
+            if (tgt != null) return tgt;
+        } catch (Exception e) {
+            // fall through
+        }
+        return "not available right now";
+    }
+
+    /** Loyalty this ability removes as its cost (0 for a +N or a 0). */
+    private static int loyaltyCost(SpellAbility sa) {
+        Cost cost = sa.getPayCosts();
+        if (cost == null) return 0;
+        int total = 0;
+        for (CostPart part : cost.getCostParts()) {
+            if (part instanceof CostRemoveCounter) {
+                CostRemoveCounter rc = (CostRemoveCounter) part;
+                if (CounterEnumType.LOYALTY.equals(rc.counter)) {
+                    total += rc.getAbilityAmount(sa);
+                }
+            }
+        }
+        return total;
+    }
+
+    /**
+     * "no legal target (...)" if a mandatory target anywhere in this ability's
+     * chain has no candidate right now, else null.
+     *
+     * Forge's playability filter does not look at targets, so an ability can
+     * be offered and then cancel the moment it is clicked -- see
+     * PlayerControllerBridge.explainNoTarget for the report. The check walks
+     * every card in the target zone through canTarget (isValid, hexproof,
+     * CantTarget statics), which is the cost centre this exporter is profiled
+     * against, so it is limited to loyalty abilities: one to three per
+     * planeswalker, and planeswalkers are few. The cast-time feed line covers
+     * everything else.
+     */
+    private static String noTargetReason(SpellAbility root) {
+        try {
+            for (SpellAbility sa = root; sa != null; sa = sa.getSubAbility()) {
+                if (!sa.usesTargeting() || sa.getMinTargets() <= 0) continue;
+                TargetRestrictions tr = sa.getTargetRestrictions();
+                List<ZoneType> zones = tr.getZone();
+                boolean any;
+                if (zones != null && zones.size() == 1 && zones.get(0) == ZoneType.Stack) {
+                    any = false;
+                    Game g = root.getHostCard() != null ? root.getHostCard().getGame() : null;
+                    if (g != null) {
+                        for (SpellAbilityStackInstance si : g.getStack()) {
+                            if (sa.canTargetSpellAbility(si.getSpellAbility())) {
+                                any = true;
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    any = !tr.getAllCandidates(sa).isEmpty();
+                }
+                if (!any) {
+                    String wants = tr.getVTSelection() == null ? "" : tr.getVTSelection().trim();
+                    if (wants.regionMatches(true, 0, "Select ", 0, 7)) {
+                        wants = wants.substring(7);
+                    }
+                    return "no legal target" + (wants.isEmpty() ? "" : " (needs " + wants + ")");
+                }
+            }
+        } catch (Exception e) {
+            // Unknown: do not grey an ability on a guess.
+        }
+        return null;
     }
 
     /**
@@ -671,7 +838,7 @@ public final class StateExporter {
     }
 
     /** One line of menu text: what the ability does, without its cost. */
-    private static String abilityLabel(SpellAbility sa, Card c) {
+    static String abilityLabel(SpellAbility sa, Card c) {
         String desc = sa.toUnsuppressedString();
         desc = desc == null ? "" : desc.trim();
         // getAdditionalCostSpell tags the branch with its cost; the cost is a
