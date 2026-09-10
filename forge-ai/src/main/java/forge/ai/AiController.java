@@ -1604,6 +1604,12 @@ public class AiController {
         timeoutReached = false;
 
         FutureTask<SpellAbility> future = new FutureTask<>(() -> {
+            // The game is frozen while this thread evaluates, so every card's
+            // derived static/replacement lists can be remembered for the
+            // length of the evaluation instead of rebuilt per question - see
+            // forge.game.card.CardTraitMemo. Thread-local: nothing else sees it.
+            CardTraitMemo.begin();
+            try {
             //avoid ComputerUtil.aiLifeInDanger in loops as it slows down a lot.. call this outside loops will generally be fast...
             boolean isLifeInDanger = useLivingEnd && ComputerUtil.aiLifeInDanger(player, true, 0);
             for (final SpellAbility sa : ComputerUtilAbility.getOriginalAndAltCostAbilities(all, player)) {
@@ -1686,6 +1692,12 @@ public class AiController {
             }
 
             return null;
+            } finally {
+                String memo = CardTraitMemo.end();
+                if (Boolean.getBoolean("bridge.traitmemo.log")) {
+                    System.out.println("[TRAIT-MEMO] hits/misses=" + memo);
+                }
+            }
         });
 
         Thread t = new Thread(future, "Game AI Eval");

@@ -117,6 +117,16 @@ public class ReplacementHandler {
                 return true;
             }
 
+            // Damage replacements never act from a library, and the AI's combat
+            // predictor asks about damage per attacker/blocker pair, per candidate
+            // spell. Rebuilding every library card's replacement effects for each
+            // of those asks was most of a 4-seat late game (performance mode only).
+            if (Spell.isPerformanceMode() && forge.game.card.CardTraitMemo.enabled()
+                    && (event == ReplacementType.DamageDone || event == ReplacementType.DealtDamage
+                            || event == ReplacementType.AssignDealDamage)
+                    && cardZone != null && cardZone.getZoneType() == ZoneType.Library) {
+                return true;
+            }
             // only when not prelist
             boolean noLKIstate = c != crd || event != ReplacementType.Moved || c.isImmutable() || runParams.get(AbilityKey.LastStateBattlefield) == null;
             if (!noLKIstate) {

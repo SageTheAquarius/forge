@@ -715,6 +715,10 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
     }
 
     public final FCollectionView<StaticAbility> getStaticAbilities() {
+        // Rebuilt on every call; remembered per AI evaluation (CardTraitMemo).
+        return CardTraitMemo.statics(this, this::buildStaticAbilities);
+    }
+    private FCollectionView<StaticAbility> buildStaticAbilities() {
         FCollection<StaticAbility> result = new FCollection<>(staticAbilities);
         if (getStateName().equals(CardStateName.Original)) {
             if (getCard().hasState(CardStateName.LeftSplit))
@@ -736,6 +740,10 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
         return getReplacementEffects(true);
     }
     public FCollectionView<ReplacementEffect> getReplacementEffects(boolean rulesHost) {
+        // Rebuilt on every call; remembered per AI evaluation (CardTraitMemo).
+        return CardTraitMemo.replacements(this, rulesHost, () -> buildReplacementEffects(rulesHost));
+    }
+    private FCollectionView<ReplacementEffect> buildReplacementEffects(boolean rulesHost) {
         FCollection<ReplacementEffect> result = new FCollection<>(replacementEffects);
         // add Split to Original
         if (getStateName().equals(CardStateName.Original)) {
