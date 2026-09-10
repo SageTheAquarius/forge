@@ -414,6 +414,16 @@ public final class ForgeServer {
             lastScenario = gs;
             return () -> {
                 try {
+                    // A scenario seat registers with a starting hand of 0 (the
+                    // board supplies the hand), and Game.java copies that into
+                    // the MAXIMUM hand size too -- so every cleanup step asked
+                    // the player to discard down to nothing. Forge's puzzle mode
+                    // resets both to seven (Puzzle.setupMaxPlayerHandSize); so
+                    // do we, before the board goes on.
+                    for (Player p : g.getPlayers()) {
+                        p.setStartingHandSize(7);
+                        p.setMaxHandSize(7);
+                    }
                     // Apply INLINE on the loop thread. GameState.applyToGame() posts
                     // via game.getAction().invoke() to Forge's registered game thread;
                     // in this headless server the loop runs on a different thread, so
