@@ -322,6 +322,8 @@ public class ComputerUtilAbility {
         return spellAbilities;
         } finally {
             long ms = (System.nanoTime() - startNanos) / 1000000L;
+            AiPerf.buildN.increment();
+            AiPerf.buildMs.add(ms);
             if (activator != null) {
                 SA_LAST_MS.put(activator, ms);
             }

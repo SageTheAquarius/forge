@@ -77,6 +77,16 @@ public final class AiPerf {
     public static final LongAdder idlePasses = new LongAdder();
     /** Decisions degraded by the turn budget. */
     public static final LongAdder governed = new LongAdder();
+    /** Whole priority decisions (chooseSpellAbilityToPlay) on the game thread, and their milliseconds:
+     *  the candidate build, the land logic and the eval future together. */
+    public static final LongAdder chooseN = new LongAdder();
+    public static final LongAdder chooseMs = new LongAdder();
+    /** Candidate-ability builds (ComputerUtilAbility.buildSpellAbilities) and their milliseconds. */
+    public static final LongAdder buildN = new LongAdder();
+    public static final LongAdder buildMs = new LongAdder();
+    /** State exports for the bridge and their milliseconds. */
+    public static final LongAdder exportN = new LongAdder();
+    public static final LongAdder exportMs = new LongAdder();
 
     private AiPerf() { }
 
@@ -241,7 +251,7 @@ public final class AiPerf {
     public static void reset() {
         for (LongAdder a : new LongAdder[] {evals, evalsSlow, evalMs, timeouts, declAttackN, declAttackMs,
                 declBlockN, declBlockMs, blockSims, predicts, predictHits, predictBounded, pumpChecks,
-                pumpHits, idlePasses, governed}) {
+                pumpHits, idlePasses, governed, chooseN, chooseMs, buildN, buildMs, exportN, exportMs}) {
             a.reset();
         }
         synchronized (SPENT) {
@@ -260,6 +270,9 @@ public final class AiPerf {
         num(b, "predicts", predicts); num(b, "predict_hits", predictHits); num(b, "bounded", predictBounded);
         num(b, "pump_checks", pumpChecks); num(b, "pump_hits", pumpHits);
         num(b, "idle", idlePasses); num(b, "governed", governed);
+        num(b, "choose_n", chooseN); num(b, "choose_ms", chooseMs);
+        num(b, "build_n", buildN); num(b, "build_ms", buildMs);
+        num(b, "export_n", exportN); num(b, "export_ms", exportMs);
         b.append("\"fast\":[");
         boolean first = true;
         for (String name : fastSeats()) {

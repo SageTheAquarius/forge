@@ -1486,9 +1486,65 @@ public class AiController {
                 return null;
             }
         }
-        List<SpellAbility> chosen = chooseSpellAbilityToPlayNow();
+        // Over its per-turn thinking budget, a seat only decides in its OWN main
+        // phases; every other window (responses on other players' turns, its
+        // own upkeep / combat / end step) is a pass. This is the ceiling the
+        // budget promises: three seats re-evaluating at every window of a late
+        // turn is where the seconds went, and a degraded prediction alone did
+        // not bound it (v128, turn 47: 37 evaluations, 79s).
+        if (AiPerf.fast(player)) {
+            forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+            boolean myMain = ph.isPlayerTurn(player) && (ph.is(PhaseType.MAIN1) || ph.is(PhaseType.MAIN2));
+            if (!myMain) {
+                AiPerf.governed.increment();
+                return null;
+            }
+        }
+        final long chooseT0 = System.currentTimeMillis();
+        AiPerf.chooseN.increment();
+        List<SpellAbility> chosen;
+        try {
+            chosen = withChooseMemo();
+        } finally {
+            AiPerf.chooseMs.add(System.currentTimeMillis() - chooseT0);
+        }
         idleFingerprint = chosen == null ? fp : null;
         return chosen;
+    }
+
+    /** Kill-switch for the memo around the whole priority decision: -Dbridge.choosememo=false. */
+    private static volatile boolean chooseMemo = !"false".equals(System.getProperty("bridge.choosememo"));
+
+    /**
+     * The priority decision under {@link CardTraitMemo}: the candidate-ability
+     * build (getAvailableCards + getSpellAbilities, every card's
+     * getAllPossibleAbilities and alternative costs, each asking the static
+     * layer whether it may be cast) ran on the game thread outside every memo,
+     * and on v128's turn 47 that was 36 builds of 0.15-1.1s per turn. The board
+     * is frozen while the AI decides, the same argument as withDecisionMemo;
+     * a mutation of a remembered list latches the memo off and re-runs once.
+     */
+    private List<SpellAbility> withChooseMemo() {
+        if (!chooseMemo) {
+            return chooseSpellAbilityToPlayNow();
+        }
+        CardTraitMemo.begin();
+        AiPerf.scopeBegin();
+        try {
+            return chooseSpellAbilityToPlayNow();
+        } catch (UnsupportedOperationException ex) {
+            System.out.println("[AI-DECISION] choose mutated a remembered list; choose memo off for this JVM");
+            ex.printStackTrace();
+            chooseMemo = false;
+            AiPerf.scopeEnd();
+            CardTraitMemo.end();
+            return chooseSpellAbilityToPlayNow();
+        } finally {
+            if (CardTraitMemo.isActive()) {
+                AiPerf.scopeEnd();
+                CardTraitMemo.end();
+            }
+        }
     }
 
     private List<SpellAbility> chooseSpellAbilityToPlayNow() {
