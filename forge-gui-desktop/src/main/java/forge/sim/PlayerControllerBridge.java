@@ -476,8 +476,12 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             return;
         }
         lastPushedFingerprint = fingerprint;
+        // A push-and-continue board is one the player cannot act on, so the
+        // affordability captions (an auto-tapper simulation per ability) are
+        // skipped; the next interactive ask carries them. On the 21:52 pod of
+        // 2026-09-10 exports cost 0.5-0.8s each, 90 a turn, on these pushes.
         ask("{\"kind\":\"state\",\"state\":"
-                + StateExporter.toJson(me.getGame().getView(), me) + "}");
+                + StateExporter.toJson(me.getGame().getView(), me, false) + "}");
     }
 
     /**

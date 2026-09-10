@@ -733,6 +733,124 @@ public class ComputerUtilCombat {
             Combat combat) {
         return combatTriggerWillTrigger(attacker, defender, trigger, combat, null);
     }
+
+    // ---- EconomyDraft: per-decision memo for the combat predictors (AiPerf.COMBAT_MEMO) ----
+    //
+    // Every predict*BonusOf* / canDestroy*BeforeFirstStrike call below used to
+    // gather EVERY trigger on the battlefield (and command zone) into a hashed
+    // FCollection, then walk them all through combatTriggerWillTrigger, and
+    // scan every card's static abilities for an "attacking"/"blocking" one -
+    // once per attacker x blocker question, thousands of times per block
+    // simulation on a wide board. combatTriggerWillTrigger can only answer
+    // true for six trigger modes, so the board's list is gathered and
+    // pre-filtered once per AI decision (AiPerf.scope(): the board is frozen
+    // for its length) and reused. Outside a decision scope the behaviour is
+    // the old one, just pre-filtered.
+
+    private static final java.util.EnumSet<TriggerType> COMBAT_TRIGGER_MODES = java.util.EnumSet.of(
+            TriggerType.Attacks, TriggerType.AttackerUnblocked, TriggerType.Blocks,
+            TriggerType.AttackerBlocked, TriggerType.AttackerBlockedByCreature, TriggerType.DamageDone);
+
+    /**
+     * The battlefield's (and, when {@code command}, the command zone's)
+     * triggers that {@link #combatTriggerWillTrigger} could answer true for,
+     * plus {@code extra}'s own such triggers when they are not already there
+     * (an animated or LKI copy). Do not mutate the result.
+     */
+    static List<Trigger> combatTriggers(final Game game, final boolean command, final Card extra) {
+        final Map<String, Object> scope = AiPerf.COMBAT_MEMO ? AiPerf.scope() : null;
+        final String key = command ? "combatTriggers+cmd" : "combatTriggers";
+        @SuppressWarnings("unchecked")
+        List<Trigger> board = scope == null ? null : (List<Trigger>) scope.get(key);
+        if (board == null) {
+            final FCollection<Trigger> all = new FCollection<>();
+            for (Card card : game.getCardsIn(ZoneType.Battlefield)) {
+                all.addAll(card.getTriggers());
+            }
+            if (command) {
+                for (Card card : game.getCardsIn(ZoneType.Command)) {
+                    all.addAll(card.getTriggers());
+                }
+            }
+            board = new java.util.ArrayList<>();
+            for (Trigger t : all) {
+                if (COMBAT_TRIGGER_MODES.contains(t.getMode())) {
+                    board.add(t);
+                }
+            }
+            if (scope != null) {
+                scope.put(key, board);
+            }
+        } else {
+            AiPerf.combatHits.increment();
+        }
+        if (extra == null) {
+            return board;
+        }
+        List<Trigger> out = board;
+        for (Trigger t : extra.getTriggers()) {
+            if (!COMBAT_TRIGGER_MODES.contains(t.getMode()) || board.contains(t)) {
+                continue;       // FCollection would have deduplicated it too
+            }
+            if (out == board) {
+                out = new java.util.ArrayList<>(board);
+            }
+            out.add(t);
+        }
+        return out;
+    }
+
+    /**
+     * The continuous static abilities with an Affected param on the
+     * battlefield (and, when {@code command}, the command zone), gathered
+     * once per decision. Callers still filter for "attacking"/"blocking"/
+     * "untapped" as before. Do not mutate the result.
+     */
+    static List<StaticAbility> combatStatics(final Game game, final boolean command) {
+        final Map<String, Object> scope = AiPerf.COMBAT_MEMO ? AiPerf.scope() : null;
+        final String key = command ? "combatStatics+cmd" : "combatStatics";
+        @SuppressWarnings("unchecked")
+        List<StaticAbility> out = scope == null ? null : (List<StaticAbility>) scope.get(key);
+        if (out != null) {
+            AiPerf.combatHits.increment();
+            return out;
+        }
+        out = new java.util.ArrayList<>();
+        final CardCollectionView cardList = command
+                ? CardCollection.combine(game.getCardsIn(ZoneType.Battlefield), game.getCardsIn(ZoneType.Command))
+                : game.getCardsIn(ZoneType.Battlefield);
+        for (final Card card : cardList) {
+            for (final StaticAbility stAb : card.getStaticAbilities()) {
+                if (stAb.checkMode(StaticAbilityMode.Continuous) && stAb.hasParam("Affected")) {
+                    out.add(stAb);
+                }
+            }
+        }
+        if (scope != null) {
+            scope.put(key, out);
+        }
+        return out;
+    }
+
+    /** A remembered per-creature answer from the decision scope, or null. */
+    private static Integer combatMemoGet(final String what, final Card c) {
+        final Map<String, Object> scope = AiPerf.COMBAT_MEMO ? AiPerf.scope() : null;
+        if (scope == null) {
+            return null;
+        }
+        final Object v = scope.get(what + c.getId());
+        if (v != null) {
+            AiPerf.combatHits.increment();
+        }
+        return (Integer) v;
+    }
+
+    private static void combatMemoPut(final String what, final Card c, final int v) {
+        final Map<String, Object> scope = AiPerf.COMBAT_MEMO ? AiPerf.scope() : null;
+        if (scope != null) {
+            scope.put(what + c.getId(), v);
+        }
+    }
     public static boolean combatTriggerWillTrigger(final Card attacker, final Card defender, final Trigger trigger,
             Combat combat, final List<Card> plannedAttackers) {
         final Game game = attacker.getGame();
@@ -886,33 +1004,21 @@ public class ComputerUtilCombat {
 
         final Game game = attacker.getGame();
         // look out for continuous static abilities that only care for blocking creatures
-        final CardCollectionView cardList = CardCollection.combine(game.getCardsIn(ZoneType.Battlefield), game.getCardsIn(ZoneType.Command));
-        for (final Card card : cardList) {
-            for (final StaticAbility stAb : card.getStaticAbilities()) {
-                if (!stAb.checkMode(StaticAbilityMode.Continuous)) {
-                    continue;
-                }
-                if (!stAb.hasParam("Affected") || !stAb.getParam("Affected").contains("blocking")) {
-                    continue;
-                }
-                final String valid = TextUtil.fastReplace(stAb.getParam("Affected"), "blocking", "Creature");
-                if (!blocker.isValid(valid, card.getController(), card, stAb)) {
-                    continue;
-                }
-                if (stAb.hasParam("AddPower")) {
-                    power += AbilityUtils.calculateAmount(card, stAb.getParam("AddPower"), stAb);
-                }
+        for (final StaticAbility stAb : combatStatics(game, true)) {
+            final Card card = stAb.getHostCard();
+            if (!stAb.getParam("Affected").contains("blocking")) {
+                continue;
+            }
+            final String valid = TextUtil.fastReplace(stAb.getParam("Affected"), "blocking", "Creature");
+            if (!blocker.isValid(valid, card.getController(), card, stAb)) {
+                continue;
+            }
+            if (stAb.hasParam("AddPower")) {
+                power += AbilityUtils.calculateAmount(card, stAb.getParam("AddPower"), stAb);
             }
         }
 
-        final FCollection<Trigger> theTriggers = new FCollection<>();
-        for (Card card : game.getCardsIn(ZoneType.Battlefield)) {
-            theTriggers.addAll(card.getTriggers());
-        }
-        for (Card card : game.getCardsIn(ZoneType.Command)) {
-            theTriggers.addAll(card.getTriggers());
-        }
-        theTriggers.addAll(attacker.getTriggers());
+        final List<Trigger> theTriggers = combatTriggers(game, true, attacker);
         for (final Trigger trigger : theTriggers) {
             final Card source = trigger.getHostCard();
 
@@ -951,6 +1057,16 @@ public class ComputerUtilCombat {
         if (withoutAbilities) {
             return power;
         }
+        return power + activatedPowerBonusOfBlocker(blocker);
+    }
+
+    /** The blocker's own activated pump, remembered per decision (depends on the blocker alone). */
+    private static int activatedPowerBonusOfBlocker(final Card blocker) {
+        final Integer hit = combatMemoGet("apb", blocker);
+        if (hit != null) {
+            return hit;
+        }
+        int power = 0;
         for (SpellAbility ability : blocker.getAllSpellAbilities()) {
             if (!ability.isActivatedAbility()) {
                 continue;
@@ -989,7 +1105,7 @@ public class ComputerUtilCombat {
                 power += pBonus;
             }
         }
-
+        combatMemoPut("apb", blocker, power);
         return power;
     }
 
@@ -1014,14 +1130,7 @@ public class ComputerUtilCombat {
         }
 
         final Game game = attacker.getGame();
-        final FCollection<Trigger> theTriggers = new FCollection<>();
-        for (Card card : game.getCardsIn(ZoneType.Battlefield)) {
-            theTriggers.addAll(card.getTriggers());
-        }
-        for (Card card : game.getCardsIn(ZoneType.Command)) {
-            theTriggers.addAll(card.getTriggers());
-        }
-        theTriggers.addAll(attacker.getTriggers());
+        final List<Trigger> theTriggers = combatTriggers(game, true, attacker);
         for (final Trigger trigger : theTriggers) {
             final Card source = trigger.getHostCard();
 
@@ -1078,6 +1187,16 @@ public class ComputerUtilCombat {
         if (withoutAbilities) {
             return toughness;
         }
+        return toughness + activatedToughnessBonusOfBlocker(blocker);
+    }
+
+    /** The blocker's own activated toughness pump, remembered per decision. */
+    private static int activatedToughnessBonusOfBlocker(final Card blocker) {
+        final Integer hit = combatMemoGet("atb", blocker);
+        if (hit != null) {
+            return hit;
+        }
+        int toughness = 0;
         for (SpellAbility ability : blocker.getAllSpellAbilities()) {
             if (!ability.isActivatedAbility()) {
                 continue;
@@ -1117,6 +1236,7 @@ public class ComputerUtilCombat {
                 toughness += tBonus;
             }
         }
+        combatMemoPut("atb", blocker, toughness);
         return toughness;
     }
 
@@ -1149,13 +1269,7 @@ public class ComputerUtilCombat {
         }
 
         final Game game = attacker.getGame();
-        final FCollection<Trigger> theTriggers = new FCollection<>();
-        for (Card card : game.getCardsIn(ZoneType.Battlefield)) {
-            theTriggers.addAll(card.getTriggers());
-        }
-        for (Card card : game.getCardsIn(ZoneType.Command)) {
-            theTriggers.addAll(card.getTriggers());
-        }
+        final List<Trigger> theTriggers = combatTriggers(game, true, blocker);
         // if the defender has first strike and wither the attacker will deal
         // less damage than expected
         if (null != blocker) {
@@ -1165,29 +1279,23 @@ public class ComputerUtilCombat {
                     && attacker.canReceiveCounters(CounterEnumType.M1M1)) {
                 power -= blocker.getNetCombatDamage();
             }
-            theTriggers.addAll(blocker.getTriggers());
         }
 
         // TODO consider Exert + Enlist
 
         // look out for continuous static abilities that only care for attacking creatures
         if (!withoutCombatStaticAbilities) {
-            final CardCollectionView cardList = CardCollection.combine(game.getCardsIn(ZoneType.Battlefield), game.getCardsIn(ZoneType.Command));
-            for (final Card card : cardList) {
-                for (final StaticAbility stAb : card.getStaticAbilities()) {
-                    if (!stAb.checkMode(StaticAbilityMode.Continuous)) {
-                        continue;
-                    }
-                    if (!stAb.hasParam("Affected") || !stAb.getParam("Affected").contains("attacking")) {
-                        continue;
-                    }
-                    final String valid = TextUtil.fastReplace(stAb.getParam("Affected"), "attacking", "Creature");
-                    if (!attacker.isValid(valid, card.getController(), card, stAb)) {
-                        continue;
-                    }
-                    if (stAb.hasParam("AddPower")) {
-                        power += AbilityUtils.calculateAmount(card, stAb.getParam("AddPower"), stAb);
-                    }
+            for (final StaticAbility stAb : combatStatics(game, true)) {
+                final Card card = stAb.getHostCard();
+                if (!stAb.getParam("Affected").contains("attacking")) {
+                    continue;
+                }
+                final String valid = TextUtil.fastReplace(stAb.getParam("Affected"), "attacking", "Creature");
+                if (!attacker.isValid(valid, card.getController(), card, stAb)) {
+                    continue;
+                }
+                if (stAb.hasParam("AddPower")) {
+                    power += AbilityUtils.calculateAmount(card, stAb.getParam("AddPower"), stAb);
                 }
             }
         }
@@ -1272,6 +1380,16 @@ public class ComputerUtilCombat {
         if (withoutAbilities) {
             return power;
         }
+        return power + activatedPowerBonusOfAttacker(attacker);
+    }
+
+    /** The attacker's own activated pump, remembered per decision (depends on the attacker alone). */
+    private static int activatedPowerBonusOfAttacker(final Card attacker) {
+        final Integer hit = combatMemoGet("apa", attacker);
+        if (hit != null) {
+            return hit;
+        }
+        int power = 0;
         for (SpellAbility ability : attacker.getAllSpellAbilities()) {
             if (!ability.isActivatedAbility()) {
                 continue;
@@ -1318,6 +1436,7 @@ public class ComputerUtilCombat {
                 power += pBonus;
             }
         }
+        combatMemoPut("apa", attacker, power);
         return power;
     }
 
@@ -1349,48 +1468,31 @@ public class ComputerUtilCombat {
         }
 
         final Game game = attacker.getGame();
-        final FCollection<Trigger> theTriggers = new FCollection<>();
-        for (Card card : game.getCardsIn(ZoneType.Battlefield)) {
-            theTriggers.addAll(card.getTriggers());
-        }
-        for (Card card : game.getCardsIn(ZoneType.Command)) {
-            theTriggers.addAll(card.getTriggers());
-        }
-        if (blocker != null) {
-            theTriggers.addAll(blocker.getTriggers());
-        }
+        final List<Trigger> theTriggers = combatTriggers(game, true, blocker);
 
         // look out for continuous static abilities that only care for attacking creatures
         if (!withoutCombatStaticAbilities) {
-            final CardCollectionView cardList = game.getCardsIn(ZoneType.Battlefield);
-            for (final Card card : cardList) {
-                for (final StaticAbility stAb : card.getStaticAbilities()) {
-                    if (!stAb.checkMode(StaticAbilityMode.Continuous)) {
+            for (final StaticAbility stAb : combatStatics(game, false)) {
+                final Card card = stAb.getHostCard();
+                if (!stAb.hasParam("AddToughness")) {
+                    continue;
+                }
+                String affected = stAb.getParam("Affected");
+                String addT = stAb.getParam("AddToughness");
+                if (affected.contains("attacking")) {
+                    final String valid = TextUtil.fastReplace(affected, "attacking", "Creature");
+                    if (!attacker.isValid(valid, card.getController(), card, null)) {
                         continue;
                     }
-                    if (!stAb.hasParam("Affected")) {
+                    toughness += AbilityUtils.calculateAmount(card, addT, stAb, true);
+                } else if (affected.contains("untapped")) {
+                    final String valid = TextUtil.fastReplace(affected, "untapped", "Creature");
+                    if (!attacker.isValid(valid, card.getController(), card, null)
+                            || attacker.hasKeyword(Keyword.VIGILANCE)) {
                         continue;
                     }
-                    if (!stAb.hasParam("AddToughness")) {
-                        continue;
-                    }
-                    String affected = stAb.getParam("Affected");
-                    String addT = stAb.getParam("AddToughness");
-                    if (affected.contains("attacking")) {
-                        final String valid = TextUtil.fastReplace(affected, "attacking", "Creature");
-                        if (!attacker.isValid(valid, card.getController(), card, null)) {
-                            continue;
-                        }
-                        toughness += AbilityUtils.calculateAmount(card, addT, stAb, true);
-                    } else if (affected.contains("untapped")) {
-                        final String valid = TextUtil.fastReplace(affected, "untapped", "Creature");
-                        if (!attacker.isValid(valid, card.getController(), card, null)
-                                || attacker.hasKeyword(Keyword.VIGILANCE)) {
-                            continue;
-                        }
-                        // remove the bonus, because it will no longer be granted
-                        toughness -= AbilityUtils.calculateAmount(card, addT, stAb, true);
-                    }
+                    // remove the bonus, because it will no longer be granted
+                    toughness -= AbilityUtils.calculateAmount(card, addT, stAb, true);
                 }
             }
         }
@@ -1497,6 +1599,16 @@ public class ComputerUtilCombat {
         if (withoutAbilities) {
             return toughness;
         }
+        return toughness + activatedToughnessBonusOfAttacker(attacker);
+    }
+
+    /** The attacker's own activated toughness pump, remembered per decision. */
+    private static int activatedToughnessBonusOfAttacker(final Card attacker) {
+        final Integer hit = combatMemoGet("ata", attacker);
+        if (hit != null) {
+            return hit;
+        }
+        int toughness = 0;
         for (SpellAbility ability : attacker.getAllSpellAbilities()) {
             if (!ability.isActivatedAbility()) {
                 continue;
@@ -1539,6 +1651,7 @@ public class ComputerUtilCombat {
                 toughness += tBonus;
             }
         }
+        combatMemoPut("ata", attacker, toughness);
         return toughness;
     }
 
@@ -1559,10 +1672,7 @@ public class ComputerUtilCombat {
         }
 
         // check Destroy triggers (Cockatrice and friends)
-        final FCollection<Trigger> theTriggers = new FCollection<>();
-        for (Card card : attacker.getGame().getCardsIn(ZoneType.Battlefield)) {
-            theTriggers.addAll(card.getTriggers());
-        }
+        final List<Trigger> theTriggers = combatTriggers(attacker.getGame(), false, null);
         for (Trigger trigger : theTriggers) {
             final Card source = trigger.getHostCard();
 
@@ -1816,10 +1926,7 @@ public class ComputerUtilCombat {
         }
 
         final Game game = blocker.getGame();
-        final FCollection<Trigger> theTriggers = new FCollection<>();
-        for (Card card : game.getCardsIn(ZoneType.Battlefield)) {
-            theTriggers.addAll(card.getTriggers());
-        }
+        final List<Trigger> theTriggers = combatTriggers(game, false, null);
         for (Trigger trigger : theTriggers) {
             final Card source = trigger.getHostCard();
 

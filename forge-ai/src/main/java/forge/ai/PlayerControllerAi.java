@@ -428,7 +428,7 @@ public class PlayerControllerAi extends PlayerController {
         }
         // There is no way this doTrigger here will have the same target as stored above
         // So it's possible it's making a different decision here than will actually happen
-        if (!brains.doTrigger(sa, false)) {
+        if (!brains.doTriggerMemo(sa, false)) {
             ret = false;
         }
         if (storeChoices) {
@@ -678,7 +678,7 @@ public class PlayerControllerAi extends PlayerController {
     @Override
     public void playSpellAbilityNoStack(SpellAbility effectSA, boolean canSetupTargets) {
         if (canSetupTargets)
-            brains.doTrigger(effectSA, true); // first parameter does not matter, since return value won't be used
+            brains.doTriggerMemo(effectSA, true); // first parameter does not matter, since return value won't be used
         ComputerUtil.playNoStack(player, effectSA, getGame(), true);
     }
 
@@ -1270,7 +1270,7 @@ public class PlayerControllerAi extends PlayerController {
 
     @Override
     public boolean payCostToPreventEffect(Cost cost, SpellAbility sa, boolean alreadyPaid, FCollectionView<Player> allPayers) {
-        if (SpellApiToAi.Converter.get(sa).willPayUnlessCost(player, sa, cost, alreadyPaid, allPayers)) {
+        if (brains.withDecision("pay_unless", () -> SpellApiToAi.Converter.get(sa).willPayUnlessCost(player, sa, cost, alreadyPaid, allPayers))) {
             if (!ComputerUtilCost.canPayCost(cost, sa, player, true)) {
                 return false;
             }
@@ -1288,7 +1288,7 @@ public class PlayerControllerAi extends PlayerController {
 
     @Override
     public List<SpellAbility> orderSimultaneousSa(List<SpellAbility> activePlayerSAs) {
-        return getAi().orderPlaySa(activePlayerSAs);
+        return getAi().orderPlaySaMemo(activePlayerSAs);
     }
 
     @Override
@@ -1339,7 +1339,7 @@ public class PlayerControllerAi extends PlayerController {
             sa.setTargetingPlayer(targetingPlayer);
             return targetingPlayer.getController().chooseTargetsFor(sa);
         }
-        return brains.doTrigger(sa, isMandatory);
+        return brains.doTriggerMemo(sa, isMandatory);
     }
 
     @Override
@@ -1366,7 +1366,7 @@ public class PlayerControllerAi extends PlayerController {
 
     @Override
     public boolean chooseTargetsFor(SpellAbility currentAbility) {
-        return brains.doTrigger(currentAbility, true);
+        return brains.doTriggerMemo(currentAbility, true);
     }
 
     @Override

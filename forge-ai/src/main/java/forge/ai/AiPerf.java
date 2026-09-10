@@ -51,6 +51,16 @@ public final class AiPerf {
     /** Predictions use the quick block assignment (no reinforcement, no second pass): -Dbridge.predictquick=false. */
     public static final boolean PREDICT_QUICK = !"false".equals(System.getProperty("bridge.predictquick"));
     public static final long TURN_BUDGET_MS = Long.getLong("bridge.turnbudget", 12000L);
+    /**
+     * The combat predictors (ComputerUtilCombat.predict*BonusOf*, canDestroy*)
+     * gather the board's combat triggers and "attacking"/"blocking" statics
+     * once per decision instead of once per attacker x blocker question, and
+     * remember each creature's activated pump bonus (a mana-payment
+     * simulation per ability): -Dbridge.combatmemo=false. On the 21:52 pod of
+     * 2026-09-10 one attack declaration ran 220s with every 2s sample inside
+     * those scans.
+     */
+    public static final boolean COMBAT_MEMO = !"false".equals(System.getProperty("bridge.combatmemo"));
 
     /** Priority evaluations (chooseSpellAbilityToPlayFromList futures). */
     public static final LongAdder evals = new LongAdder();
@@ -92,6 +102,11 @@ public final class AiPerf {
     /** The human seat's per-window "should I stop?" scan (PlayerControllerBridge.shouldPromptAtPriority). */
     public static final LongAdder humanN = new LongAdder();
     public static final LongAdder humanMs = new LongAdder();
+    /** Combat-predictor board scans answered from the decision scope (COMBAT_MEMO). */
+    public static final LongAdder combatHits = new LongAdder();
+    /** Trigger / ordering / prevention decisions on the game thread (AiController.withDecision), and their milliseconds. */
+    public static final LongAdder decideN = new LongAdder();
+    public static final LongAdder decideMs = new LongAdder();
 
     private AiPerf() { }
 
@@ -100,6 +115,9 @@ public final class AiPerf {
     private static final class Scope {
         int depth;
         final Map<String, Object> cache = new HashMap<>();
+        /** The seat deciding, and when its outermost decision began (in-flight budget). */
+        Player player;
+        long t0;
     }
 
     private static final ThreadLocal<Scope> SCOPE = new ThreadLocal<>();
@@ -112,9 +130,22 @@ public final class AiPerf {
      * blockers on the game thread.
      */
     public static void scopeBegin() {
+        scopeBegin(null);
+    }
+
+    /**
+     * As {@link #scopeBegin()}, naming the seat that is deciding so the turn
+     * budget can see the decision WHILE it runs. {@link #spent} only lands
+     * when a decision ends, so a single runaway declaration never tripped the
+     * budget: on 2026-09-10 (v132) one attack declaration ran 220s on a 12s
+     * budget, "has used its thinking time" arriving after it had finished.
+     */
+    public static void scopeBegin(Player ai) {
         Scope s = SCOPE.get();
         if (s == null) {
             s = new Scope();
+            s.player = ai;
+            s.t0 = System.currentTimeMillis();
             SCOPE.set(s);
         }
         s.depth++;
@@ -166,7 +197,13 @@ public final class AiPerf {
         synchronized (SPENT) {
             e = SPENT.get(ai);
         }
-        return e != null && e[0] == currentTurn(ai) && e[1] > TURN_BUDGET_MS;
+        long ms = e != null && e[0] == currentTurn(ai) ? e[1] : 0L;
+        // Plus the decision this thread is in the middle of, if it is this seat's.
+        Scope s = SCOPE.get();
+        if (s != null && s.player == ai) {
+            ms += System.currentTimeMillis() - s.t0;
+        }
+        return ms > TURN_BUDGET_MS;
     }
 
     private static int currentTurn(Player ai) {
@@ -257,7 +294,7 @@ public final class AiPerf {
         for (LongAdder a : new LongAdder[] {evals, evalsSlow, evalMs, timeouts, declAttackN, declAttackMs,
                 declBlockN, declBlockMs, blockSims, predicts, predictHits, predictBounded, pumpChecks,
                 pumpHits, idlePasses, governed, chooseN, chooseMs, buildN, buildMs, exportN, exportMs,
-                humanN, humanMs}) {
+                humanN, humanMs, combatHits, decideN, decideMs}) {
             a.reset();
         }
         synchronized (SPENT) {
@@ -280,6 +317,8 @@ public final class AiPerf {
         num(b, "build_n", buildN); num(b, "build_ms", buildMs);
         num(b, "export_n", exportN); num(b, "export_ms", exportMs);
         num(b, "human_n", humanN); num(b, "human_ms", humanMs);
+        num(b, "combat_hits", combatHits);
+        num(b, "decide_n", decideN); num(b, "decide_ms", decideMs);
         b.append("\"fast\":[");
         boolean first = true;
         for (String name : fastSeats()) {

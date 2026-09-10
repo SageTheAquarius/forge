@@ -1378,7 +1378,7 @@ public class AiController {
         // The global AiCache still holds the last evaluation's board-position
         // scores; the board may have moved since. Clear it as the eval path does.
         AiCache.clear();
-        AiPerf.scopeBegin();
+        AiPerf.scopeBegin(player);
         if (useMemo) {
             CardTraitMemo.begin();
         }
@@ -1418,6 +1418,67 @@ public class AiController {
                         + (memo.isEmpty() ? "" : " memo=" + memo));
             }
         }
+    }
+
+    /**
+     * A pure AI decision the engine asks for on the GAME thread - "will you
+     * accept this optional trigger", "choose this trigger's targets", "order
+     * these simultaneous triggers", "pay to prevent this" - under the same
+     * decision memo as {@link #withDecisionMemo}, timed into the turn budget
+     * and the pace line ("decide n/s").
+     *
+     * These answers ran outside every memo: on the 22:36 pod of 2026-09-10
+     * (v133) turn 47 spent 132s of engine time, and the game-thread sampler
+     * put a quarter of it under orderAndPlaySimultaneousSa, confirmTrigger and
+     * playSpellAbilityNoStack, each rebuilding trait lists and running combat
+     * predictions per token that entered. The decision only chooses (targets
+     * on the SpellAbility, an order, a yes/no); the play that follows stays
+     * outside, so a memo violation can re-run the decision safely.
+     */
+    public <T> T withDecision(String what, java.util.function.Supplier<T> body) {
+        final boolean useMemo = decisionMemo;
+        final long t0 = System.currentTimeMillis();
+        AiCache.clear();
+        AiPerf.scopeBegin(player);
+        if (useMemo) {
+            CardTraitMemo.begin();
+        }
+        boolean memoOn = useMemo;
+        try {
+            return body.get();
+        } catch (UnsupportedOperationException ex) {
+            if (!useMemo) {
+                throw ex;
+            }
+            System.out.println("[AI-DECISION] " + what + " mutated a remembered list; memo off for this JVM");
+            ex.printStackTrace();
+            decisionMemo = false;
+            CardTraitMemo.end();
+            memoOn = false;
+            return body.get();
+        } finally {
+            if (memoOn && CardTraitMemo.isActive()) {
+                CardTraitMemo.end();
+            }
+            AiPerf.scopeEnd();
+            long ms = System.currentTimeMillis() - t0;
+            AiPerf.spent(player, ms);
+            AiPerf.decideN.increment();
+            AiPerf.decideMs.add(ms);
+            if (ms >= 500) {
+                System.out.println("[AI-DECISION] " + what + " " + ms + "ms seat=" + player.getName());
+            }
+        }
+    }
+
+    /** {@link #doTrigger} under {@link #withDecision}. */
+    public boolean doTriggerMemo(SpellAbility sa, boolean mandatory) {
+        return withDecision("trigger", () -> doTrigger(sa, mandatory));
+    }
+
+    /** {@link #orderPlaySa} under {@link #withDecision}. */
+    public List<SpellAbility> orderPlaySaMemo(List<SpellAbility> activePlayerSAs) {
+        return withDecision("order_triggers", () -> orderPlaySa(activePlayerSAs));
     }
 
     private static void resetCombatDecision(String what, Combat combat) {
@@ -1538,7 +1599,7 @@ public class AiController {
             return chooseSpellAbilityToPlayNow();
         }
         CardTraitMemo.begin();
-        AiPerf.scopeBegin();
+        AiPerf.scopeBegin(player);
         try {
             return chooseSpellAbilityToPlayNow();
         } catch (UnsupportedOperationException ex) {
@@ -1813,7 +1874,7 @@ public class AiController {
             // length of the evaluation instead of rebuilt per question - see
             // forge.game.card.CardTraitMemo. Thread-local: nothing else sees it.
             CardTraitMemo.begin();
-            AiPerf.scopeBegin();
+            AiPerf.scopeBegin(player);
             try {
             //avoid ComputerUtil.aiLifeInDanger in loops as it slows down a lot.. call this outside loops will generally be fast...
             boolean isLifeInDanger = useLivingEnd && ComputerUtil.aiLifeInDanger(player, true, 0);

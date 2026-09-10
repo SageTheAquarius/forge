@@ -388,6 +388,13 @@ public final class ForgeServer {
         private volatile boolean on = true;
         private int turn = -1;
         private final java.util.Map<String, Integer> hist = new java.util.HashMap<>();
+        // Coarser buckets ("<entry> > <subsystem>") - the fine keys spread a
+        // slow turn over dozens of leaves (v132, turn 55: the top 8 summed to
+        // 55% and named no caller) - plus the first full stack seen per bucket,
+        // printed for the top bucket of a slow turn so the log names the
+        // chain, not just the leaf.
+        private final java.util.Map<String, Integer> coarse = new java.util.HashMap<>();
+        private final java.util.Map<String, String> stacks = new java.util.HashMap<>();
         private int samples;
         private int waiting;
 
@@ -426,16 +433,84 @@ public final class ForgeServer {
                     flush();
                     turn = t;
                 }
-                String key = classify(target.getStackTrace());
+                StackTraceElement[] st = target.getStackTrace();
+                String key = classify(st);
                 synchronized (this) {
                     if (key == null) {
                         waiting++;
                     } else {
                         samples++;
                         hist.merge(key, 1, Integer::sum);
+                        String ck = classifyCoarse(st);
+                        coarse.merge(ck, 1, Integer::sum);
+                        if (!stacks.containsKey(ck)) {
+                            stacks.put(ck, forgeFrames(st));
+                        }
                     }
                 }
             }
+        }
+
+        /** Packages whose OUTERMOST frame names the subsystem a busy game thread is in. */
+        private static final String[] SUBSYSTEMS = {
+            "forge.ai.", "forge.game.staticability.", "forge.game.trigger.", "forge.game.replacement.",
+            "forge.game.ability.effects.", "forge.game.ability.AbilityUtils", "forge.game.GameAction",
+            "forge.game.card.CardLists", "forge.game.card.CardCopyService", "forge.game.cost.",
+            "forge.game.combat.", "forge.sim.StateExporter",
+        };
+
+        /** "<entry> > <outermost subsystem frame>", or "<entry> > <innermost forge class>" when no subsystem is on the stack. */
+        static String classifyCoarse(StackTraceElement[] st) {
+            int loop = -1;
+            for (int i = 0; i < st.length; i++) {
+                String m = st[i].getMethodName();
+                if ("mainLoopStep".equals(m) || "mainGameLoop".equals(m)) {
+                    loop = i;
+                    break;
+                }
+            }
+            int end = loop < 0 ? st.length : loop;
+            String entry = loop > 0 ? shortName(st[loop - 1].getClassName()) + "." + st[loop - 1].getMethodName()
+                                    : "outside-loop";
+            String sub = null;
+            for (int i = end - 1; i >= 0 && sub == null; i--) {
+                String c = st[i].getClassName();
+                for (String p : SUBSYSTEMS) {
+                    if (c.startsWith(p)) {
+                        sub = shortName(c) + "." + st[i].getMethodName();
+                        break;
+                    }
+                }
+            }
+            if (sub == null) {
+                for (int i = 0; i < end; i++) {
+                    if (st[i].getClassName().startsWith("forge.")) {
+                        sub = shortName(st[i].getClassName());
+                        break;
+                    }
+                }
+            }
+            return sub == null ? entry : entry + " > " + sub;
+        }
+
+        /** The forge.* frames of a sample, innermost first, as one line. */
+        private static String forgeFrames(StackTraceElement[] st) {
+            StringBuilder b = new StringBuilder(512);
+            int n = 0;
+            for (StackTraceElement e : st) {
+                String c = e.getClassName();
+                if (!c.startsWith("forge.")) {
+                    continue;
+                }
+                if (n++ > 0) {
+                    b.append(" < ");
+                }
+                b.append(shortName(c)).append('.').append(e.getMethodName()).append(':').append(e.getLineNumber());
+                if ("mainLoopStep".equals(e.getMethodName()) || n >= 28) {
+                    break;
+                }
+            }
+            return b.toString();
         }
 
         static String classify(StackTraceElement[] st) {
@@ -504,7 +579,27 @@ public final class ForgeServer {
                   .append(en.getKey()).append(';');
             }
             System.out.println(sb);
+            java.util.List<java.util.Map.Entry<String, Integer>> cs = new java.util.ArrayList<>(coarse.entrySet());
+            cs.sort((a, b) -> b.getValue() - a.getValue());
+            StringBuilder cb = new StringBuilder("[GAME-THREAD] turn " + turn + " coarse:");
+            shown = 0;
+            for (java.util.Map.Entry<String, Integer> en : cs) {
+                if (shown++ >= 8) {
+                    break;
+                }
+                cb.append(' ').append(100 * en.getValue() / Math.max(1, samples)).append("% ")
+                  .append(en.getKey()).append(';');
+            }
+            System.out.println(cb);
+            // A slow turn (10s+ busy at the default 250ms) also prints the first
+            // stack seen in its top bucket, so the caller chain is in the log.
+            if (samples >= 40 && !cs.isEmpty()) {
+                String top = cs.get(0).getKey();
+                System.out.println("[GAME-THREAD] turn " + turn + " stack (" + top + "): " + stacks.get(top));
+            }
             hist.clear();
+            coarse.clear();
+            stacks.clear();
             samples = 0;
             waiting = 0;
         }

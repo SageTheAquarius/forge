@@ -305,26 +305,37 @@ public final class StateExporter {
     }
 
     public static String toJson(GameView g, Player human) {
+        return toJson(g, human, true);
+    }
+
+    /**
+     * @param captions whether to compute the affordability captions on the
+     *        human's abilities (unpayableReason: an auto-tapper simulation per
+     *        ability). False for push-and-continue boards the player cannot
+     *        act on; every interactive ask passes true.
+     */
+    public static String toJson(GameView g, Player human, boolean captions) {
         // Timed into AiPerf so the relay's pace line can show what every push
         // costs on the game thread (the human's ability export is the same
         // getAllPossibleAbilities walk the AI's candidate build pays for).
         final long t0 = System.currentTimeMillis();
         forge.ai.AiPerf.exportN.increment();
         try {
-            return toJsonNow(g, human);
+            return toJsonNow(g, human, captions);
         } finally {
             forge.ai.AiPerf.exportMs.add(System.currentTimeMillis() - t0);
         }
     }
 
-    private static String toJsonNow(GameView g, Player human) {
+    private static String toJsonNow(GameView g, Player human, boolean captions) {
         Set<Integer> mana = new HashSet<>();
         Set<Integer> activated = new HashSet<>();
         Map<Integer, String> cycling = new HashMap<>();
         Set<Integer> elsewhere = new HashSet<>();
         Map<Integer, String> abilities = new HashMap<>();
         // One export, one affordability answer per (card name, cost). See unpayableReason.
-        Map<String, String> payMemo = payMemoFor(human);
+        // Null when this export carries no captions (see toJson).
+        Map<String, String> payMemo = captions ? payMemoFor(human) : null;
         CardView top = null;
         if (human != null) {
             for (Card c : human.getCardsIn(ZoneType.Battlefield)) {
@@ -796,9 +807,10 @@ public final class StateExporter {
     }
 
     private static void putAbilities(Map<Integer, String> out, Card c, Player human) {
-        putAbilities(out, c, human, null);
+        putAbilities(out, c, human, new HashMap<>());
     }
 
+    /** @param payMemo the affordability memo, or null to skip the captions entirely. */
     private static void putAbilities(Map<Integer, String> out, Card c, Player human,
             Map<String, String> payMemo) {
         List<SpellAbility> sas = possibleAbilities(c, human);
@@ -831,7 +843,7 @@ public final class StateExporter {
             // Playable by Forge's filter, yet unaffordable: the filter never
             // asks whether a human can pay, and the auto-tapper that pays for
             // them says no. See unpayableReason.
-            if (why == null) {
+            if (why == null && payMemo != null) {
                 why = unpayableReason(sa, human, payMemo);
             }
             if (why != null) {
