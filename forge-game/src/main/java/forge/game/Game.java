@@ -632,6 +632,35 @@ public class Game {
         return collectCardsIn(zones);
     }
 
+    /**
+     * The static-ability sources plus the given card(s) first, without
+     * copying the scan.
+     *
+     * Eleven static-ability checks used to do
+     * {@code new CardCollection(getCardsIn(STATIC_ABILITIES_SOURCE_ZONES)); add(card)}
+     * -- hashing every card at the table into a fresh set just to append one.
+     * With the scan itself remembered per AI evaluation that copy became the
+     * whole cost: the v124 timeout sample sat in exactly that copy, under the
+     * cast-with-flash check that every "can I pay this mana cost" question
+     * asks during block prediction. This keeps the old visiting order and
+     * de-duplication (the given cards first, then the scan minus them) as a
+     * lazy view. EconomyDraft bridge patch.
+     */
+    public Iterable<Card> getStaticSourcesAnd(final Card... firsts) {
+        final CardCollectionView all = getCardsIn(ZoneType.STATIC_ABILITIES_SOURCE_ZONES);
+        final List<Card> head = new ArrayList<>(firsts.length);
+        for (final Card c : firsts) {
+            if (c != null && !head.contains(c)) {
+                head.add(c);
+            }
+        }
+        if (head.isEmpty()) {
+            return all;
+        }
+        return com.google.common.collect.Iterables.concat(head,
+                com.google.common.collect.Iterables.filter(all, c -> !head.contains(c)));
+    }
+
     private CardCollection collectCardsIn(final Iterable<ZoneType> zones) {
         CardCollection cards = new CardCollection();
         for (final ZoneType z : zones) {

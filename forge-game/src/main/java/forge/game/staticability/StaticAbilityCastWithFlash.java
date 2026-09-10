@@ -2,18 +2,14 @@ package forge.game.staticability;
 
 import forge.game.Game;
 import forge.game.card.Card;
-import forge.game.card.CardCollection;
 import forge.game.player.Player;
 import forge.game.spellability.SpellAbility;
-import forge.game.zone.ZoneType;
 
 public class StaticAbilityCastWithFlash {
 
     public static boolean anyWithFlashNeedsInfo(final SpellAbility sa, final Card card, final Player activator) {
         final Game game = activator.getGame();
-        final CardCollection allp = new CardCollection(game.getCardsIn(ZoneType.STATIC_ABILITIES_SOURCE_ZONES));
-        allp.add(card);
-        for (final Card ca : allp) {
+        for (final Card ca : game.getStaticSourcesAnd(card)) {
             for (final StaticAbility stAb : ca.getStaticAbilities()) {
                 if (!stAb.checkConditions(StaticAbilityMode.CastWithFlash)) {
                     continue;
@@ -28,9 +24,7 @@ public class StaticAbilityCastWithFlash {
 
     public static boolean anyWithFlash(final SpellAbility sa, final Card card, final Player activator) {
         final Game game = activator.getGame();
-        final CardCollection allp = new CardCollection(game.getCardsIn(ZoneType.STATIC_ABILITIES_SOURCE_ZONES));
-        allp.add(card);
-        for (final Card ca : allp) {
+        for (final Card ca : game.getStaticSourcesAnd(card)) {
             for (final StaticAbility stAb : ca.getStaticAbilities()) {
                 if (!stAb.checkConditions(StaticAbilityMode.CastWithFlash)) {
                     continue;

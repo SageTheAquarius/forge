@@ -21,7 +21,6 @@ import java.util.List;
 
 import forge.game.Game;
 import forge.game.card.Card;
-import forge.game.card.CardCollection;
 import forge.game.card.CardLists;
 import forge.game.card.CardUtil;
 import forge.game.player.Player;
@@ -37,9 +36,7 @@ public class StaticAbilityCantBeCast {
         card.setCastSA(spell);
 
         final Game game = activator.getGame();
-        final CardCollection allp = new CardCollection(game.getCardsIn(ZoneType.STATIC_ABILITIES_SOURCE_ZONES));
-        allp.add(card);
-        for (final Card ca : allp) {
+        for (final Card ca : game.getStaticSourcesAnd(card)) {
             for (final StaticAbility stAb : ca.getStaticAbilities()) {
                 if (!stAb.checkConditions(StaticAbilityMode.CantBeCast)) {
                     continue;

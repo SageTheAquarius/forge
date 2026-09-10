@@ -24,7 +24,6 @@ import forge.game.Game;
 import forge.game.GameEntity;
 import forge.game.ability.AbilityUtils;
 import forge.game.card.Card;
-import forge.game.card.CardCollection;
 import forge.game.cost.Cost;
 import forge.game.keyword.Keyword;
 import forge.game.player.Player;
@@ -156,9 +155,7 @@ public class StaticAbilityCantAttackBlock {
             return true;
         }
 
-        CardCollection list = new CardCollection(blocker);
-        list.addAll(blocker.getGame().getCardsIn(ZoneType.STATIC_ABILITIES_SOURCE_ZONES));
-        for (final Card ca : list) {
+        for (final Card ca : blocker.getGame().getStaticSourcesAnd(blocker)) {
             for (final StaticAbility stAb : ca.getStaticAbilities()) {
                 if (!stAb.checkConditions(StaticAbilityMode.CantBlock)) {
                     continue;
@@ -206,12 +203,7 @@ public class StaticAbilityCantAttackBlock {
 
     public static boolean cantBlockBy(final Card attacker, final Card blocker) {
         // add attacker and blocker first in case of LKI
-        CardCollection list = new CardCollection(attacker);
-        if (blocker != null) {
-            list.add(blocker);
-        }
-        list.addAll(attacker.getGame().getCardsIn(ZoneType.STATIC_ABILITIES_SOURCE_ZONES));
-        for (final Card ca : list) {
+        for (final Card ca : attacker.getGame().getStaticSourcesAnd(attacker, blocker)) {
             for (final StaticAbility stAb : ca.getStaticAbilities()) {
                 if (!stAb.checkConditions(StaticAbilityMode.CantBlockBy)) {
                     continue;

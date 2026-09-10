@@ -458,9 +458,7 @@ public final class GameActionUtil {
             game.getAction().checkStaticAbilities(false, Sets.newHashSet(source), preList);
         }
 
-        final CardCollection costSources = new CardCollection(source);
-        costSources.addAll(game.getCardsIn(ZoneType.STATIC_ABILITIES_SOURCE_ZONES));
-        for (final Card ca : costSources) {
+        for (final Card ca : game.getStaticSourcesAnd(source)) {
             for (final StaticAbility stAb : ca.getStaticAbilities()) {
                 if (!stAb.checkConditions(StaticAbilityMode.OptionalCost)) {
                     continue;
