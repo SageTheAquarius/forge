@@ -164,6 +164,15 @@ public class PlayerControllerBridge extends PlayerControllerAi {
      * seat in after the opening brace leaves each call site exactly as it was
      * and keeps the wire format a single flat object.
      */
+    // Practice game: cheats are honoured only while this is set. ForgeServer
+    // reads _sandbox.txt once per game and sets it; static because the flag is
+    // per GAME and this server runs one game at a time.
+    private static volatile boolean sandbox;
+
+    static void setSandbox(boolean on) {
+        sandbox = on;
+    }
+
     private String ask(String json) {
         if (json == null || json.isEmpty() || json.charAt(0) != '{') {
             return Channel.request(json);   // not an object; nothing to tag
@@ -261,6 +270,13 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                 + StateExporter.toJson(me.getGame().getView(), me) + "}");
 
         String compact = reply.replaceAll("\\s", "");
+        if (compact.contains("\"action\":\"sandbox\"")) {
+            // A Practice-game cheat: apply it, then ask this same window again
+            // (as a rejected click does) so the player sees the result and
+            // keeps priority rather than passing it.
+            sandboxCheat(me, reply);
+            return chooseSpellAbilityToPlay();
+        }
         if (compact.contains("\"action\":\"pass_turn\"")) {
             skipTurn = ph.getTurn();     // skip the rest of my turn
             return null;
@@ -3698,6 +3714,166 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             }
         }
         return null;
+    }
+
+    // ---- Practice-game cheats ---------------------------------------------
+    //
+    // Forge's desktop GUI has these under Dev Mode (IDevModeCheats, implemented
+    // in PlayerControllerHuman); this is the same handful driven by the relay's
+    // `sandbox` reply instead of a menu, on the game thread. Gated on
+    // _sandbox.txt (see setSandbox): a real game never has the flag, so a stray
+    // reply is refused with a Feed line, never applied.
+
+    private void sandboxFeed(String line) {
+        ask("{\"kind\":\"feed\",\"lines\":[\"" + StateExporter.esc(line) + "\"]}");
+    }
+
+    private void sandboxCheat(Player me, String reply) {
+        if (!sandbox) {
+            sandboxFeed("Sandbox actions are off for this game.");
+            return;
+        }
+        Game g = me.getGame();
+        String cmd = parseStr(reply, "\"cmd\":");
+        if (cmd == null) {
+            cmd = "";
+        }
+        // Which seat the cheat is for: the reply's `player` is Forge's own
+        // player index (the relay's seat index), absent means the asked seat.
+        Player p = me;
+        int seat = parseInt(reply, "\"player\":");
+        if (seat >= 0 && seat < g.getPlayers().size()) {
+            p = g.getPlayers().get(seat);
+        }
+        try {
+            switch (cmd) {
+                case "add_card":
+                    sandboxAddCard(g, p, parseStr(reply, "\"name\":"), parseStr(reply, "\"zone\":"));
+                    break;
+                case "mana":
+                    sandboxMana(g, p);
+                    break;
+                case "life": {
+                    int v = parseInt(reply, "\"value\":");
+                    if (v < 0) {
+                        sandboxFeed("Sandbox: life needs a number.");
+                        break;
+                    }
+                    p.setLife(v, null);
+                    sandboxFeed("Sandbox: " + p.getName() + " is at " + v + " life.");
+                    break;
+                }
+                case "draw": {
+                    int n = parseInt(reply, "\"n\":");
+                    if (n < 1) {
+                        n = 1;
+                    }
+                    p.drawCards(n);
+                    sandboxFeed("Sandbox: " + p.getName() + " draws " + n + ".");
+                    break;
+                }
+                case "untap": {
+                    int n = 0;
+                    for (Card c : new CardCollection(p.getCardsIn(ZoneType.Battlefield))) {
+                        if (c.isTapped()) {
+                            c.untap();
+                            n++;
+                        }
+                    }
+                    sandboxFeed("Sandbox: untapped " + n + " of " + p.getName() + "'s permanents.");
+                    break;
+                }
+                case "restart":
+                    if (ForgeServer.reapplyScenario(g)) {
+                        sandboxFeed("Sandbox: board reset to the starting scenario.");
+                    } else {
+                        sandboxFeed("Sandbox: this game has no starting scenario to go back to.");
+                    }
+                    break;
+                default:
+                    sandboxFeed("Sandbox: unknown command '" + cmd + "'.");
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            sandboxFeed("Sandbox: that failed (" + e.getClass().getSimpleName()
+                    + (e.getMessage() == null ? "" : ": " + e.getMessage()) + ").");
+        }
+    }
+
+    /** Put a fresh copy of a named card into one of a player's zones. */
+    private void sandboxAddCard(Game g, Player p, String name, String zone) {
+        if (name == null || name.isEmpty()) {
+            sandboxFeed("Sandbox: no card name given.");
+            return;
+        }
+        forge.item.PaperCard pc = StaticData.instance().getCommonCards().getUniqueByName(name);
+        if (pc == null) {
+            sandboxFeed("Sandbox: Forge has no card named '" + name + "'.");
+            return;
+        }
+        Card c = Card.fromPaperCard(pc, p);
+        c.setGameTimestamp(g.getNextTimestamp());
+        String z = zone == null ? "hand" : zone.toLowerCase();
+        ZoneType zt;
+        switch (z) {
+            case "battlefield": zt = ZoneType.Battlefield; break;
+            case "graveyard": zt = ZoneType.Graveyard; break;
+            case "library": zt = ZoneType.Library; break;
+            case "exile": zt = ZoneType.Exile; break;
+            default: zt = ZoneType.Hand; z = "hand";
+        }
+        if (zt == ZoneType.Battlefield) {
+            if (!c.isPermanent() || c.isAura()) {
+                sandboxFeed("Sandbox: " + name + " cannot be put straight onto the "
+                        + "battlefield; add it to a hand and cast it.");
+                return;
+            }
+            // Straight into play, no ETB triggers (the dev-mode "add to
+            // battlefield" path), and never summoning sick: this is a board
+            // being set up, not a creature being cast.
+            g.getAction().moveTo(ZoneType.Battlefield, c, null, forge.game.ability.AbilityKey.newMap());
+            if (c.isCreature()) {
+                c.setSickness(false);
+            }
+        } else if (zt == ZoneType.Library) {
+            g.getAction().moveToLibrary(c, null);
+        } else {
+            g.getAction().moveTo(zt, c, null, forge.game.ability.AbilityKey.newMap());
+        }
+        sandboxFeed("Sandbox: " + name + " added to " + p.getName() + "'s " + z + ".");
+    }
+
+    /** Float three of each colour and three colourless (Dev Mode's "Add mana"). */
+    private void sandboxMana(Game g, Player p) {
+        final Card dummy = new Card(-777777, g);
+        dummy.setOwner(p);
+        final java.util.Map<String, String> produced = new java.util.HashMap<>();
+        produced.put("Produced", "W W W U U U B B B R R R G G G 3");
+        final forge.game.spellability.AbilityManaPart abMana =
+                new forge.game.spellability.AbilityManaPart(dummy, produced);
+        abMana.produceMana(null);
+        sandboxFeed("Sandbox: " + p.getName() + " floats WWW UUU BBB RRR GGG and 3 colourless "
+                + "(gone at the end of this step).");
+    }
+
+    /** Crude JSON string extractor for a "key": "value" pair; null if absent. */
+    private static String parseStr(String s, String key) {
+        int i = s.indexOf(key);
+        if (i < 0) return null;
+        int j = i + key.length();
+        while (j < s.length() && s.charAt(j) == ' ') j++;
+        if (j >= s.length() || s.charAt(j) != '"') return null;
+        StringBuilder sb = new StringBuilder();
+        for (int k = j + 1; k < s.length(); k++) {
+            char ch = s.charAt(k);
+            if (ch == '\\' && k + 1 < s.length()) {
+                sb.append(s.charAt(++k));
+                continue;
+            }
+            if (ch == '"') break;
+            sb.append(ch);
+        }
+        return sb.toString();
     }
 
     /** Crude JSON int extractor for a "key": value pair (no JSON lib on the test classpath). */

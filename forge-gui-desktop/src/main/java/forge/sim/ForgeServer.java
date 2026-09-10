@@ -119,7 +119,11 @@ public final class ForgeServer {
             try {
                 String raw = new String(java.nio.file.Files.readAllBytes(
                         commanderFlag.toPath()), "UTF-8").trim();
-                aiSeats = Math.max(1, Math.min(3, Integer.parseInt(raw)));
+                // 0 is allowed: a Practice game is two bridged seats (the
+                // player and the Dummy) with no AI at all. The "never a
+                // one-player game" guard below still forces one AI seat when
+                // there is only one human.
+                aiSeats = Math.max(0, Math.min(3, Integer.parseInt(raw)));
             } catch (Exception e) {
                 aiSeats = 3;   // a malformed flag still means "a pod", not a duel
             }
@@ -171,6 +175,10 @@ public final class ForgeServer {
         // opening hands / mulligan (as puzzle mode does) — otherwise the drawn
         // hands leave the tracker in a state that collides with the board apply.
         boolean scenario = new File(deckDir + "_scenario.txt").exists();
+        // Practice game: _sandbox.txt (written by the relay for that mode and
+        // removed after) lets PlayerControllerBridge honour `sandbox` cheat
+        // replies. Read per game, so a flag cannot linger into the next one.
+        PlayerControllerBridge.setSandbox(new File(deckDir + "_sandbox.txt").exists());
 
         List<RegisteredPlayer> pp = new ArrayList<>();
         // Human seats come first, so seat index == index in pp. Seat 0 keeps
@@ -375,8 +383,26 @@ public final class ForgeServer {
         }
     }
 
+    /** The scenario this game started from, kept for the Practice game's Restart. */
+    private static ScenarioState lastScenario;
+
+    /**
+     * Re-apply this game's starting scenario (the Practice game's "Restart").
+     * Runs on the calling thread, which is the game loop's when it comes from
+     * a priority window -- the same reason the start hook applies inline.
+     */
+    static boolean reapplyScenario(Game g) {
+        ScenarioState gs = lastScenario;
+        if (gs == null) {
+            return false;
+        }
+        gs.applyInline(g);
+        return true;
+    }
+
     /** Build a startGameHook that applies deckDir/_scenario.txt, or null if absent. */
     private static Runnable buildScenarioHook(Game g, String deckDir) {
+        lastScenario = null;
         try {
             File sf = new File(deckDir + "_scenario.txt");
             if (!sf.exists()) {
@@ -385,6 +411,7 @@ public final class ForgeServer {
             List<String> lines = java.nio.file.Files.readAllLines(sf.toPath());
             ScenarioState gs = new ScenarioState();
             gs.parse(lines);
+            lastScenario = gs;
             return () -> {
                 try {
                     // Apply INLINE on the loop thread. GameState.applyToGame() posts
