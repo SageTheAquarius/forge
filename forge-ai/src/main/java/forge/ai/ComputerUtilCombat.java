@@ -2273,44 +2273,72 @@ public class ComputerUtilCombat {
     }
 
     public final static boolean canGainKeyword(final Card combatant, final List<String> keywords, final Combat combat) {
-    	final Player controller = combatant.getController();
-    	for (Card c : controller.getCardsIn(ZoneType.Battlefield)) {
-	    	for (SpellAbility ability : c.getAllSpellAbilities()) {
-	            if (!ability.isActivatedAbility()) {
-	                continue;
-	            }
-	            if (ability.getApi() != ApiType.Pump) {
-	                continue;
-	            }
-	
-	            if (ability.hasParam("ActivationPhases") || ability.hasParam("SorcerySpeed")) {
-	                continue;
-	            }
-	
-	            if (!ability.hasParam("KW") || !ComputerUtilCost.canPayCost(ability, controller, false)) {
-	                continue;
-	            }
-	            if (c != combatant) {
-	            	if (!ability.usesTargeting() || !ability.canTarget(combatant)) {
-	            		continue;
-	            	}
-	            	//the AI will will fail to predict tapping of attackers
-	            	if (controller.getGame().getPhaseHandler().isPlayerTurn(controller)) {
-		            	if (combat == null || !combat.isAttacking(combatant) || combat.isAttacking(c)) {
-		            		continue;
-		            	}
-	            	}
+        final Player controller = combatant.getController();
+        for (Card c : controller.getCardsIn(ZoneType.Battlefield)) {
+            for (SpellAbility ability : c.getAllSpellAbilities()) {
+                if (!ability.isActivatedAbility()) {
+                    continue;
+                }
+                if (ability.getApi() != ApiType.Pump) {
+                    continue;
+                }
 
-	            }
-	            for (String keyword : keywords) {
-	            	if (ability.getParam("KW").contains(keyword)) {
-	            		return true;
-	            	}
-	            }
-	        }
-    	}
+                if (ability.hasParam("ActivationPhases") || ability.hasParam("SorcerySpeed")) {
+                    continue;
+                }
+
+                if (!ability.hasParam("KW")) {
+                    continue;
+                }
+                // Cheap tests first, the mana simulation last. This used to run
+                // canPayCost before looking at WHICH keyword the ability grants,
+                // so a single "target creature gains indestructible" ability
+                // (Zack Fair) cost a full mana-payment simulation -- and, inside
+                // it, a walk of every card in the game -- for every attacker x
+                // blocker pair the block predictor asked about first strike or
+                // deathtouch. On a 34-permanent board that was 5-11s per AI
+                // decision and a timeout on every damage spell (2026-09-10).
+                boolean grants = false;
+                for (String keyword : keywords) {
+                    if (ability.getParam("KW").contains(keyword)) {
+                        grants = true;
+                        break;
+                    }
+                }
+                if (!grants) {
+                    continue;
+                }
+                if (c != combatant) {
+                    if (!ability.usesTargeting() || !ability.canTarget(combatant)) {
+                        continue;
+                    }
+                    //the AI will will fail to predict tapping of attackers
+                    if (controller.getGame().getPhaseHandler().isPlayerTurn(controller)) {
+                        if (combat == null || !combat.isAttacking(combatant) || combat.isAttacking(c)) {
+                            continue;
+                        }
+                    }
+                }
+                if (!canPayCostCached(ability, controller)) {
+                    continue;
+                }
+                return true;
+            }
+        }
 
         return false;
+    }
+
+    /**
+     * canPayCost for one ability, remembered for the rest of this AI decision.
+     * The block predictor asks about the same few abilities hundreds of times
+     * per decision and the board cannot change in between; AiCache is cleared
+     * at the start of every decision, so nothing here goes stale.
+     */
+    private static boolean canPayCostCached(final SpellAbility ability, final Player controller) {
+        return AiCache.getCached("canGainKeyword.canPayCost",
+                () -> ComputerUtilCost.canPayCost(ability, controller, false),
+                List.of(AiCache::identity, AiCache::identity), ability, controller);
     }
 
     /**

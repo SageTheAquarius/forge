@@ -247,7 +247,8 @@ public final class GameActionUtil {
                 }
 
                 // some needs to check after ability was put on the stack
-                if (game.getAction().hasStaticAbilityAffectingZone(ZoneType.Stack, StaticAbilityLayer.ABILITIES)) {
+                List<StaticAbility> stackStatics = game.getAction().getStaticAbilitiesAffectingZone(ZoneType.Stack, StaticAbilityLayer.ABILITIES);
+                if (!stackStatics.isEmpty()) {
                     Map<StaticAbility, CardPlayOption> oldMayPlay = source.getMayPlay();
                     Zone oldZone = source.getLastKnownZone();
                     Card stackCopy = source;
@@ -257,21 +258,31 @@ public final class GameActionUtil {
                     stackCopy.setLastKnownZone(game.getStackZone());
                     stackCopy.setCastFrom(oldZone);
                     stackCopy.setCastSA(sa);
-                    lkicheck = true;
 
-                    stackCopy.clearStaticChangedCardKeywords(false);
-                    CardCollection preList = new CardCollection(stackCopy);
-                    game.getAction().checkStaticAbilities(false, Sets.newHashSet(stackCopy), preList);
+                    // Only pay for the whole-game static recompute below when one
+                    // of those statics could actually apply to THIS spell. One
+                    // Mycosynth Golem ("artifact creature spells you cast have
+                    // affinity") used to put every card of every player -- lands,
+                    // instants, the opponents' whole hands -- through a full
+                    // checkStaticAbilities on every AI candidate build, 4-11s per
+                    // build on a late Commander board (2026-09-10).
+                    if (couldAffectOnStack(stackStatics, stackCopy)) {
+                        lkicheck = true;
 
-                    stackCopy.setMayPlay(oldMayPlay);
+                        stackCopy.clearStaticChangedCardKeywords(false);
+                        CardCollection preList = new CardCollection(stackCopy);
+                        game.getAction().checkStaticAbilities(false, Sets.newHashSet(stackCopy), preList);
 
-                    for (final KeywordInterface inst : stackCopy.getUnhiddenKeywords()) {
-                        for (SpellAbility iSa : inst.getAbilities()) {
-                            // do only non intrinsic
-                            if (iSa.isSpell() && !iSa.isIntrinsic()) {
-                                alternatives.add(iSa);
-                                alternatives.addAll(getMayPlaySpellOptions(iSa, stackCopy, activator, altCostOnly));
-                                // currently only AltCost get added this way
+                        stackCopy.setMayPlay(oldMayPlay);
+
+                        for (final KeywordInterface inst : stackCopy.getUnhiddenKeywords()) {
+                            for (SpellAbility iSa : inst.getAbilities()) {
+                                // do only non intrinsic
+                                if (iSa.isSpell() && !iSa.isIntrinsic()) {
+                                    alternatives.add(iSa);
+                                    alternatives.addAll(getMayPlaySpellOptions(iSa, stackCopy, activator, altCostOnly));
+                                    // currently only AltCost get added this way
+                                }
                             }
                         }
                     }
@@ -329,6 +340,20 @@ public final class GameActionUtil {
         newSA.setKeyword(inst);
         newSA.setIntrinsic(inst.isIntrinsic());
         return newSA;
+    }
+
+    /**
+     * Could any of {@code statics} apply to {@code stackCopy} once it is on the
+     * stack? Conservative: a static with no Affected list, or whose list
+     * matches, keeps the full check; only a definite non-match skips it.
+     */
+    private static boolean couldAffectOnStack(final List<StaticAbility> statics, final Card stackCopy) {
+        for (final StaticAbility st : statics) {
+            if (!st.hasParam("Affected") || st.matchesValidParam("Affected", stackCopy)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static List<SpellAbility> getMayPlaySpellOptions(final SpellAbility sa, final Card source, final Player activator, boolean altCostOnly) {

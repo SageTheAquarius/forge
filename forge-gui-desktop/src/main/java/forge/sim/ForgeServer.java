@@ -23,6 +23,16 @@ import forge.player.GamePlayerUtil;
 import com.google.common.eventbus.Subscribe;
 
 import java.io.File;
+import java.io.BufferedOutputStream;
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -45,6 +55,7 @@ public final class ForgeServer {
     private ForgeServer() {}
 
     public static void main(String[] args) throws Exception {
+        installStampedStdout();
         GuiBase.setInterface(new GuiDesktop());
         FModel.initialize(null, null);
 
@@ -397,6 +408,81 @@ public final class ForgeServer {
     private static final class ScenarioState extends GameState {
         void applyInline(Game game) {
             applyGameOnThread(game);
+        }
+    }
+
+    // ---- timestamped stdout ------------------------------------------------
+    //
+    // Everything this JVM prints -- Forge's own logging, the [SA-BUILD] samples,
+    // the AI timeout stacks -- lands in /data/logs/forge_<boot>.log with no time
+    // on it, while the Python session log stamps every line. So "which card
+    // made the AI slow" could not be answered by joining the two files; the
+    // Forge side only ever said "somewhere around then". The prefix here is the
+    // session log's format ([HH:MM:SS.mmm], UTC) so the two read side by side.
+    // stderr shares the stream so a stack trace cannot interleave with a line.
+
+    private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
+
+    private static void installStampedStdout() {
+        OutputStream raw = new BufferedOutputStream(new FileOutputStream(FileDescriptor.out), 1 << 13);
+        PrintStream ps = new PrintStream(new StampedStream(raw), true, StandardCharsets.UTF_8);
+        System.setOut(ps);
+        System.setErr(ps);
+    }
+
+    /** Prefixes each line with the wall clock. Line-buffered on newline only. */
+    private static final class StampedStream extends OutputStream {
+        private final OutputStream out;
+        private boolean lineStart = true;
+
+        StampedStream(OutputStream out) {
+            this.out = out;
+        }
+
+        private void stamp() throws IOException {
+            String t = "[" + ZonedDateTime.now(ZoneOffset.UTC).format(STAMP) + "] ";
+            out.write(t.getBytes(StandardCharsets.UTF_8));
+            lineStart = false;
+        }
+
+        @Override
+        public synchronized void write(int b) throws IOException {
+            if (lineStart) {
+                stamp();
+            }
+            out.write(b);
+            if (b == '\n') {
+                lineStart = true;
+            }
+        }
+
+        @Override
+        public synchronized void write(byte[] b, int off, int len) throws IOException {
+            int start = off;
+            final int end = off + len;
+            for (int i = off; i < end; i++) {
+                if (lineStart) {
+                    stamp();
+                }
+                if (b[i] == '\n') {
+                    out.write(b, start, i - start + 1);
+                    start = i + 1;
+                    lineStart = true;
+                }
+            }
+            if (start < end) {
+                out.write(b, start, end - start);
+            }
+        }
+
+        @Override
+        public synchronized void flush() throws IOException {
+            out.flush();
+        }
+
+        @Override
+        public synchronized void close() throws IOException {
+            out.close();
         }
     }
 }

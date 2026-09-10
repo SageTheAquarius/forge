@@ -1374,7 +1374,14 @@ public class ComputerUtilMana {
         // 3. Use lands that produce any color many
         // 4. all other sources (creature, costs, drawback, etc.)
 
-        final boolean canDieToTapDamage = ai.canLoseLife() && !ai.cantLoseForZeroOrLessLife();
+        // cantLoseForZeroOrLessLife is a replacement-effect scan of EVERY card in
+        // the game, libraries included, and this method runs once per mana-cost
+        // check -- hundreds of times inside one block prediction. The answer
+        // cannot change within an AI decision, and AiCache is cleared at the
+        // start of each one.
+        final boolean canDieToTapDamage = AiCache.getCached("canDieToTapDamage",
+                () -> ai.canLoseLife() && !ai.cantLoseForZeroOrLessLife(),
+                List.of(AiCache::identity), ai);
         for (Card card : manaSources) {
             // exclude creature sources that will tap as a part of an attack declaration
             if (card.isCreature()) {

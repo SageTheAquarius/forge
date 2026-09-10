@@ -1050,6 +1050,30 @@ public class GameAction {
     }
 
     // This doesn't check layers or if the ability gets removed by other effects
+    /**
+     * The active Continuous static abilities that could apply to a card in
+     * {@code zone} at {@code layer}. Same walk as hasStaticAbilityAffectingZone,
+     * returning the abilities so a caller can ask a cheaper question about them
+     * before paying for a full checkStaticAbilities pass.
+     */
+    public List<StaticAbility> getStaticAbilitiesAffectingZone(ZoneType zone, StaticAbilityLayer layer) {
+        List<StaticAbility> result = new ArrayList<>();
+        for (final Card ca : game.getCardsIn(ZoneType.STATIC_ABILITIES_SOURCE_ZONES)) {
+            for (final StaticAbility stAb : ca.getStaticAbilities()) {
+                if (!stAb.checkConditions(StaticAbilityMode.Continuous)) {
+                    continue;
+                }
+                if (layer != null && !stAb.getLayers().contains(layer)) {
+                    continue;
+                }
+                if (ZoneType.listValueOf(stAb.getParamOrDefault("AffectedZone", ZoneType.Battlefield.toString())).contains(zone)) {
+                    result.add(stAb);
+                }
+            }
+        }
+        return result;
+    }
+
     public boolean hasStaticAbilityAffectingZone(ZoneType zone, StaticAbilityLayer layer) {
         for (final Card ca : game.getCardsIn(ZoneType.STATIC_ABILITIES_SOURCE_ZONES)) {
             for (final StaticAbility stAb : ca.getStaticAbilities()) {
