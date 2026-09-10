@@ -14,8 +14,10 @@ import com.google.common.collect.Multiset;
 
 import forge.ImageKeys;
 import forge.StaticData;
+import forge.ai.ComputerUtilMana;
 import forge.card.CardEdition;
 import forge.card.MagicColor;
+import forge.card.mana.ManaCost;
 import forge.game.Game;
 import forge.game.GameLog;
 import forge.game.GameLogEntry;
@@ -302,6 +304,8 @@ public final class StateExporter {
         Map<Integer, String> cycling = new HashMap<>();
         Set<Integer> elsewhere = new HashSet<>();
         Map<Integer, String> abilities = new HashMap<>();
+        // One export, one affordability answer per (card name, cost). See unpayableReason.
+        Map<String, String> payMemo = new HashMap<>();
         CardView top = null;
         if (human != null) {
             for (Card c : human.getCardsIn(ZoneType.Battlefield)) {
@@ -343,12 +347,12 @@ public final class StateExporter {
                 }
                 if (c.mayPlayerLook(human)) {
                     top = c.getView();
-                    putAbilities(abilities, c, human);
+                    putAbilities(abilities, c, human, payMemo);
                 }
             }
             for (ZoneType zt : ABILITY_ZONES) {
                 for (Card c : human.getCardsIn(zt)) {
-                    putAbilities(abilities, c, human);
+                    putAbilities(abilities, c, human, payMemo);
                 }
             }
         }
@@ -646,7 +650,78 @@ public final class StateExporter {
      * bridge makes when the reply comes back -- the index is only meaningful
      * because both sides build the list the same way.
      */
+    /**
+     * Why the mana auto-tapper could not pay for {@code sa} right now, in the
+     * player's words -- or null when it can (or when the question does not
+     * apply: lands, mana abilities, free abilities, X costs).
+     *
+     * The bridge pays every mana cost with the AI's auto-tapper
+     * (ComputerUtilMana.payManaCost), deliberately, so the player never has to
+     * pick lands. The other half of that bargain is that Forge's playability
+     * filter never checks affordability for a human: getAllPossibleAbilities
+     * offers "{R}, {T}, Sacrifice an artifact: ..." on a tapped-out board, the
+     * client shows it live, the click walks all the way through target
+     * selection, and THEN the auto-tapper finds nothing to tap and unwinds the
+     * whole thing with one line on the server's stdout. Reported from a live
+     * Commander pod as "my Goblin Engineer should be able to be activated but
+     * it won't let me" -- seven attempts over 40 minutes, every one of them
+     * after the turn's mana had gone into creatures, every one of them silent.
+     *
+     * This asks the same auto-tapper the same question in test mode, so the
+     * answer here IS the answer the click would get. It greys the ability
+     * before the click (putAbilities) and captions the failure after one
+     * (PlayerControllerBridge.playChosenSpellAbility). X costs are left alone:
+     * the test path picks X by AI heuristics, and X=0 may well be payable.
+     *
+     * The memo keys on card name + cost + spell/ability, which is exactly the
+     * granularity Forge's own cost adjustments work at (Training Grounds
+     * touches creature abilities, Foundry Inspector artifact spells, ...), and
+     * collapses the six Myr tokens on a go-wide board into one check.
+     */
+    static String unpayableReason(SpellAbility sa, Player p, Map<String, String> memo) {
+        try {
+            if (sa == null || p == null || sa.isLandAbility() || sa.isManaAbility()) {
+                return null;
+            }
+            Cost cost = sa.getPayCosts();
+            if (cost == null || !cost.hasManaCost()) {
+                return null;
+            }
+            ManaCost mc = cost.getTotalMana();
+            if (mc == null || mc.isZero() || mc.countX() > 0) {
+                return null;
+            }
+            Card host = sa.getHostCard();
+            String key = (host != null ? host.getName() : "?") + "|" + mc + "|"
+                    + (sa.isSpell() ? "S" : "A");
+            if (memo != null && memo.containsKey(key)) {
+                return memo.get(key);
+            }
+            if (sa.getActivatingPlayer() == null) {
+                sa.setActivatingPlayer(p);
+            }
+            String why = null;
+            if (!ComputerUtilMana.canPayManaCost(sa, p, 0, false)) {
+                why = "can't pay " + mc + " - no untapped mana source to auto-tap"
+                        + " (creatures that came in this turn can't tap yet;"
+                        + " float mana by hand first if you have another way to make it)";
+            }
+            if (memo != null) {
+                memo.put(key, why);
+            }
+            return why;
+        } catch (Exception e) {
+            // Affordability is a caption, never a reason to drop the ability.
+            return null;
+        }
+    }
+
     private static void putAbilities(Map<Integer, String> out, Card c, Player human) {
+        putAbilities(out, c, human, null);
+    }
+
+    private static void putAbilities(Map<Integer, String> out, Card c, Player human,
+            Map<String, String> payMemo) {
         List<SpellAbility> sas = possibleAbilities(c, human);
         if (sas == null) {
             sas = Collections.emptyList();
@@ -673,12 +748,16 @@ public final class StateExporter {
             kvs(sb, "label", abilityLabel(sa, c));
             // Playable by Forge's filter, yet doomed: a mandatory target with
             // no candidate. Loyalty abilities only -- see noTargetReason.
-            if (sa.isPwAbility()) {
-                String why = noTargetReason(sa);
-                if (why != null) {
-                    sb.append(',');
-                    kvs(sb, "disabled", why);
-                }
+            String why = sa.isPwAbility() ? noTargetReason(sa) : null;
+            // Playable by Forge's filter, yet unaffordable: the filter never
+            // asks whether a human can pay, and the auto-tapper that pays for
+            // them says no. See unpayableReason.
+            if (why == null) {
+                why = unpayableReason(sa, human, payMemo);
+            }
+            if (why != null) {
+                sb.append(',');
+                kvs(sb, "disabled", why);
             }
             sb.append('}');
         }

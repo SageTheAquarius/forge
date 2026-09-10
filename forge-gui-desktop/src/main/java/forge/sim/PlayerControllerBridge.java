@@ -526,12 +526,55 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     @Override
     public boolean playChosenSpellAbility(SpellAbility sa) {
         if (sa == null) return false;
+        boolean played;
         try {
-            return PlaySpellAbility.playSpellAbility(this, getPlayer(), sa);
+            played = PlaySpellAbility.playSpellAbility(this, getPlayer(), sa);
         } catch (Exception e) {
             System.err.println("[bridge] play failed for "
                 + (sa.getHostCard() != null ? sa.getHostCard().getName() : "?") + ": " + e);
-            return false;
+            played = false;
+        }
+        if (!played) {
+            explainIfUnpaid(sa);
+        }
+        return played;
+    }
+
+    /**
+     * The play unwound. If the mana was the reason, say so.
+     *
+     * The mana cost is paid last, by the AI auto-tapper, and when it finds
+     * nothing to tap the engine cancels the whole play with a line on stdout
+     * and nothing for the player: the click had already walked through target
+     * selection, so it read as "chose my target, then nothing happened". Live
+     * report: Goblin Engineer, seven silent attempts, each after that turn's
+     * mana had gone into creatures.
+     *
+     * {@link StateExporter#unpayableReason} now greys the ability before the
+     * click; this is the backstop for a click that raced the state push, for
+     * a spell dragged from hand (the drag path never reads the greyed flag),
+     * and for X costs, which the pre-check leaves alone. Nothing changed on the
+     * board (a failed payment refunds its mana), so asking the same question
+     * again in test mode gives the answer the real payment just got. A cancel
+     * at the target prompt with plenty of mana stays silent, as before.
+     *
+     * The auto-tapper also flags an ability it could not pay for as "skip".
+     * Only the AI's own recursion guard reads that flag, but it is sticky on
+     * the card's ability object, so it is cleared here rather than left to
+     * surprise someone later.
+     */
+    private void explainIfUnpaid(SpellAbility sa) {
+        try {
+            sa.setSkip(false);
+            String why = StateExporter.unpayableReason(sa, getPlayer(), null);
+            if (why == null) {
+                return;
+            }
+            Card host = sa.getHostCard();
+            String name = host != null ? host.getName() : "That";
+            ask("{\"kind\":\"feed\",\"lines\":[\"" + StateExporter.esc(name + ": " + why) + "\"]}");
+        } catch (Exception e) {
+            // An explanation is never worth breaking the play path over.
         }
     }
 
