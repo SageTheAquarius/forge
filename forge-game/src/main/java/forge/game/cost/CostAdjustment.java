@@ -333,6 +333,20 @@ public class CostAdjustment {
         }
     }
 
+    /**
+     * True while a convoke / improvise choice is being requested for a TEST
+     * payment ("could this be paid?"), as opposed to the real one. The AI's
+     * mana checker runs the same code path for both, so a controller that
+     * asks a human which permanents to tap would otherwise ask during every
+     * castability probe -- before X is even announced -- and again for real.
+     * (EconomyDraft bridge patch; read by PlayerControllerBridge.)
+     */
+    private static final ThreadLocal<Boolean> TEST_PAYMENT = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    public static boolean isTestPayment() {
+        return TEST_PAYMENT.get();
+    }
+
     private static void adjustCostByConvokeOrImprovise(ManaCostBeingPaid cost, final SpellAbility sa, final Player payer, boolean artifacts, boolean creatures, boolean test) {
         if (creatures && !artifacts) {
             sa.clearTappedForConvoke();
@@ -356,8 +370,14 @@ public class CostAdjustment {
             return;
         }
 
-        Map<Card, ManaCostShard> convokedCards = payer.getController().chooseCardsForConvokeOrImprovise(sa,
-                cost.toManaCost(), untappedCards, artifacts, creatures, maxReduction);
+        Map<Card, ManaCostShard> convokedCards;
+        TEST_PAYMENT.set(test);
+        try {
+            convokedCards = payer.getController().chooseCardsForConvokeOrImprovise(sa,
+                    cost.toManaCost(), untappedCards, artifacts, creatures, maxReduction);
+        } finally {
+            TEST_PAYMENT.set(Boolean.FALSE);
+        }
 
         CardCollection tapped = new CardCollection();
         for (final Entry<Card, ManaCostShard> conv : convokedCards.entrySet()) {

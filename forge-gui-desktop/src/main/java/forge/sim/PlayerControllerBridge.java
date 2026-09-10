@@ -2999,6 +2999,17 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         if (untappedCards == null || untappedCards.isEmpty()) {
             return new HashMap<>();
         }
+        if (forge.game.cost.CostAdjustment.isTestPayment()) {
+            // A castability probe, not a payment: the AI's mana checker runs
+            // this path for "could this be paid?" too, and it probes once per
+            // candidate and again after every answer. Reported 2026-09-10:
+            // "Tap for Improvise?" opened before X was announced and reopened
+            // on every Confirm, so nothing seemed selectable. Answer the probe
+            // the way the AI would (tap whatever helps) and ask the player
+            // only when the mana is really being paid.
+            return super.chooseCardsForConvokeOrImprovise(sa, manaCost, untappedCards,
+                    artifacts, creatures, maxReduction);
+        }
         int hi = untappedCards.size();
         if (maxReduction != null && maxReduction > 0) hi = Math.min(hi, maxReduction);
         CardCollection picked = chooseCardsFrom(
