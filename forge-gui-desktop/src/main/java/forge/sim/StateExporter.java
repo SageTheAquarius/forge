@@ -94,6 +94,11 @@ public final class StateExporter {
     // there). The library is hidden information and the client renders whatever
     // it is handed, so this stays null unless Forge says the look is legal.
     private static CardView libraryTop = null;
+    // Whose export this is. A face-down card's real name is shown only to
+    // the seats Forge says may see it (its controller, or everyone once a
+    // look-at effect has revealed it); every other seat gets the blank
+    // 2/2 face Forge already exports.
+    private static PlayerView viewer = null;
     private static int libraryTopOwner = -1;
 
     /** PlayerView id -> that player's Start Your Engines speed (0 = not started).
@@ -299,6 +304,19 @@ public final class StateExporter {
     }
 
     public static String toJson(GameView g, Player human) {
+        // Timed into AiPerf so the relay's pace line can show what every push
+        // costs on the game thread (the human's ability export is the same
+        // getAllPossibleAbilities walk the AI's candidate build pays for).
+        final long t0 = System.currentTimeMillis();
+        forge.ai.AiPerf.exportN.increment();
+        try {
+            return toJsonNow(g, human);
+        } finally {
+            forge.ai.AiPerf.exportMs.add(System.currentTimeMillis() - t0);
+        }
+    }
+
+    private static String toJsonNow(GameView g, Player human) {
         Set<Integer> mana = new HashSet<>();
         Set<Integer> activated = new HashSet<>();
         Map<Integer, String> cycling = new HashMap<>();
@@ -365,6 +383,7 @@ public final class StateExporter {
         defenderOf = attackTargets(g);
         blockingIdsOf = blockIds(g);
         libraryTop = top;
+        viewer = human != null ? human.getView() : null;
         libraryTopOwner = human != null && human.getView() != null ? human.getView().getId() : -1;
         Map<Integer, Integer> speeds = new HashMap<>();
         if (human != null && human.getGame() != null) {
@@ -617,6 +636,19 @@ public final class StateExporter {
         kvs(sb, "protected_by",
             battle && c.getProtectingPlayer() != null
                 ? nz(c.getProtectingPlayer().getName()) : ""); sb.append(',');
+        // Face-down (morph, disguise, manifest, cloak, foretold-in-exile...).
+        // Forge's current state for one of these is the nameless 2/2 face,
+        // so without this flag the client had nothing to draw and left a
+        // grey frame. The translator turns it into card-back art. The
+        // hidden face's name rides along only when this viewer may see it.
+        boolean faceDown = c.isFaceDown();
+        kvb(sb, "face_down", faceDown); sb.append(',');
+        String hiddenName = "";
+        if (faceDown && viewer != null && c.canFaceDownBeShownTo(viewer)
+                && c.getAlternateState() != null) {
+            hiddenName = nz(c.getAlternateState().getName());
+        }
+        kvs(sb, "face_down_name", hiddenName); sb.append(',');
         kvb(sb, "tapped", c.isTapped()); sb.append(',');
         kvb(sb, "sick", c.isSick()); sb.append(',');
         kvb(sb, "attacking", c.isAttacking()); sb.append(',');
