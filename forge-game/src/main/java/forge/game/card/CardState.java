@@ -463,6 +463,10 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
         return newCol;
     }
     public final FCollectionView<SpellAbility> getManaAbilities() {
+        // Rebuilt on every call; remembered per AI decision (CardTraitMemo).
+        return CardTraitMemo.spellAbilities(this, true, this::buildManaAbilities);
+    }
+    private FCollectionView<SpellAbility> buildManaAbilities() {
         FCollection<SpellAbility> newCol = new FCollection<>();
         updateSpellAbilities(newCol);
         newCol.addAll(abilities);
@@ -471,6 +475,10 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
         return newCol;
     }
     public final FCollectionView<SpellAbility> getNonManaAbilities() {
+        // Rebuilt on every call; remembered per AI decision (CardTraitMemo).
+        return CardTraitMemo.spellAbilities(this, false, this::buildNonManaAbilities);
+    }
+    private FCollectionView<SpellAbility> buildNonManaAbilities() {
         FCollection<SpellAbility> newCol = new FCollection<>();
         updateSpellAbilities(newCol);
         newCol.addAll(abilities);
@@ -686,6 +694,10 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
     }
 
     public final FCollectionView<Trigger> getTriggers() {
+        // Rebuilt on every call; remembered per AI decision (CardTraitMemo).
+        return CardTraitMemo.triggers(this, this::buildTriggers);
+    }
+    private FCollectionView<Trigger> buildTriggers() {
         FCollection<Trigger> result = new FCollection<>(triggers);
         if (getStateName().equals(CardStateName.Original)) {
             if (getCard().hasState(CardStateName.LeftSplit))

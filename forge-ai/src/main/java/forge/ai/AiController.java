@@ -1299,12 +1299,116 @@ public class AiController {
 
     // declares blockers for given defender in a given combat
     public void declareBlockersFor(Player defender, Combat combat) {
-        AiBlockController block = new AiBlockController(defender, defender != player);
-        // When player != defender, AI should declare blockers for its benefit.
-        block.assignBlockersForCombat(combat);
+        withDecisionMemo("declare_blockers", combat, () -> {
+            AiBlockController block = new AiBlockController(defender, defender != player);
+            // When player != defender, AI should declare blockers for its benefit.
+            block.assignBlockersForCombat(combat);
+        });
     }
 
     public void declareAttackers(Player attacker, Combat combat) {
+        withDecisionMemo("declare_attackers", combat, () -> declareAttackersNow(attacker, combat));
+    }
+
+    /**
+     * Kill-switch for the game-thread decision memo: -Dbridge.decisionmemo=false.
+     * Latched off for the rest of the JVM if a decision ever mutates a
+     * remembered zone list (see withDecisionMemo).
+     */
+    private static volatile boolean decisionMemo = !"false".equals(System.getProperty("bridge.decisionmemo"));
+    /** Stack-sample a decision still running after this long: -Dbridge.decisionsample=<ms>. */
+    private static final long DECISION_SAMPLE_MS = Long.getLong("bridge.decisionsample", 2000L);
+
+    /**
+     * Run one attack / block declaration under {@link CardTraitMemo}, timed,
+     * with one stack sample if it runs long.
+     *
+     * The AI's attack declaration runs on the GAME thread, outside the 2s
+     * eval budget, so it neither times out nor leaves the "AI eval thread at
+     * timeout" samples that found the last three cliffs. On Sage's 08:35 pod
+     * (v125) it was the largest silent block of every late AI turn: 10.5s,
+     * 4.8s and 15.5s on turns 35-37, with declareAttackers running a full
+     * block simulation per candidate blocker it considers holding back. The
+     * board is frozen while the AI decides -- it only fills the Combat -- so
+     * the memo the eval thread already uses is just as sound here.
+     *
+     * A remembered zone list refuses mutation ({@link ReadOnlyCardCollection});
+     * on the eval thread that fails the one evaluation, here it would fail the
+     * game thread. So a violation is caught, logged, the memo is switched off
+     * for the rest of the JVM, the Combat is reset and the decision re-runs
+     * the old way.
+     */
+    private void withDecisionMemo(String what, Combat combat, Runnable body) {
+        final boolean useMemo = decisionMemo;
+        final Thread me = Thread.currentThread();
+        final long t0 = System.currentTimeMillis();
+        final boolean[] done = {false};
+        Thread sampler = new Thread(() -> {
+            try {
+                Thread.sleep(DECISION_SAMPLE_MS);
+            } catch (InterruptedException e) {
+                return;
+            }
+            synchronized (done) {
+                if (done[0]) {
+                    return;
+                }
+            }
+            StringBuilder sb = new StringBuilder("AI " + what + " thread at " + DECISION_SAMPLE_MS + "ms:");
+            StackTraceElement[] st = me.getStackTrace();
+            for (int i = 0; i < Math.min(30, st.length); i++) {
+                sb.append("\n\tat ").append(st[i]);
+            }
+            System.out.println(sb);
+        }, "AI Decision Sample");
+        sampler.setDaemon(true);
+        sampler.start();
+        String memo = "";
+        if (useMemo) {
+            CardTraitMemo.begin();
+        }
+        try {
+            body.run();
+        } catch (UnsupportedOperationException ex) {
+            if (!useMemo) {
+                throw ex;
+            }
+            System.out.println("[AI-DECISION] " + what + " mutated a remembered list; memo off for this JVM");
+            ex.printStackTrace();
+            decisionMemo = false;
+            CardTraitMemo.end();
+            resetCombatDecision(what, combat);
+            body.run();
+            return;
+        } finally {
+            synchronized (done) {
+                done[0] = true;
+            }
+            sampler.interrupt();
+            if (useMemo && CardTraitMemo.isActive()) {
+                memo = CardTraitMemo.end();
+            }
+            long ms = System.currentTimeMillis() - t0;
+            if (ms >= 500) {
+                System.out.println("[AI-DECISION] " + what + " " + ms + "ms seat=" + player.getName()
+                        + (memo.isEmpty() ? "" : " memo=" + memo));
+            }
+        }
+    }
+
+    private static void resetCombatDecision(String what, Combat combat) {
+        if ("declare_attackers".equals(what)) {
+            combat.clearAttackers();
+            return;
+        }
+        for (Card attacker : combat.getAttackers()) {
+            for (Card blocker : new ArrayList<>(combat.getBlockers(attacker))) {
+                combat.removeBlockAssignment(attacker, blocker);
+            }
+        }
+    }
+
+    private void declareAttackersNow(Player attacker, Combat combat) {
         // 12/2/10(sol) the decision making here has moved to getAttackers()
         AiAttackController aiAtk = new AiAttackController(attacker);
         lastAttackAggression = aiAtk.declareAttackers(combat);

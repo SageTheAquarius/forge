@@ -27,6 +27,7 @@ import forge.game.ability.ApiType;
 import forge.game.ability.effects.CharmEffect;
 import forge.game.card.Card;
 import forge.game.card.CardState;
+import forge.game.card.CardTraitMemo;
 import forge.game.keyword.Keyword;
 import forge.game.phase.PhaseHandler;
 import forge.game.phase.PhaseType;
@@ -296,6 +297,15 @@ public abstract class Trigger extends TriggerReplacementBase {
      * @return a boolean.
      */
     public final boolean requirementsCheck(Game game) {
+        // Remembered per AI decision (CardTraitMemo): combat prediction asks
+        // this for every trigger at the table per attacker x blocker pair,
+        // and the answer copies whole zones. Only for the trigger's own game.
+        if (game != getHostCard().getGame()) {
+            return computeRequirements(game);
+        }
+        return CardTraitMemo.requirements(this, () -> computeRequirements(game));
+    }
+    private boolean computeRequirements(Game game) {
         if (hasParam("APlayerHasMoreLifeThanEachOther")) {
             int highestLife = Integer.MIN_VALUE; // Negative base just in case a few Lich's or Platinum Angels are running around
             final List<Player> healthiest = new ArrayList<>();

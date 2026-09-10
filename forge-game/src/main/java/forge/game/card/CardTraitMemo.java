@@ -2,11 +2,15 @@ package forge.game.card;
 
 import forge.game.Game;
 import forge.game.replacement.ReplacementEffect;
+import forge.game.spellability.SpellAbility;
 import forge.game.staticability.StaticAbility;
+import forge.game.trigger.Trigger;
 import forge.util.collect.FCollectionView;
 
 import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
 /**
  * Per-thread memo of the trait lists a card derives on every call.
@@ -28,6 +32,14 @@ import java.util.Map;
  * and every other caller keep the exact old behaviour; the AI switches it on
  * at the start of an evaluation and off in a finally.
  *
+ * The same argument covers the AI's attack and block declarations, which run
+ * on the GAME thread with no timeout: nothing mutates the board while the AI
+ * decides what attacks, it only fills a Combat object. AiController wraps
+ * those two decisions in begin()/end() as well, so a decision nested inside
+ * an evaluation (the eval thread predicts combats too) must not reset the
+ * outer memo: begin/end are a depth counter, and only the outermost end()
+ * forgets.
+ *
  * (EconomyDraft bridge patch. Mirrored in forge_bridge/forge_java_src.)
  */
 public final class CardTraitMemo {
@@ -40,7 +52,15 @@ public final class CardTraitMemo {
         final Map<Game, CardCollectionView> zoneScans = new IdentityHashMap<>();
         /** Game -> zone -> every player's cards there; see cardsIn. */
         final Map<Game, Map<forge.game.zone.ZoneType, CardCollectionView>> zoneLists = new IdentityHashMap<>();
-        long hits, misses, zoneHits, zoneMisses;
+        /** CardState -> its derived trigger list; see triggers. */
+        final Map<CardState, FCollectionView<Trigger>> triggers = new IdentityHashMap<>();
+        /** CardState -> its derived mana / non-mana ability lists; see spellAbilities. */
+        final Map<CardState, FCollectionView<SpellAbility>> manaAbilities = new IdentityHashMap<>();
+        final Map<CardState, FCollectionView<SpellAbility>> nonManaAbilities = new IdentityHashMap<>();
+        /** Trigger -> requirementsCheck(game) for its own game; see requirements. */
+        final Map<Trigger, Boolean> requirements = new IdentityHashMap<>();
+        int depth;
+        long hits, misses, zoneHits, zoneMisses, trigHits, trigMisses;
     }
 
     private static final ThreadLocal<Memo> ACTIVE = new ThreadLocal<>();
@@ -53,24 +73,44 @@ public final class CardTraitMemo {
     /** Kill-switch for the zone-scan memo alone: -Dbridge.zonememo=false. */
     private static final boolean ZONE_MEMO = !"false".equals(System.getProperty("bridge.zonememo"));
 
+    /** Kill-switch for the trigger-list, ability-list and requirementsCheck
+     *  memos alone: -Dbridge.triggermemo=false. */
+    private static final boolean TRIGGER_MEMO = !"false".equals(System.getProperty("bridge.triggermemo"));
+
     private CardTraitMemo() { }
 
     public static boolean enabled() {
         return ENABLED;
     }
 
-    /** Start remembering on this thread. Pair with {@link #end()} in a finally. */
+    /** Start remembering on this thread. Pair with {@link #end()} in a finally.
+     *  Re-entrant: a nested begin joins the memo already active on the thread. */
     public static void begin() {
-        if (ENABLED) {
-            ACTIVE.set(new Memo());
+        if (!ENABLED) {
+            return;
         }
+        Memo m = ACTIVE.get();
+        if (m == null) {
+            m = new Memo();
+            ACTIVE.set(m);
+        }
+        m.depth++;
     }
 
-    /** Stop remembering on this thread and forget everything. Returns "hits/misses zones=hits/misses". */
+    /** Stop remembering on this thread. The outermost end() forgets everything
+     *  and returns "hits/misses zones=hits/misses triggers=hits/misses"; a
+     *  nested end() returns "". */
     public static String end() {
         Memo m = ACTIVE.get();
+        if (m == null) {
+            return "";
+        }
+        if (--m.depth > 0) {
+            return "";
+        }
         ACTIVE.remove();
-        return m == null ? "" : m.hits + "/" + m.misses + " zones=" + m.zoneHits + "/" + m.zoneMisses;
+        return m.hits + "/" + m.misses + " zones=" + m.zoneHits + "/" + m.zoneMisses
+                + " triggers=" + m.trigHits + "/" + m.trigMisses;
     }
 
     /**
@@ -98,7 +138,7 @@ public final class CardTraitMemo {
      * mutates it.
      */
     public static CardCollectionView staticSourceCards(Game game,
-            java.util.function.Supplier<CardCollectionView> build) {
+            Supplier<CardCollectionView> build) {
         Memo m = ACTIVE.get();
         if (m == null || !ZONE_MEMO) {
             return build.get();
@@ -127,7 +167,7 @@ public final class CardTraitMemo {
      * throws on mutation instead of trusting several hundred callers.
      */
     public static CardCollectionView cardsIn(Game game, forge.game.zone.ZoneType zone,
-            java.util.function.Supplier<CardCollectionView> build) {
+            Supplier<CardCollectionView> build) {
         Memo m = ACTIVE.get();
         if (m == null || !ZONE_MEMO) {
             return build.get();
@@ -148,7 +188,10 @@ public final class CardTraitMemo {
         return v;
     }
 
-    /** A zone changed on this thread: forget every remembered zone list. */
+    /** A zone changed on this thread: forget every remembered list that can
+     *  depend on where a card is (zone lists, ability lists -- an Adventure is
+     *  castable only off the battlefield -- and trigger requirements, whose
+     *  IsPresent clauses count cards in zones). */
     public static void zonesChanged() {
         Memo m = ACTIVE.get();
         if (m == null) {
@@ -160,13 +203,22 @@ public final class CardTraitMemo {
         if (!m.zoneLists.isEmpty()) {
             m.zoneLists.clear();
         }
+        if (!m.requirements.isEmpty()) {
+            m.requirements.clear();
+        }
+        if (!m.manaAbilities.isEmpty()) {
+            m.manaAbilities.clear();
+        }
+        if (!m.nonManaAbilities.isEmpty()) {
+            m.nonManaAbilities.clear();
+        }
     }
 
     public static boolean isActive() {
         return ACTIVE.get() != null;
     }
 
-    static FCollectionView<StaticAbility> statics(CardState s, java.util.function.Supplier<FCollectionView<StaticAbility>> build) {
+    static FCollectionView<StaticAbility> statics(CardState s, Supplier<FCollectionView<StaticAbility>> build) {
         Memo m = ACTIVE.get();
         if (m == null) {
             return build.get();
@@ -183,7 +235,7 @@ public final class CardTraitMemo {
     }
 
     static FCollectionView<ReplacementEffect> replacements(CardState s, boolean rulesHost,
-            java.util.function.Supplier<FCollectionView<ReplacementEffect>> build) {
+            Supplier<FCollectionView<ReplacementEffect>> build) {
         Memo m = ACTIVE.get();
         if (m == null) {
             return build.get();
@@ -196,6 +248,79 @@ public final class CardTraitMemo {
             map.put(s, v);
         } else {
             m.hits++;
+        }
+        return v;
+    }
+
+    /**
+     * CardState.getTriggers() -- the state's own triggers plus every
+     * changed-trait layer's and every keyword's -- remembered per decision.
+     *
+     * Combat prediction (predictPowerBonusOfAttacker and its three siblings)
+     * opens by collecting EVERY battlefield and command-zone card's triggers,
+     * once per attacker x blocker pair it weighs; on Sage's 08:35 pod (v125,
+     * turn 37) three of eight timeout samples were inside that rebuild.
+     */
+    static FCollectionView<Trigger> triggers(CardState s, Supplier<FCollectionView<Trigger>> build) {
+        Memo m = ACTIVE.get();
+        if (m == null || !TRIGGER_MEMO) {
+            return build.get();
+        }
+        FCollectionView<Trigger> v = m.triggers.get(s);
+        if (v == null) {
+            m.trigMisses++;
+            v = build.get();
+            m.triggers.put(s, v);
+        } else {
+            m.trigHits++;
+        }
+        return v;
+    }
+
+    /** CardState.getManaAbilities() / getNonManaAbilities(), remembered per
+     *  decision for the same reason as {@link #triggers}: canGainKeyword and
+     *  predictPowerBonusOfAttacker walk getAllSpellAbilities per pair. */
+    static FCollectionView<SpellAbility> spellAbilities(CardState s, boolean mana,
+            Supplier<FCollectionView<SpellAbility>> build) {
+        Memo m = ACTIVE.get();
+        if (m == null || !TRIGGER_MEMO) {
+            return build.get();
+        }
+        Map<CardState, FCollectionView<SpellAbility>> map = mana ? m.manaAbilities : m.nonManaAbilities;
+        FCollectionView<SpellAbility> v = map.get(s);
+        if (v == null) {
+            m.trigMisses++;
+            v = build.get();
+            map.put(s, v);
+        } else {
+            m.trigHits++;
+        }
+        return v;
+    }
+
+    /**
+     * Trigger.requirementsCheck(game) for the trigger's own game, remembered
+     * per decision.
+     *
+     * combatTriggerWillTrigger asks it for every trigger at the table, per
+     * attacker x blocker pair, and the answer walks the players' zones
+     * (IsPresent copies whole battlefields through getValidCards). Everything
+     * it reads -- life, hand sizes, phase, zones, resolved counts -- is frozen
+     * while the AI decides; a zone change on this thread forgets the answers
+     * ({@link #zonesChanged()}).
+     */
+    public static boolean requirements(Trigger t, BooleanSupplier compute) {
+        Memo m = ACTIVE.get();
+        if (m == null || !TRIGGER_MEMO) {
+            return compute.getAsBoolean();
+        }
+        Boolean v = m.requirements.get(t);
+        if (v == null) {
+            m.trigMisses++;
+            v = compute.getAsBoolean();
+            m.requirements.put(t, v);
+        } else {
+            m.trigHits++;
         }
         return v;
     }
