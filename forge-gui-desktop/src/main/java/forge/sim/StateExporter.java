@@ -323,7 +323,7 @@ public final class StateExporter {
         Set<Integer> elsewhere = new HashSet<>();
         Map<Integer, String> abilities = new HashMap<>();
         // One export, one affordability answer per (card name, cost). See unpayableReason.
-        Map<String, String> payMemo = new HashMap<>();
+        Map<String, String> payMemo = payMemoFor(human);
         CardView top = null;
         if (human != null) {
             for (Card c : human.getCardsIn(ZoneType.Battlefield)) {
@@ -710,6 +710,45 @@ public final class StateExporter {
      * touches creature abilities, Foundry Inspector artifact spells, ...), and
      * collapses the six Myr tokens on a go-wide board into one check.
      */
+    // The affordability answers, kept ACROSS pushes while nothing the auto-tapper
+    // reads has changed. On v130's turn 49 the export cost 0.5s per push, sixteen
+    // pushes a turn, and the human's mana had not moved between most of them.
+    private static final Map<String, String> PAY_MEMO = new HashMap<>();
+    private static long payMemoStamp = Long.MIN_VALUE;
+
+    private static Map<String, String> payMemoFor(Player human) {
+        if (human == null || human.getGame() == null) {
+            return new HashMap<>();
+        }
+        long stamp;
+        try {
+            Game game = human.getGame();
+            forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+            int untapped = 0;
+            for (Card c : human.getCardsIn(ZoneType.Battlefield)) {
+                if (!c.isTapped()) {
+                    untapped++;
+                }
+            }
+            stamp = (ph == null ? 0L : ph.getTurn()) * 1000003L
+                    + (ph == null || ph.getPhase() == null ? 0L : ph.getPhase().ordinal()) * 9176L
+                    + (game.getStack() == null ? 0L : game.getStack().size()) * 131L
+                    + untapped * 7L
+                    + human.getManaPool().totalMana() * 3L
+                    + human.getCardsIn(ZoneType.Battlefield).size() * 100003L
+                    + human.getCardsIn(ZoneType.Hand).size() * 17L;
+        } catch (Exception e) {
+            return new HashMap<>();
+        }
+        synchronized (PAY_MEMO) {
+            if (stamp != payMemoStamp) {
+                PAY_MEMO.clear();
+                payMemoStamp = stamp;
+            }
+            return PAY_MEMO;
+        }
+    }
+
     static String unpayableReason(SpellAbility sa, Player p, Map<String, String> memo) {
         try {
             if (sa == null || p == null || sa.isLandAbility() || sa.isManaAbility()) {

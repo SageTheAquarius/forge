@@ -425,7 +425,30 @@ public class AiAttackController {
             // strongest, stop at the first unsafe one), so when the answer is no
             // the prefix is found by bisection instead of by walking it.
             boolean settled = false;
-            if (AiPerf.PREDICT_BOUND) {
+            // EconomyDraft: a seat over its per-turn thinking budget does not run
+            // combat predictions here at all. It keeps back the weakest of its
+            // possible blockers, one per opposing creature that could attack it
+            // next turn (at most half of them), and sends the rest.
+            if (AiPerf.fast(ai)) {
+                AiPerf.governed.increment();
+                final List<Card> candidates = new ArrayList<>();
+                for (Card c : blockers) {
+                    if (!vigilantes.contains(c)) {
+                        candidates.add(c);
+                    }
+                }
+                int threats = 0;
+                for (Card c : ai.getOpponents().getCreaturesInPlay()) {
+                    if (ComputerUtilCombat.canAttackNextTurn(c)) {
+                        threats++;
+                    }
+                }
+                int keep = Math.min(threats, (candidates.size() + 1) / 2);
+                // candidates are power-descending: the strongest attack, the weakest stay
+                notNeededAsBlockers.addAll(candidates.subList(0, Math.max(0, candidates.size() - keep)));
+                settled = true;
+            }
+            if (!settled && AiPerf.PREDICT_BOUND) {
                 final List<Card> candidates = new ArrayList<>();
                 for (Card c : blockers) {
                     if (!vigilantes.contains(c)) {

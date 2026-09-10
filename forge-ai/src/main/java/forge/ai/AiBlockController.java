@@ -69,6 +69,13 @@ public class AiBlockController {
     private int diff = 0;
 
     private boolean lifeInDanger = false;
+    // EconomyDraft: a PREDICTION stops after good / trade / one chump pass. The
+    // reinforcement passes and the whole "safer approach" re-run exist to
+    // make a real block declaration good; a danger verdict does not need them,
+    // and on an in-danger late board they were where the 2s eval budget
+    // expired (v130 turn 49: 8 timeouts, all under makeChumpBlocks) and where
+    // a 24s attack declaration went.
+    private boolean quickPrediction = false;
 
     // set to true when AI is predicting a blocking for another player so it doesn't use hidden information
     private boolean checkingOther = false;
@@ -1005,6 +1012,16 @@ public class AiBlockController {
     public void assignBlockersForCombat(final Combat combat) {
         assignBlockersForCombat(combat, null);
     }
+    /** assignBlockersForCombat for a prediction: see quickPrediction. */
+    public void assignBlockersForCombatQuick(final Combat combat, final CardCollection exludedBlockers) {
+        quickPrediction = true;
+        try {
+            assignBlockersForCombat(combat, exludedBlockers);
+        } finally {
+            quickPrediction = false;
+        }
+    }
+
     public void assignBlockersForCombat(final Combat combat, final CardCollection exludedBlockers) {
         List<Card> possibleBlockers = ai.getCreaturesInPlay();
         if (exludedBlockers != null && !exludedBlockers.isEmpty()) {
@@ -1091,6 +1108,10 @@ public class AiBlockController {
 
             if (lifeInDanger) {
                 makeChumpBlocks(combat);
+            }
+
+            if (quickPrediction) {
+                return;
             }
 
             // Reinforce blockers blocking attackers with trample if life is still in danger

@@ -48,6 +48,8 @@ public final class AiPerf {
     public static final boolean PREDICT_CACHE = !"false".equals(System.getProperty("bridge.predictcache"));
     public static final boolean PREDICT_BOUND = !"false".equals(System.getProperty("bridge.predictbound"));
     public static final boolean CHEAP_PUMP = !"false".equals(System.getProperty("bridge.cheappump"));
+    /** Predictions use the quick block assignment (no reinforcement, no second pass): -Dbridge.predictquick=false. */
+    public static final boolean PREDICT_QUICK = !"false".equals(System.getProperty("bridge.predictquick"));
     public static final long TURN_BUDGET_MS = Long.getLong("bridge.turnbudget", 12000L);
 
     /** Priority evaluations (chooseSpellAbilityToPlayFromList futures). */
@@ -87,6 +89,9 @@ public final class AiPerf {
     /** State exports for the bridge and their milliseconds. */
     public static final LongAdder exportN = new LongAdder();
     public static final LongAdder exportMs = new LongAdder();
+    /** The human seat's per-window "should I stop?" scan (PlayerControllerBridge.shouldPromptAtPriority). */
+    public static final LongAdder humanN = new LongAdder();
+    public static final LongAdder humanMs = new LongAdder();
 
     private AiPerf() { }
 
@@ -251,7 +256,8 @@ public final class AiPerf {
     public static void reset() {
         for (LongAdder a : new LongAdder[] {evals, evalsSlow, evalMs, timeouts, declAttackN, declAttackMs,
                 declBlockN, declBlockMs, blockSims, predicts, predictHits, predictBounded, pumpChecks,
-                pumpHits, idlePasses, governed, chooseN, chooseMs, buildN, buildMs, exportN, exportMs}) {
+                pumpHits, idlePasses, governed, chooseN, chooseMs, buildN, buildMs, exportN, exportMs,
+                humanN, humanMs}) {
             a.reset();
         }
         synchronized (SPENT) {
@@ -273,6 +279,7 @@ public final class AiPerf {
         num(b, "choose_n", chooseN); num(b, "choose_ms", chooseMs);
         num(b, "build_n", buildN); num(b, "build_ms", buildMs);
         num(b, "export_n", exportN); num(b, "export_ms", exportMs);
+        num(b, "human_n", humanN); num(b, "human_ms", humanMs);
         b.append("\"fast\":[");
         boolean first = true;
         for (String name : fastSeats()) {

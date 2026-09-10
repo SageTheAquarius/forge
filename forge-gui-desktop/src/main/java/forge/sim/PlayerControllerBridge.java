@@ -261,7 +261,13 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         // opponent develop, attack, etc. as it happens). Only STOP and wait for
         // input when it's actually your decision (see shouldPromptAtPriority);
         // otherwise push-and-continue so the game auto-advances.
-        if (!shouldPromptAtPriority(me)) {
+        // Timed into AiPerf ("human n/s" on the pace line): this scan walks every
+        // card the human could act with, at every window, on the game thread.
+        final long humanT0 = System.currentTimeMillis();
+        final boolean prompt = shouldPromptAtPriority(me);
+        forge.ai.AiPerf.humanN.increment();
+        forge.ai.AiPerf.humanMs.add(System.currentTimeMillis() - humanT0);
+        if (!prompt) {
             pushBoard(me, fingerprint, unchanged);
             return null; // auto-pass
         }

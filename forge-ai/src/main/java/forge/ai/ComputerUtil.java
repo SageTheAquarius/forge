@@ -3285,7 +3285,11 @@ public class ComputerUtil {
             // TODO if it's next turn ignore mustBlockCards
             AiBlockController block = new AiBlockController(ai, false);
             // TODO for performance skip ahead to safer blocking approach (though probably only when not in checkDiff mode as that could lead to inflated prediction)
-            block.assignBlockersForCombat(combat, excludedBlockers);
+            if (AiPerf.PREDICT_QUICK) {
+                block.assignBlockersForCombatQuick(combat, excludedBlockers);
+            } else {
+                block.assignBlockersForCombat(combat, excludedBlockers);
+            }
 
             // TODO predict other, noncombat sources of damage and add them to the "payment" variable.
             // examples : Black Vise, The Rack, known direct damage spells in enemy hand, etc

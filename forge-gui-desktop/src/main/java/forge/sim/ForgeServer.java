@@ -332,13 +332,157 @@ public final class ForgeServer {
         // deterministically while the AI still makes its own block decisions.
         // Production never writes this file, so live games are unaffected.
         Runnable hook = buildScenarioHook(g, deckDir);
-        mc.startGame(g, hook);
+        // Where the game thread actually is, sampled every 250ms and printed
+        // per turn as [GAME-THREAD] - the pace line's counters only cover the
+        // code that was instrumented, and v130's turn 49 had 78s of 140s that
+        // none of them named. -Dbridge.samplems=0 turns it off.
+        GameThreadSampler sampler = new GameThreadSampler(g, Thread.currentThread());
+        sampler.start();
+        try {
+            mc.startGame(g, hook);
+        } finally {
+            sampler.shutdown();
+        }
 
         // The outcome lines ("<player> has lost the game", the match summary) are
         // logged AFTER the last decision point, so no state export has carried
         // them yet. One final push so the player sees how the game ended.
         Channel.request("{\"kind\":\"game_over\",\"state\":"
                 + StateExporter.toJson(g.getView(), p0) + "}");
+    }
+
+    /**
+     * Samples the game thread's stack and prints, per turn, a histogram keyed
+     * by "<what the phase loop called> > <outermost forge.ai frame> @ <innermost
+     * forge frame>". Samples sitting in the bridge socket (waiting on a human)
+     * are counted separately, not as engine time.
+     */
+    static final class GameThreadSampler extends Thread {
+        private final Game game;
+        private final Thread target;
+        private volatile boolean on = true;
+        private int turn = -1;
+        private final java.util.Map<String, Integer> hist = new java.util.HashMap<>();
+        private int samples;
+        private int waiting;
+
+        GameThreadSampler(Game g, Thread t) {
+            super("Game Thread Sampler");
+            game = g;
+            target = t;
+            setDaemon(true);
+        }
+
+        void shutdown() {
+            on = false;
+            interrupt();
+            flush();
+        }
+
+        @Override
+        public void run() {
+            long every = Long.getLong("bridge.samplems", 250L);
+            if (every <= 0) {
+                return;
+            }
+            while (on) {
+                try {
+                    Thread.sleep(every);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                int t;
+                try {
+                    t = game.getPhaseHandler().getTurn();
+                } catch (Exception e) {
+                    continue;
+                }
+                if (t != turn) {
+                    flush();
+                    turn = t;
+                }
+                String key = classify(target.getStackTrace());
+                synchronized (this) {
+                    if (key == null) {
+                        waiting++;
+                    } else {
+                        samples++;
+                        hist.merge(key, 1, Integer::sum);
+                    }
+                }
+            }
+        }
+
+        static String classify(StackTraceElement[] st) {
+            if (st.length == 0) {
+                return null;
+            }
+            int loop = -1;
+            for (int i = 0; i < st.length; i++) {
+                String m = st[i].getMethodName();
+                if ("mainLoopStep".equals(m) || "mainGameLoop".equals(m)) {
+                    loop = i;
+                    break;
+                }
+            }
+            for (int i = 0; i < (loop < 0 ? st.length : loop); i++) {
+                String c = st[i].getClassName();
+                if (c.startsWith("forge.sim.Channel")) {
+                    return null;      // waiting on the bridge / the human
+                }
+            }
+            String top = null;
+            String ai = null;
+            int end = loop < 0 ? st.length : loop;
+            for (int i = 0; i < end; i++) {
+                String c = st[i].getClassName();
+                if (top == null && c.startsWith("forge.")) {
+                    top = shortName(c) + "." + st[i].getMethodName();
+                }
+                if (c.startsWith("forge.ai.")) {
+                    ai = shortName(c) + "." + st[i].getMethodName();   // last one wins = outermost
+                }
+            }
+            String entry = loop > 0 ? shortName(st[loop - 1].getClassName()) + "." + st[loop - 1].getMethodName()
+                                    : "outside-loop";
+            StringBuilder b = new StringBuilder(entry);
+            if (ai != null) {
+                b.append(" > ").append(ai);
+            }
+            if (top != null) {
+                b.append(" @ ").append(top);
+            }
+            return b.toString();
+        }
+
+        private static String shortName(String cls) {
+            int i = cls.lastIndexOf('.');
+            String s = i < 0 ? cls : cls.substring(i + 1);
+            int d = s.indexOf('$');
+            return d < 0 ? s : s.substring(0, d);
+        }
+
+        private synchronized void flush() {
+            if (turn < 0 || samples + waiting == 0) {
+                return;
+            }
+            java.util.List<java.util.Map.Entry<String, Integer>> es = new java.util.ArrayList<>(hist.entrySet());
+            es.sort((a, b) -> b.getValue() - a.getValue());
+            StringBuilder sb = new StringBuilder("[GAME-THREAD] turn " + turn + ": " + samples
+                    + " busy samples, " + waiting + " waiting on the bridge:");
+            int shown = 0;
+            for (java.util.Map.Entry<String, Integer> en : es) {
+                if (shown++ >= 8) {
+                    break;
+                }
+                sb.append(' ').append(100 * en.getValue() / Math.max(1, samples)).append("% ")
+                  .append(en.getKey()).append(';');
+            }
+            System.out.println(sb);
+            hist.clear();
+            samples = 0;
+            waiting = 0;
+        }
     }
 
     /**
