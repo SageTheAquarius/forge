@@ -1899,8 +1899,14 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                 b.append(",\"mana_cost\":\"").append(escName(c.getManaCost().getShortString())).append("\"");
             }
             b.append(",\"type_line\":\"").append(escName(String.valueOf(c.getType()))).append("\"");
+            // Card scripts write line breaks as the two characters backslash-n
+            // and Card.getOracleText hands them over untouched -- CardView is
+            // where Forge turns them into real newlines. escText then escaped
+            // the backslash, so the prompt header read "First strike\nWhen
+            // Combustible Gearhulk enters" verbatim. Convert as CardView does.
             String oracle = c.getOracleText();
             if (oracle != null && !oracle.isEmpty()) {
+                oracle = oracle.replace("\\r", "").replace("\\n", "\n");
                 b.append(",\"oracle_text\":\"").append(escText(oracle)).append("\"");
             }
             if (c.isCreature()) {
