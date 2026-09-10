@@ -20,6 +20,7 @@ import forge.game.Game;
 import forge.game.GameLog;
 import forge.game.GameLogEntry;
 import forge.game.GameLogEntryType;
+import forge.game.GameEntityView;
 import forge.game.GameView;
 import forge.game.card.Card;
 import forge.game.card.CardView;
@@ -234,6 +235,26 @@ public final class StateExporter {
     private static Map<Integer, String> blockingOf = Collections.emptyMap();
 
     /**
+     * Attacker card id -> a JSON object naming what it attacks:
+     * {"target", "kind" (player|planeswalker|battle), "defender", "target_id"}.
+     *
+     * `attacking` alone is a bool, and in a pod that is not enough: the client
+     * could not tell an attack on YOU from an attack on the seat next to you,
+     * so the combat lane (attackers-at-you with live damage math) had nothing
+     * to filter on. `defender` is the player who blocks for the target -- the
+     * planeswalker's controller, or the battle's protector -- which is the
+     * seat that needs to see the chip.
+     */
+    private static Map<Integer, String> defenderOf = Collections.emptyMap();
+
+    /**
+     * Blocker card id -> JSON array of the attacker ids it blocks. `blocking`
+     * carries NAMES, and five Goblin tokens share one; ids are what the lane
+     * needs to hang a blocker under the right chip.
+     */
+    private static Map<Integer, String> blockingIdsOf = Collections.emptyMap();
+
+    /**
      * Game-log entry types worth showing in the client's Feed: Forge's MEDIUM
      * verbosity (turns, lands, spells, combat, damage, life, mulligans, deaths)
      * minus PHASE/MANA, which would flood the panel with lines the board already
@@ -337,6 +358,8 @@ public final class StateExporter {
         playableElsewhere = elsewhere;
         abilityLists = abilities;
         blockingOf = blockAssignments(g);
+        defenderOf = attackTargets(g);
+        blockingIdsOf = blockIds(g);
         libraryTop = top;
         libraryTopOwner = human != null && human.getView() != null ? human.getView().getId() : -1;
         Map<Integer, Integer> speeds = new HashMap<>();
@@ -604,6 +627,9 @@ public final class StateExporter {
         String blk = blockingOf.get(c.getId());
         kvb(sb, "is_blocking", blk != null); sb.append(',');
         kvs(sb, "blocking", nz(blk)); sb.append(',');
+        sb.append("\"blocking_ids\":").append(nzList(blockingIdsOf.get(c.getId()))).append(',');
+        String atkTarget = defenderOf.get(c.getId());
+        sb.append("\"attack\":").append(atkTarget == null ? "null" : atkTarget).append(',');
         sb.append("\"abilities\":").append(nzList(abilityLists.get(c.getId()))).append(',');
         kvCounters(sb, "counters", c);
         sb.append('}');
@@ -942,6 +968,84 @@ public final class StateExporter {
                 String prior = out.get(b.getId());
                 out.put(b.getId(), prior == null ? atk.getName() : prior + ", " + atk.getName());
             }
+        }
+        return out;
+    }
+
+    /** Attacker id -> JSON naming its defender; see {@link #defenderOf}. */
+    private static Map<Integer, String> attackTargets(GameView g) {
+        CombatView combat = g == null ? null : g.getCombat();
+        if (combat == null || combat.getAttackers() == null) {
+            return Collections.emptyMap();
+        }
+        Map<Integer, String> out = new HashMap<>();
+        for (CardView atk : combat.getAttackers()) {
+            if (atk == null) continue;
+            GameEntityView d;
+            try {
+                d = combat.getDefender(atk);
+            } catch (Exception e) {
+                d = null;
+            }
+            if (d == null) continue;
+            String target, kind, defender, targetId;
+            if (d instanceof CardView) {
+                CardView dc = (CardView) d;
+                CardStateView ds = dc.getCurrentState();
+                boolean battle = ds != null && ds.getType() != null && ds.getType().isBattle();
+                kind = battle ? "battle" : "planeswalker";
+                PlayerView guard = battle ? dc.getProtectingPlayer() : dc.getController();
+                target = ds != null ? ds.getName() : dc.getName();
+                defender = guard != null ? guard.getName() : "";
+                targetId = String.valueOf(dc.getId());
+            } else if (d instanceof PlayerView) {
+                target = ((PlayerView) d).getName();
+                kind = "player";
+                defender = target;
+                targetId = "";
+            } else {
+                continue;
+            }
+            StringBuilder sb = new StringBuilder(96);
+            sb.append('{');
+            kvs(sb, "target", nz(target)); sb.append(',');
+            kvs(sb, "kind", kind); sb.append(',');
+            kvs(sb, "defender", nz(defender)); sb.append(',');
+            kvs(sb, "target_id", targetId);
+            sb.append('}');
+            out.put(atk.getId(), sb.toString());
+        }
+        return out;
+    }
+
+    /** Blocker id -> JSON array of attacker ids it blocks; see {@link #blockingIdsOf}. */
+    private static Map<Integer, String> blockIds(GameView g) {
+        CombatView combat = g == null ? null : g.getCombat();
+        if (combat == null || combat.getAttackers() == null) {
+            return Collections.emptyMap();
+        }
+        Map<Integer, List<Integer>> ids = new HashMap<>();
+        for (CardView atk : combat.getAttackers()) {
+            if (atk == null) continue;
+            Iterable<CardView> blockers = combat.getBlockers(atk);
+            if (blockers == null) continue;
+            for (CardView b : blockers) {
+                if (b == null) continue;
+                ids.computeIfAbsent(b.getId(), k -> new ArrayList<>()).add(atk.getId());
+            }
+        }
+        Map<Integer, String> out = new HashMap<>();
+        for (Map.Entry<Integer, List<Integer>> e : ids.entrySet()) {
+            StringBuilder sb = new StringBuilder(16);
+            sb.append('[');
+            boolean first = true;
+            for (Integer id : e.getValue()) {
+                if (!first) sb.append(',');
+                first = false;
+                sb.append(id);
+            }
+            sb.append(']');
+            out.put(e.getKey(), sb.toString());
         }
         return out;
     }
