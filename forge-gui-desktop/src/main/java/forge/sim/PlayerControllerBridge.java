@@ -30,6 +30,7 @@ import forge.game.card.CardCollectionView;
 import forge.card.ICardFace;
 import forge.game.card.CardState;
 import forge.game.card.CounterType;
+import forge.game.ability.ApiType;
 import forge.game.ability.effects.RollDiceEffect;
 import forge.game.GameObject;
 import forge.game.GameLogEntryType;
@@ -347,12 +348,23 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             return abilities.get(0);
         }
         List<String> names = new ArrayList<>();
+        boolean allExtraCosts = true;
         for (SpellAbility sa : abilities) {
             names.add(abilityLabel(sa));
+            String desc = sa.toUnsuppressedString();
+            allExtraCosts &= additionalCostOf(desc == null ? "" : desc) != null;
         }
         String host = hostCard != null ? hostCard.getName() : "Spell";
-        List<Integer> sel = promptIndices(host + ": which cost do you want to pay?",
-                names, 1, 1, false, "choose");
+        String title = allExtraCosts
+                ? host + ": choose an additional cost"
+                : host + ": which do you want to cast?";
+        List<Integer> sel;
+        promptSource = hostCard;
+        try {
+            sel = promptIndices(title, names, 1, 1, false, "choose");
+        } finally {
+            promptSource = null;
+        }
         if (sel.isEmpty()) {
             return abilities.get(0);
         }
@@ -439,22 +451,60 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                 + StateExporter.toJson(me.getGame().getView(), me) + "}");
     }
 
-    /** Label for one branch of {@link #getAbilityToPlay}: its cost, then its text. */
-    private static String abilityLabel(SpellAbility sa) {
+    /**
+     * Label for one branch of {@link #getAbilityToPlay}.
+     *
+     * GameActionUtil.getAdditionalCostSpell tags each branch's description with
+     * "(Additional cost: X)", where X is that branch's OWN extra cost - the one
+     * thing that differs between the options. The label used to show the full
+     * merged cost and the whole spell text on every row instead, so Betrayer's
+     * Bargain offered "{1}{R}, Sacrifice a creature or enchantment - Betrayer's
+     * Bargain deals 5 damage to target creature..." against "{3}{R} - Betrayer's
+     * Bargain deals 5 damage to target creature...", and the list row clipped
+     * off exactly the part that told them apart. The card is on screen already;
+     * the row just says the cost: "Sacrifice a creature or enchantment" /
+     * "Pay {2} more".
+     */
+    static String abilityLabel(SpellAbility sa) {
         String desc = sa.toUnsuppressedString();
         desc = desc == null ? "" : desc.trim();
-        // getAdditionalCostSpell appends "(Additional cost: X)" to tell the
-        // branches apart; the cost string below already says it, so drop it.
-        int extra = desc.lastIndexOf("(Additional cost:");
-        if (extra >= 0) {
-            desc = desc.substring(0, extra).trim();
+        String extra = additionalCostOf(desc);
+        if (extra != null) {
+            return describeExtraCost(extra);
         }
+        // Not an additional-cost branch (a cast-from-elsewhere choice, say):
+        // cost, then text, kept to a row's width like the priority menu does.
         Cost cost = sa.getPayCosts();
         String costStr = cost == null ? "" : cost.toSimpleString();
-        if (costStr.isEmpty()) {
-            return desc.isEmpty() ? String.valueOf(sa) : desc;
+        desc = desc.replaceAll("\\s+", " ");
+        String label = costStr.isEmpty()
+                ? (desc.isEmpty() ? String.valueOf(sa) : desc)
+                : (desc.isEmpty() ? costStr : costStr + " - " + desc);
+        return label.length() > 90 ? label.substring(0, 87) + "..." : label;
+    }
+
+    /** The X of an "(Additional cost: X)" tag in a description, or null. */
+    static String additionalCostOf(String desc) {
+        final String tag = "(Additional cost:";
+        int at = desc.lastIndexOf(tag);
+        if (at < 0) {
+            return null;
         }
-        return desc.isEmpty() ? costStr : costStr + " - " + desc;
+        int close = desc.indexOf(')', at + tag.length());
+        String extra = close < 0 ? desc.substring(at + tag.length())
+                                 : desc.substring(at + tag.length(), close);
+        return extra.trim();
+    }
+
+    /** "{2}" reads as "Pay {2} more"; "Sacrifice a creature" is already prose. */
+    static String describeExtraCost(String extra) {
+        if (extra.isEmpty()) {
+            return "No additional cost";
+        }
+        if (extra.matches("(\\{[^}]*\\}\\s*)+")) {
+            return "Pay " + extra.trim() + " more";
+        }
+        return extra;
     }
 
     /**
@@ -1453,9 +1503,15 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         }
         int hi = Math.min(max, candidates.size());
         String host = sa.getHostCard() != null ? sa.getHostCard().getName() : "ability";
-        List<Integer> sel = promptIndices(
-            "Choose target" + (hi > 1 ? "s" : "") + " for " + host + targetingContext(sa),
-            names, cardNamesOf(candidates), min, hi, min == 0, "target_select", null);
+        List<Integer> sel;
+        promptSource = sa.getHostCard();
+        try {
+            sel = promptIndices(
+                "Choose target" + (hi > 1 ? "s" : "") + " for " + host + targetingContext(sa),
+                names, cardNamesOf(candidates), min, hi, min == 0, "target_select", null);
+        } finally {
+            promptSource = null;
+        }
         for (int idx : sel) {
             if (idx >= 0 && idx < candidates.size()) {
                 sa.getTargets().add(candidates.get(idx));
@@ -1766,6 +1822,49 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
+    /** escName plus the control characters oracle text carries. */
+    private static String escText(String s) {
+        return escName(s).replace("\r", "").replace("\n", "\\n").replace("\t", " ");
+    }
+
+    /**
+     * The card a prompt is ABOUT, for the modal's header. Set it around a
+     * promptIndices call and clear it after; null means the prompt has no
+     * single card (a mulligan, "choose a pile"). The native engine sends
+     * source_card / source_card_details with every prompt and PromptModal
+     * titles the window with it and draws the card; without it every Forge
+     * prompt was titled "Choose" with nothing to look at.
+     */
+    private Card promptSource = null;
+
+    private String sourceCardJson() {
+        Card c = promptSource;
+        if (c == null) {
+            return "";
+        }
+        StringBuilder b = new StringBuilder();
+        b.append(",\"source_card\":\"").append(escName(c.getName())).append("\"");
+        b.append(",\"source_card_details\":{\"name\":\"").append(escName(c.getName())).append("\"");
+        try {
+            if (c.getManaCost() != null && !c.getManaCost().isNoCost()) {
+                b.append(",\"mana_cost\":\"").append(escName(c.getManaCost().getShortString())).append("\"");
+            }
+            b.append(",\"type_line\":\"").append(escName(String.valueOf(c.getType()))).append("\"");
+            String oracle = c.getOracleText();
+            if (oracle != null && !oracle.isEmpty()) {
+                b.append(",\"oracle_text\":\"").append(escText(oracle)).append("\"");
+            }
+            if (c.isCreature()) {
+                b.append(",\"power\":").append(c.getNetPower())
+                 .append(",\"toughness\":").append(c.getNetToughness());
+            }
+        } catch (Exception e) {   // a header is never worth losing the prompt
+            // fall through with whatever was built
+        }
+        b.append('}');
+        return b.toString();
+    }
+
     // ─── Generic client choices ──────────────────────────────────────────────
     // Route Forge decision points to the client's prompt UI. Options are sent by
     // INDEX (so any option type works); the client returns the chosen indices.
@@ -1888,6 +1987,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                 + (cardToShow == null ? ""
                    : ",\"card\":{\"name\":\"" + escName(cardToShow.getName())
                      + "\",\"art_slug\":\"\"}")
+                + sourceCardJson()
                 + "},"
                 + "\"state\":" + stateJson() + "}";
         String reply = ask(req);
@@ -1918,6 +2018,12 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         for (T t : optionList) { opts.add(t); names.add(String.valueOf(t)); }
         if (opts.isEmpty()) return null;
         if (opts.size() == 1 && !isOptional) return opts.get(0);
+        if (sa != null && sa.getApi() == ApiType.CompanionChoose) {
+            // Player.assignCompanion, at game start. Forge's title is a
+            // localizer key; say what the choice is and that declining is fine
+            // (Player.java is patched to accept the null).
+            title = "Choose a companion (skip = play without one)";
+        }
         List<Integer> sel = promptIndices(title, names, cardNamesOf(opts),
                 isOptional ? 0 : 1, 1, isOptional, "choose", null);
         if (sel.isEmpty()) return isOptional ? null : opts.get(0);
@@ -3146,9 +3252,15 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         }
         String host = chosen != null && chosen.getHostCard() != null
                 ? chosen.getHostCard().getName() : "this spell";
-        List<Integer> sel = promptIndices(
-                host + ": pay optional additional cost? (none = decline)",
-                names, 0, names.size(), true, "choose");
+        List<Integer> sel;
+        promptSource = chosen != null ? chosen.getHostCard() : null;
+        try {
+            sel = promptIndices(
+                    host + ": pay optional additional cost? (none = decline)",
+                    names, 0, names.size(), true, "choose");
+        } finally {
+            promptSource = null;
+        }
         List<OptionalCostValue> chosenCosts = new ArrayList<>();
         for (int idx : sel) {
             if (idx >= 0 && idx < optionalCostValues.size()) {

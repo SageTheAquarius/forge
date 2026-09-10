@@ -3191,6 +3191,12 @@ public class Player extends GameEntity implements Comparable<Player> {
 
         SpellAbility fakeSa = new SpellAbility.EmptySa(ApiType.CompanionChoose, legalCompanions.get(0), this);
         Card companion = player.chooseSingleEntityForEffect(view, fakeSa, Localizer.getInstance().getMessage("lblChooseACompanion"), true, null);
+        if (companion == null) {
+            // Bridge (EconomyDraft): the choice is optional and our controller
+            // returns null for "none". Upstream assumes a pick and moveTo(null)
+            // threw inside Match.startGame, ending the game before turn one.
+            return;
+        }
 
         PlayerZone commandZone = getZone(ZoneType.Command);
         companion = game.getAction().moveTo(ZoneType.Command, companion, null, AbilityKey.newMap());

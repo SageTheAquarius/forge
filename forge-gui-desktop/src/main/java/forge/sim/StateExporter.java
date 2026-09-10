@@ -472,6 +472,16 @@ public final class StateExporter {
             }
         } catch (Exception ignore) { }
         kv(sb, "commander_tax", tax); sb.append(',');
+        sb.append("\"commander_ids\":[");
+        try {
+            boolean firstId = true;
+            for (CardView c : p.getCommanders()) {
+                if (!firstId) sb.append(',');
+                firstId = false;
+                sb.append(c.getId());
+            }
+        } catch (Exception ignore) { }
+        sb.append("],");
         // null for everyone but the human, and for the human too unless an
         // effect currently lets them look at their own top card.
         sb.append("\"library_top\":");
