@@ -17,6 +17,7 @@ import forge.StaticData;
 import forge.ai.ComputerUtilMana;
 import forge.card.CardEdition;
 import forge.card.MagicColor;
+import forge.card.mana.ManaAtom;
 import forge.card.mana.ManaCost;
 import forge.game.Game;
 import forge.game.GameLog;
@@ -501,14 +502,18 @@ public final class StateExporter {
         // logged it, so ten counters could arrive without a number or a Feed
         // line anywhere along the way.
         kvPlayerCounters(sb, "counters", p); sb.append(',');
-        // mana pool by color symbol
+        // mana pool by color symbol. PlayerView keys its mana map by
+        // ManaAtom.MANATYPES, where colorless is 1<<5. MagicColor.COLORLESS is
+        // 0 -- the ABSENCE of color, not the {C} mana type -- so reading with it
+        // always returned 0 and colorless mana (Sol Ring, Wastes, Eldrazi
+        // temples) never showed in the pool, however it was produced.
         sb.append("\"mana_pool\":{");
         sb.append("\"W\":").append(p.getMana(MagicColor.WHITE)).append(',');
         sb.append("\"U\":").append(p.getMana(MagicColor.BLUE)).append(',');
         sb.append("\"B\":").append(p.getMana(MagicColor.BLACK)).append(',');
         sb.append("\"R\":").append(p.getMana(MagicColor.RED)).append(',');
         sb.append("\"G\":").append(p.getMana(MagicColor.GREEN)).append(',');
-        sb.append("\"C\":").append(p.getMana(MagicColor.COLORLESS));
+        sb.append("\"C\":").append(p.getMana((byte) ManaAtom.COLORLESS));
         sb.append("},");
         zone(sb, "hand", p.getHand()); sb.append(',');
         zone(sb, "battlefield", p.getCards(ZoneType.Battlefield)); sb.append(',');
