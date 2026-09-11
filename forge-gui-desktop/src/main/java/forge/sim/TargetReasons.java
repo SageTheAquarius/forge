@@ -323,7 +323,12 @@ final class TargetReasons {
                 }
             }
             if (parts.isEmpty()) {
-                return usesTargetingAnywhere(top) ? " (no target chosen)" : " (no target)";
+                if (usesTargetingAnywhere(top)) return " (no target chosen)";
+                // A permanent spell has no target and nobody asks where it is
+                // aimed; a trigger / activated ability / instant might.
+                Card h = top.getHostCard();
+                boolean permanentSpell = top.isSpell() && h != null && h.isPermanent();
+                return permanentSpell ? "" : " (no target)";
             }
             return " → " + String.join(", ", parts);
         } catch (Exception e) {
