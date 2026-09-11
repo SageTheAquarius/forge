@@ -6,8 +6,12 @@ T:Mode$ Phase | Phase$ Upkeep | ValidPlayer$ You | TriggerZones$ Command | Execu
 T:Mode$ DamageDoneOnce | ValidTarget$ You | TriggerZones$ Command | Execute$ TrigWound | TriggerDescription$ Whenever you're dealt damage, put that many wound counters on this. Then, for each three wound counters on it, remove them and create a Command Crystal.
 SVar:TrigCrystal:DB$ Token | TokenScript$ command_crystal | TokenOwner$ You
 SVar:TrigWound:DB$ PutCounter | Defined$ Self | CounterType$ WOUND | CounterNum$ X | SubAbility$ DBConvert
-SVar:DBConvert:DB$ Repeat | RepeatSubAbility$ DBCrystalFromWounds | RepeatCheckSVar$ Wounds | RepeatSVarCompare$ GE3 | MaxRepeat$ 10
-SVar:DBCrystalFromWounds:DB$ RemoveCounter | Defined$ Self | CounterType$ WOUND | CounterNum$ 3 | SubAbility$ TrigCrystal
+# Repeat runs its body once BEFORE testing RepeatCheckSVar (do-while), so the
+# body itself is gated on GE3 twice: the crystal first, then the removal, both
+# read the same pre-removal count.
+SVar:DBConvert:DB$ Repeat | RepeatSubAbility$ DBWoundCrystal | RepeatCheckSVar$ Wounds | RepeatSVarCompare$ GE3 | MaxRepeat$ 10
+SVar:DBWoundCrystal:DB$ Token | TokenScript$ command_crystal | TokenOwner$ You | ConditionCheckSVar$ Wounds | ConditionSVarCompare$ GE3 | SubAbility$ DBRemoveWounds
+SVar:DBRemoveWounds:DB$ RemoveCounter | Defined$ Self | CounterType$ WOUND | CounterNum$ 3 | ConditionCheckSVar$ Wounds | ConditionSVarCompare$ GE3
 SVar:Wounds:Count$CardCounters.WOUND
 SVar:X:TriggerCount$DamageAmount
 Oracle:Hand +0, life +0\nAt the beginning of your upkeep, create a Command Crystal. (It's a land with "{T}: Add one mana of any color in your commander's color identity.")\nWhenever you're dealt damage, put that many wound counters on this. Then, for each three wound counters on it, remove them and create a Command Crystal.
