@@ -625,9 +625,15 @@ public final class StateExporter {
     /** Wound counters on the seat's rules card, or -1 when it has none. */
     private static int woundsOf(Iterable<CardView> cards) {
         if (cards == null) return -1;
+        // A Lightning Round seat holds TWO rules cards: the res/ Vanguard card
+        // that carries the wound counters, and the per-seat card ForgeServer
+        // builds for the shuffled-bag upkeep lands. Sum across all of them
+        // rather than reading whichever happens to come first.
+        int n = 0;
+        boolean any = false;
         for (CardView c : cards) {
             if (!isRulesCard(c)) continue;
-            int n = 0;
+            any = true;
             try {
                 Multiset<CounterType> counters = c.getCounters();
                 if (counters != null) {
@@ -639,9 +645,8 @@ public final class StateExporter {
                     }
                 }
             } catch (Exception ignore) { }
-            return n;
         }
-        return -1;
+        return any ? n : -1;
     }
 
     private static void zone(StringBuilder sb, String key, Iterable<CardView> cards) {
