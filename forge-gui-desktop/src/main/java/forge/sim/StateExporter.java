@@ -38,6 +38,8 @@ import forge.game.cost.Cost;
 import forge.game.cost.CostPart;
 import forge.game.cost.CostRemoveCounter;
 import forge.game.spellability.SpellAbility;
+import forge.game.ability.ApiType;
+import forge.game.spellability.AbilitySub;
 import forge.game.spellability.SpellAbilityStackInstance;
 import forge.game.spellability.TargetRestrictions;
 import forge.game.spellability.StackItemView;
@@ -894,8 +896,10 @@ public final class StateExporter {
             kvs(sb, "cost", abilityCost(sa, c)); sb.append(',');
             kvs(sb, "label", abilityLabel(sa, c));
             // Playable by Forge's filter, yet doomed: a mandatory target with
-            // no candidate. Loyalty abilities only -- see noTargetReason.
-            String why = sa.isPwAbility() ? noTargetReason(sa) : null;
+            // no candidate. Loyalty abilities get the full check (few of them,
+            // see noTargetReason); everything else the stack-only one, which
+            // catches counterspells and redirects in hand at no real cost.
+            String why = sa.isPwAbility() ? noTargetReason(sa) : noStackTargetReason(sa);
             // Playable by Forge's filter, yet unaffordable: the filter never
             // asks whether a human can pay, and the auto-tapper that pays for
             // them says no. See unpayableReason.
@@ -1019,7 +1023,62 @@ public final class StateExporter {
      * planeswalker, and planeswalkers are few. The cast-time feed line covers
      * everything else.
      */
-    private static String noTargetReason(SpellAbility root) {
+    static String noTargetReason(SpellAbility root) {
+        return noTargetReason(root, false);
+    }
+
+    /**
+     * The stack-only variant of {@link #noTargetReason}, cheap enough for
+     * every card in hand on every push: a target clause whose only zone is
+     * the stack is checked against the (short) stack, every other clause is
+     * assumed fine. So a counterspell, a Stifle or a redirect greys in hand
+     * with "no legal target (needs spell or ability with a single target)"
+     * while there is nothing on the stack for it, and a Bolt is left alone.
+     *
+     * A modal spell (Charm) keeps its modes in Choices$, not the sub-ability
+     * chain, so it is checked mode by mode with the same rule: greyed only
+     * when EVERY mode is a stack-target mode with nothing to target. Untimely
+     * Malfunction (destroy artifact / redirect / can't block) stays live while
+     * any board mode might be castable, which is the honest answer at this
+     * price -- the mode picker then greys the redirect with the reason.
+     */
+    static String noStackTargetReason(SpellAbility root) {
+        try {
+            if (root.getApi() == ApiType.Charm) {
+                List<AbilitySub> modes = root.getAdditionalAbilityList("Choices");
+                if (modes == null || modes.isEmpty()) return null;
+                String first = null;
+                for (AbilitySub m : modes) {
+                    if (!targetsOnlyStack(m)) return null;
+                    String why = noTargetReason(m, true);
+                    if (why == null) return null;
+                    if (first == null) first = why;
+                }
+                return first;
+            }
+            return noTargetReason(root, true);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** True if every mandatory target clause in the chain lives on the stack. */
+    private static boolean targetsOnlyStack(SpellAbility root) {
+        boolean anyTarget = false;
+        for (SpellAbility sa = root; sa != null; sa = sa.getSubAbility()) {
+            if (!sa.usesTargeting() || sa.getMinTargets() <= 0) continue;
+            anyTarget = true;
+            List<ZoneType> zones = sa.getTargetRestrictions().getZone();
+            if (zones == null || zones.size() != 1 || zones.get(0) != ZoneType.Stack) return false;
+        }
+        return anyTarget;
+    }
+
+    /**
+     * @param stackOnly skip (treat as satisfiable) every clause whose targets
+     *        are not on the stack -- the per-push budget, see noStackTargetReason.
+     */
+    static String noTargetReason(SpellAbility root, boolean stackOnly) {
         try {
             for (SpellAbility sa = root; sa != null; sa = sa.getSubAbility()) {
                 if (!sa.usesTargeting() || sa.getMinTargets() <= 0) continue;
@@ -1037,14 +1096,13 @@ public final class StateExporter {
                             }
                         }
                     }
+                } else if (stackOnly) {
+                    continue;
                 } else {
                     any = !tr.getAllCandidates(sa).isEmpty();
                 }
                 if (!any) {
-                    String wants = tr.getVTSelection() == null ? "" : tr.getVTSelection().trim();
-                    if (wants.regionMatches(true, 0, "Select ", 0, 7)) {
-                        wants = wants.substring(7);
-                    }
+                    String wants = TargetReasons.wants(sa);
                     return "no legal target" + (wants.isEmpty() ? "" : " (needs " + wants + ")");
                 }
             }

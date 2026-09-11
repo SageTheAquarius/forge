@@ -155,6 +155,9 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     public PlayerControllerBridge(Game game, Player p, LobbyPlayer lp, int seat) {
         super(game, p, lp);
         this.seat = seat;
+        // "X ability fizzles." with the reason: see TargetReasons.watchFizzles.
+        // Once per game however many human seats there are.
+        TargetReasons.watchFizzles(game);
     }
 
     /**
@@ -416,16 +419,23 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         List<SpellAbility> any = c.getAllPossibleAbilities(me, false);
         if (any.isEmpty()) {
             why = name + " has nothing you can play from here.";
-        } else if (!me.canCastSorcery()) {
-            // The sorcery window is shut (not your main phase, or the stack is
-            // busy). If the card is sorcery-speed that alone explains it; if it
-            // is an instant it does not, so name both rather than assert one.
-            why = "Cannot play " + name + " right now. If it is sorcery-speed, it "
-                    + "needs your own main phase with an empty stack. Otherwise: "
-                    + "not enough mana, or no legal target.";
         } else {
-            why = "Cannot play " + name + " right now - usually not enough mana, "
-                    + "or no legal target.";
+            // Ask the questions the filter asked, one ability at a time, and
+            // report the first that fails: timing (canPlay), then a mandatory
+            // target with no candidate, then mana. The pieces already existed
+            // for the pre-click greying (StateExporter) -- this composes them
+            // instead of guessing "mana or target" and leaving the player to
+            // work out which.
+            String found = TargetReasons.unplayableReason(any, me);
+            if (found != null) {
+                why = "Cannot play " + name + " right now: " + found;
+            } else if (!me.canCastSorcery()) {
+                why = "Cannot play " + name + " right now. If it is sorcery-speed, it "
+                        + "needs your own main phase with an empty stack.";
+            } else {
+                why = "Cannot play " + name + " right now - Forge rejected it and did "
+                        + "not say why (usually a cast restriction on the card itself).";
+            }
         }
         ask("{\"kind\":\"feed\",\"lines\":[\"" + StateExporter.esc(why) + "\"]}");
     }
@@ -592,12 +602,21 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     private void explainIfUnpaid(SpellAbility sa) {
         try {
             sa.setSkip(false);
+            Card host = sa.getHostCard();
+            String name = host != null ? host.getName() : "That";
+            // A modal spell with no mode left to choose. CharmEffect.makeChoices
+            // returns false before any prompt opens (CR 603.3c: every mode's
+            // target clause has nothing legal), and PlaySpellAbility unwinds
+            // with nothing said. Name the modes and what each one needed.
+            String modes = TargetReasons.noModeReason(sa, getPlayer());
+            if (modes != null) {
+                ask("{\"kind\":\"feed\",\"lines\":[\"" + StateExporter.esc(name + ": " + modes) + "\"]}");
+                return;
+            }
             String why = StateExporter.unpayableReason(sa, getPlayer(), null);
             if (why == null) {
                 return;
             }
-            Card host = sa.getHostCard();
-            String name = host != null ? host.getName() : "That";
             ask("{\"kind\":\"feed\",\"lines\":[\"" + StateExporter.esc(name + ": " + why) + "\"]}");
         } catch (Exception e) {
             // An explanation is never worth breaking the play path over.
@@ -1577,29 +1596,66 @@ public class PlayerControllerBridge extends PlayerControllerAi {
      * clicked (see putAbilities); this is the backstop for everything else
      * and for a click that raced the state push.
      */
-    private void explainNoTarget(SpellAbility sa, String what) {
+    private void explainNoTarget(SpellAbility sa, String what, List<String> nearMisses) {
         try {
             SpellAbility root = sa.getRootAbility() != null ? sa.getRootAbility() : sa;
             Card host = root.getHostCard();
             String name = host != null ? host.getName() : "That ability";
-            String wants = "";
-            if (sa.getTargetRestrictions() != null
-                    && sa.getTargetRestrictions().getVTSelection() != null) {
-                wants = sa.getTargetRestrictions().getVTSelection().trim();
-                if (wants.regionMatches(true, 0, "Select ", 0, 7)) {
-                    wants = wants.substring(7);
+            String wants = TargetReasons.wants(sa);
+            StringBuilder why = new StringBuilder(name).append(": cannot activate \"")
+                    .append(StateExporter.abilityLabel(root, host)).append("\" - ").append(what)
+                    .append(wants.isEmpty() ? "" : " (needs " + wants + ")").append('.');
+            // The things it could NOT target and why, so "nothing legal" names
+            // the hexproof creature / the targetless trigger instead of listing
+            // every effect that might have caused it.
+            if (nearMisses != null && !nearMisses.isEmpty()) {
+                why.append(" Not targetable: ");
+                for (int i = 0; i < nearMisses.size(); i++) {
+                    if (i > 0) why.append("; ");
+                    why.append(nearMisses.get(i));
                 }
+                why.append('.');
+            } else {
+                why.append(" Hexproof, shroud, protection or a \"can't be the target\" effect "
+                        + "such as Silent Gravestone can cause this.");
             }
-            String why = name + ": cannot activate \"" + StateExporter.abilityLabel(root, host)
-                    + "\" - " + what
-                    + (wants.isEmpty() ? "" : " (needs " + wants + ")")
-                    + ". Hexproof, shroud, protection or a \"can't be the target\" effect "
-                    + "such as Silent Gravestone can cause this.";
-            ask("{\"kind\":\"feed\",\"lines\":[\"" + StateExporter.esc(why) + "\"]}");
+            ask("{\"kind\":\"feed\",\"lines\":[\"" + StateExporter.esc(why.toString()) + "\"]}");
         } catch (Exception e) {
             // An explanation is never worth breaking the activation path over.
         }
     }
+
+    /**
+     * An optional target ("up to one target creature", "you may target ...")
+     * with nothing legal to point at resolves with no target. Correct, but
+     * silent: the player who clicked expecting a target prompt sees the
+     * ability go on the stack and never learns it had a target clause. Say
+     * so, once, at the moment it is decided.
+     */
+    private void explainOptionalTargetSkipped(SpellAbility sa, List<String> nearMisses) {
+        try {
+            Card host = sa.getHostCard();
+            String name = host != null ? host.getName() : "That ability";
+            String wants = TargetReasons.wants(sa);
+            StringBuilder line = new StringBuilder(name)
+                    .append(": no legal target for its optional target")
+                    .append(wants.isEmpty() ? "" : " (" + wants + ")")
+                    .append(", so it resolves without one.");
+            if (nearMisses != null && !nearMisses.isEmpty()) {
+                line.append(" Not targetable: ").append(String.join("; ", nearMisses)).append('.');
+            }
+            ask("{\"kind\":\"feed\",\"lines\":[\"" + StateExporter.esc(line.toString()) + "\"]}");
+        } catch (Exception e) {
+            // never worth breaking the play over
+        }
+    }
+
+    /**
+     * Cap on the greyed "can't target" rows appended to a target prompt. A
+     * four-player pod at turn 60 has far more permanents than anyone wants to
+     * scroll past to find the one that is hexproof.
+     */
+    private static final int NEAR_MISS_CAP = 12;
 
     /** Prompt the client for one targeted ability's targets; assign the picks. */
     private boolean pickTargetsForSA(SpellAbility sa) {
@@ -1613,15 +1669,40 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         int min = sa.getMinTargets();
         int max = sa.getMaxTargets();
         if (max <= 0) max = candidates.size();
+        // The things that LOOK like targets but are not, each with its reason:
+        // the hexproof creature, the opponent behind a Leyline, your own
+        // creature when the spell wants an opponent's. Listed greyed under the
+        // legal ones so the prompt answers "why isn't X in this list" itself.
+        // (2026-09-11: "doesn't Untimely Malfunction let me redirect Phyrexian
+        // Obliterator's trigger?" -- the trigger has no target, and nothing on
+        // screen said so.)
+        List<GameEntity> misses = new ArrayList<>();
+        List<String> missWhy = new ArrayList<>();
+        TargetReasons.boardNearMisses(sa, candidates, misses, missWhy, NEAR_MISS_CAP);
+        List<String> missLines = new ArrayList<>();
+        for (int i = 0; i < misses.size(); i++) {
+            missLines.add(describeTarget(misses.get(i)) + " - " + missWhy.get(i));
+        }
         if (candidates.isEmpty()) {
             if (min > 0) {
-                explainNoTarget(sa, "nothing legal to target");
+                explainNoTarget(sa, "nothing legal to target", missLines);
+            } else {
+                explainOptionalTargetSkipped(sa, missLines);
             }
             return min == 0; // no legal targets: only OK if targeting is optional
         }
         List<String> names = new ArrayList<>();
+        List<String> cardNames = new ArrayList<>(cardNamesOf(candidates));
+        List<String> disabled = new ArrayList<>();
         for (GameEntity ge : candidates) {
             names.add(describeTarget(ge));
+            disabled.add(null);
+        }
+        for (int i = 0; i < misses.size(); i++) {
+            GameEntity ge = misses.get(i);
+            names.add(describeTarget(ge));
+            cardNames.add(ge instanceof Card ? ((Card) ge).getName() : null);
+            disabled.add(missWhy.get(i));
         }
         int hi = Math.min(max, candidates.size());
         String host = sa.getHostCard() != null ? sa.getHostCard().getName() : "ability";
@@ -1630,11 +1711,13 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         try {
             sel = promptIndices(
                 "Choose target" + (hi > 1 ? "s" : "") + " for " + host + targetingContext(sa),
-                names, cardNamesOf(candidates), min, hi, min == 0, "target_select", null);
+                names, cardNames, disabled, min, hi, min == 0, "target_select", null);
         } finally {
             promptSource = null;
         }
         for (int idx : sel) {
+            // Greyed rows sit past candidates.size() and are never assigned,
+            // whatever the client sends back.
             if (idx >= 0 && idx < candidates.size()) {
                 sa.getTargets().add(candidates.get(idx));
             }
@@ -1668,6 +1751,11 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         Game game = getPlayer().getGame();
         List<SpellAbility> candidates = new ArrayList<>();
         List<String> names = new ArrayList<>();
+        // Everything else on the stack, with the reason it is not a candidate.
+        // The stack is short, so every item is listed -- "counter whose spell"
+        // and "redirect which ability" are decided by seeing the whole stack.
+        List<SpellAbility> misses = new ArrayList<>();
+        List<String> missWhy = new ArrayList<>();
         for (SpellAbilityStackInstance si : game.getStack()) {
             SpellAbility onStack = si.getSpellAbility();
             // canTargetSpellAbility unwraps WrappedAbility and enforces
@@ -1676,14 +1764,24 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             if (sa.canTargetSpellAbility(onStack)) {
                 candidates.add(onStack);
                 names.add(describeStackTarget(onStack));
+            } else {
+                misses.add(onStack);
+                missWhy.add(TargetReasons.stackReject(sa, onStack));
             }
+        }
+        List<String> missLines = new ArrayList<>();
+        for (int i = 0; i < misses.size(); i++) {
+            missLines.add(describeStackTarget(misses.get(i)) + " - " + missWhy.get(i));
         }
         int min = sa.getMinTargets();
         int max = sa.getMaxTargets();
         if (max <= 0) max = candidates.size();
         if (candidates.isEmpty()) {
             if (min > 0) {
-                explainNoTarget(sa, "nothing on the stack it can target");
+                explainNoTarget(sa, misses.isEmpty() ? "the stack is empty"
+                                                     : "nothing on the stack it can target", missLines);
+            } else {
+                explainOptionalTargetSkipped(sa, missLines);
             }
             return min == 0; // nothing counterable: only OK if targeting is optional
         }
@@ -1692,13 +1790,21 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         // Counter-target list: these options are SpellAbilities on the stack,
         // so the card to show is the one that cast them.
         List<String> stackCardNames = new ArrayList<>();
+        List<String> disabled = new ArrayList<>();
         for (SpellAbility onStack2 : candidates) {
             Card host2 = onStack2.getHostCard();
             stackCardNames.add(host2 != null ? host2.getName() : null);
+            disabled.add(null);
+        }
+        for (int i = 0; i < misses.size(); i++) {
+            Card host2 = misses.get(i).getHostCard();
+            names.add(describeStackTarget(misses.get(i)));
+            stackCardNames.add(host2 != null ? host2.getName() : null);
+            disabled.add(missWhy.get(i));
         }
         List<Integer> sel = promptIndices(
             "Choose target" + (hi > 1 ? "s" : "") + " for " + host,
-            names, stackCardNames, min, hi, min == 0, "target_select", null);
+            names, stackCardNames, disabled, min, hi, min == 0, "target_select", null);
         for (int idx : sel) {
             if (idx >= 0 && idx < candidates.size()) {
                 sa.getTargets().add(candidates.get(idx));
@@ -1712,12 +1818,19 @@ public class PlayerControllerBridge extends PlayerControllerAi {
      * than anywhere else — "counter whose spell?" is the whole decision — so it
      * comes from getActivatingPlayer rather than the host card's controller,
      * which can differ for a stolen or copied spell.
+     *
+     * Says what KIND of thing it is (a spell, a trigger, an activated ability)
+     * and where it is currently aimed: for a redirect spell the whole decision
+     * is "where is it pointed now", and for a counterspell "Bolt -> my Bears"
+     * is the difference between countering it and letting it through.
      */
-    private static String describeStackTarget(SpellAbility onStack) {
+    static String describeStackTarget(SpellAbility onStack) {
         Card host = onStack.getHostCard();
         Player ctrl = onStack.getActivatingPlayer();
         String name = host != null ? host.getName() : String.valueOf(onStack);
-        return name + (ctrl != null ? " [" + ctrl.getName() + "]" : "");
+        return name + TargetReasons.stackKindSuffix(onStack)
+                + (ctrl != null ? " [" + ctrl.getName() + "]" : "")
+                + TargetReasons.aimedAt(onStack);
     }
 
     /** Human-readable label for a target candidate (creature/permanent or player). */
@@ -2095,6 +2208,28 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     private List<Integer> promptIndices(String title, List<String> names, List<String> cardNames,
                                         int min, int max, boolean optional, String promptType,
                                         Card cardToShow) {
+        return promptIndices(title, names, cardNames, null, min, max, optional, promptType, cardToShow);
+    }
+
+    /**
+     * As above, plus a reason per option that CANNOT be chosen right now.
+     *
+     * {@code disabled} is parallel to {@code names}; a null entry (or a null
+     * list) is an ordinary option. A non-null entry is shipped as
+     * {@code "disabled":"why"} and PromptModal renders the row greyed, with the
+     * reason, and unselectable. Two uses: a mode whose target clause has no
+     * candidate (chooseModeForAbility), and the "near miss" rows a target
+     * prompt appends under the legal ones (pickTargetsForSA) -- the hexproof
+     * creature, the targetless trigger, the opponent behind a Leyline. Both
+     * turn "why isn't X in this list" into a line of text next to X.
+     *
+     * Callers still ignore any returned index that points at a disabled row:
+     * the client never sends one, but the wire is not trusted for legality.
+     */
+    private List<Integer> promptIndices(String title, List<String> names, List<String> cardNames,
+                                        List<String> disabled,
+                                        int min, int max, boolean optional, String promptType,
+                                        Card cardToShow) {
         // Say which options are CARDS. Every prompt ships the same
         // {id,name} pair whether the name is "Grizzly Bears" or "Yes", so the
         // client had no way to tell a card list from a yes/no box and could
@@ -2114,6 +2249,10 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                     .append(escName(real)).append("\"");
             } else if (isKnownCard(names.get(i))) {
                 opts.append(",\"is_card\":true");
+            }
+            String why = disabled != null && i < disabled.size() ? disabled.get(i) : null;
+            if (why != null && !why.isEmpty()) {
+                opts.append(",\"disabled\":\"").append(escName(why)).append("\"");
             }
             opts.append('}');
         }
@@ -2267,13 +2406,37 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             int min, int num, boolean allowRepeat) {
         if (possible == null || possible.isEmpty()) return null;
         List<String> names = new ArrayList<>();
+        List<String> disabled = new ArrayList<>();
         for (AbilitySub s : possible) {
             String d = s.getDescription();
             names.add(d == null || d.isEmpty() ? String.valueOf(s) : d);
+            disabled.add(null);
         }
-        List<Integer> sel = promptIndices("Choose mode", names, min, Math.min(num, possible.size()), false, "choose");
+        // The modes Forge left OUT. CharmEffect.makePossibleOptions drops a
+        // mode whose mandatory target has no candidate (CR 603.3c) and one
+        // already chosen under a ChoiceRestriction, silently: the picker just
+        // has fewer rows than the card has bullet points. "Doesn't Untimely
+        // Malfunction let me redirect Phyrexian Obliterator's trigger?" was a
+        // player staring at a two-mode picker for a three-mode card -- the
+        // trigger has no target, so the redirect mode was never offered, and
+        // nothing on screen said so. List them greyed with the reason, after
+        // the live ones; their ids sit past possible.size() and are ignored
+        // below whatever comes back.
+        try {
+            for (AbilitySub ch : TargetReasons.missingModes(sa, possible)) {
+                String d = ch.getDescription();
+                names.add(d == null || d.isEmpty() ? String.valueOf(ch) : d);
+                disabled.add(TargetReasons.missingModeReason(sa, ch, getPlayer()));
+            }
+        } catch (Exception e) {
+            // The picker must open whatever the explanation does.
+        }
+        List<Integer> sel = promptIndices("Choose mode", names, null, disabled,
+                min, Math.min(num, possible.size()), false, "choose", null);
         List<AbilitySub> result = new ArrayList<>();
-        for (int idx : sel) result.add(possible.get(idx));
+        for (int idx : sel) {
+            if (idx >= 0 && idx < possible.size()) result.add(possible.get(idx));
+        }
         for (int k = 0; k < possible.size() && result.size() < min; k++) {
             if (!result.contains(possible.get(k))) result.add(possible.get(k));
         }
