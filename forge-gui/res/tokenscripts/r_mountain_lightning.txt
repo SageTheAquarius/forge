@@ -1,0 +1,4 @@
+Name:Mountain Token
+ManaCost:no cost
+Types:Basic Land Mountain
+Oracle:({T}: Add {R}.)

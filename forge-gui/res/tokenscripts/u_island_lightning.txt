@@ -1,0 +1,4 @@
+Name:Island Token
+ManaCost:no cost
+Types:Basic Land Island
+Oracle:({T}: Add {U}.)

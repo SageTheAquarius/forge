@@ -2,8 +2,11 @@ Name:Lightning Round Rules
 ManaCost:no cost
 Types:Vanguard
 HandLifeModifier:+0/+0
-T:Mode$ Phase | Phase$ Upkeep | ValidPlayer$ You | TriggerZones$ Command | Execute$ TrigCrystal | TriggerDescription$ At the beginning of your upkeep, create a Command Crystal. (It's a land with "{T}: Add one mana of any color in your commander's color identity.")
-T:Mode$ DamageDoneOnce | ValidTarget$ You | TriggerZones$ Command | Execute$ TrigWound | TriggerDescription$ Whenever you're dealt damage, put that many wound counters on this. Then, for each three wound counters on it, remove them and create a Command Crystal.
+# The upkeep land lives on a SECOND, per-seat card that ForgeServer builds in
+# memory (LightningFormat.buildManaCard), because its colour sequence is a
+# shuffled bag of the seat's chosen colours and cannot be a fixed script. This
+# card carries only the rule that is the same for everyone: wounds become mana.
+T:Mode$ DamageDoneOnce | ValidTarget$ You | TriggerZones$ Command | Execute$ TrigWound | TriggerDescription$ Whenever you're dealt damage, put that many wound counters on this. Then, for each three wound counters on it, remove them and create a Command Crystal. (It's a land with "{T}: Add one mana of any color in your commander's color identity.")
 SVar:TrigCrystal:DB$ Token | TokenScript$ command_crystal | TokenOwner$ You
 SVar:TrigWound:DB$ PutCounter | Defined$ Self | CounterType$ WOUND | CounterNum$ X | SubAbility$ DBConvert
 # Repeat runs its body once BEFORE testing RepeatCheckSVar (do-while), so the
@@ -14,4 +17,4 @@ SVar:DBWoundCrystal:DB$ Token | TokenScript$ command_crystal | TokenOwner$ You |
 SVar:DBRemoveWounds:DB$ RemoveCounter | Defined$ Self | CounterType$ WOUND | CounterNum$ 3 | ConditionCheckSVar$ Wounds | ConditionSVarCompare$ GE3
 SVar:Wounds:Count$CardCounters.WOUND
 SVar:X:TriggerCount$DamageAmount
-Oracle:Hand +0, life +0\nAt the beginning of your upkeep, create a Command Crystal. (It's a land with "{T}: Add one mana of any color in your commander's color identity.")\nWhenever you're dealt damage, put that many wound counters on this. Then, for each three wound counters on it, remove them and create a Command Crystal.
+Oracle:Hand +0, life +0\nWhenever you're dealt damage, put that many wound counters on this. Then, for each three wound counters on it, remove them and create a Command Crystal. (It's a land with "{T}: Add one mana of any color in your commander's color identity.")

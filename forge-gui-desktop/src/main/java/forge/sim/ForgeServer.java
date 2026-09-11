@@ -37,7 +37,17 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+
+import forge.card.GamePieceType;
+import forge.game.ability.AbilityFactory;
+import forge.game.card.Card;
+import forge.game.trigger.Trigger;
+import forge.game.trigger.TriggerHandler;
+import forge.game.zone.ZoneType;
 
 /**
  * Persistent, warm Forge match server.
@@ -366,7 +376,19 @@ public final class ForgeServer {
         // Lets end-to-end tests engineer combat/replacement/trigger situations
         // deterministically while the AI still makes its own block decisions.
         // Production never writes this file, so live games are unaffected.
-        Runnable hook = buildScenarioHook(g, deckDir);
+        Runnable scenarioHook = buildScenarioHook(g, deckDir);
+        // Lightning Round's per-seat upkeep-lands card goes into the command
+        // zone at the same moment a scenario board would: turn 1's untap step,
+        // on the game thread, before the first upkeep can fire it.
+        final Runnable hook;
+        if (format.hasManaCards()) {
+            hook = () -> {
+                if (scenarioHook != null) scenarioHook.run();
+                format.addManaCards(g);
+            };
+        } else {
+            hook = scenarioHook;
+        }
         // Where the game thread actually is, sampled every 250ms and printed
         // per turn as [GAME-THREAD] - the pace line's counters only cover the
         // code that was instrumented, and v130's turn 49 had 78s of 140s that
@@ -696,19 +718,36 @@ public final class ForgeServer {
         final int life;      // <= 0 means "leave the variant's value alone"
         final int hand;      // <= 0 likewise
         final boolean avatar;
+        // seat index (ForgeServer's pp order: humans first, then AI) -> the
+        // colours that seat's upkeep lands may be, as WUBRG letters ("WR"), or
+        // "C" for a colourless identity. Absent seats get no mana card at all.
+        final Map<Integer, String> seatColors;
 
-        private LightningFormat(int life, int hand, boolean avatar) {
+        // Upkeep lands are drawn from a shuffled bag of the seat's colours,
+        // refilled when empty, so every colour arrives once per cycle and a
+        // run of three Mountains with a hand of white cards cannot happen.
+        // The whole sequence is drawn up front (with MyRandom, so a seeded
+        // game replays) and written into the card as one conditional chain
+        // keyed on an upkeep counter; MANA_TURNS is how deep that chain goes.
+        // Past it the seat falls back to an any-colour Command Crystal, which
+        // at 30+ of its own turns is a game this format has never seen.
+        static final int MANA_TURNS = 30;
+
+        private LightningFormat(int life, int hand, boolean avatar,
+                                Map<Integer, String> seatColors) {
             this.life = life;
             this.hand = hand;
             this.avatar = avatar;
+            this.seatColors = seatColors;
         }
 
         static LightningFormat read(File f) {
             if (!f.exists()) {
-                return new LightningFormat(0, 0, false);
+                return new LightningFormat(0, 0, false, Collections.emptyMap());
             }
             int life = 0, hand = 0;
             boolean avatar = false;
+            Map<Integer, String> colors = new HashMap<>();
             try {
                 for (String raw : new String(java.nio.file.Files.readAllBytes(
                         f.toPath()), "UTF-8").split("\n")) {
@@ -720,15 +759,21 @@ public final class ForgeServer {
                     if ("life".equals(key)) life = Integer.parseInt(val);
                     else if ("hand".equals(key)) hand = Integer.parseInt(val);
                     else if ("avatar".equals(key)) avatar = "1".equals(val) || "true".equalsIgnoreCase(val);
+                    else if (key.startsWith("colors")) {
+                        int seat = Integer.parseInt(key.substring("colors".length()));
+                        String letters = val.toUpperCase(java.util.Locale.ROOT).replaceAll("[^WUBRGC]", "");
+                        if (!letters.isEmpty()) colors.put(seat, letters);
+                    }
                 }
             } catch (Exception e) {
                 // A malformed file must not turn a game into something nobody
                 // asked for: ignore it wholesale rather than half-apply it.
                 System.out.println("[FORMAT] unreadable " + f + ": " + e);
-                return new LightningFormat(0, 0, false);
+                return new LightningFormat(0, 0, false, Collections.emptyMap());
             }
-            System.out.println("[FORMAT] life=" + life + " hand=" + hand + " avatar=" + avatar);
-            return new LightningFormat(life, hand, avatar);
+            System.out.println("[FORMAT] life=" + life + " hand=" + hand + " avatar=" + avatar
+                    + " colors=" + colors);
+            return new LightningFormat(life, hand, avatar, colors);
         }
 
         void apply(RegisteredPlayer seat, Deck deck) {
@@ -739,6 +784,98 @@ public final class ForgeServer {
             }
             if (life > 0) seat.setStartingLife(life);
             if (hand > 0) seat.setStartingHand(hand);
+        }
+
+        boolean hasManaCards() {
+            return !seatColors.isEmpty();
+        }
+
+        /**
+         * Put each seat's upkeep-lands card into its command zone.
+         *
+         * Same construction Puzzle.addGoalEnforcement uses for its goal card: a
+         * Card built in memory with a parsed trigger, never a script file, so
+         * it can differ per seat and per game. Vanguard-typed so StateExporter
+         * keeps it out of the command zone the client draws.
+         *
+         * Runs from the startGameHook, on the game thread, during turn 1's
+         * untap step -- before the first upkeep, which is the trigger it has to
+         * be in place for.
+         */
+        void addManaCards(Game g) {
+            List<Player> players = g.getPlayers();
+            for (Map.Entry<Integer, String> e : seatColors.entrySet()) {
+                int i = e.getKey();
+                if (i < 0 || i >= players.size()) continue;
+                try {
+                    Player p = players.get(i);
+                    Card c = buildManaCard(g, p, e.getValue());
+                    p.getZone(ZoneType.Command).add(c);
+                    System.out.println("[FORMAT] seat " + i + " upkeep lands from " + e.getValue());
+                } catch (Exception ex) {
+                    // Leave the seat with no upkeep mana rather than no game.
+                    System.out.println("[FORMAT] seat " + i + " mana card failed: " + ex);
+                }
+            }
+        }
+
+        private static String tokenScriptFor(char color) {
+            switch (color) {
+                case 'W': return "w_plains_lightning";
+                case 'U': return "u_island_lightning";
+                case 'B': return "b_swamp_lightning";
+                case 'R': return "r_mountain_lightning";
+                case 'G': return "g_forest_lightning";
+                default:  return "c_wastes_lightning";
+            }
+        }
+
+        private static Card buildManaCard(Game g, Player owner, String colors) {
+            // The bag, drawn MANA_TURNS deep: shuffle the colours, deal them
+            // out, shuffle again. A seat with one colour gets a plain sequence.
+            List<Character> bag = new ArrayList<>();
+            for (char ch : colors.toCharArray()) bag.add(ch);
+            List<Character> sequence = new ArrayList<>(MANA_TURNS);
+            while (sequence.size() < MANA_TURNS) {
+                Collections.shuffle(bag, MyRandom.getRandom());
+                for (char ch : bag) {
+                    if (sequence.size() < MANA_TURNS) sequence.add(ch);
+                }
+            }
+
+            Card c = new Card(g.nextCardId(), g);
+            c.setOwner(owner);
+            c.setName("Lightning Round Mana");
+            c.setGamePieceType(GamePieceType.EFFECT);
+            c.addType("Vanguard");
+            c.setImageKey("t:lightning_mana");
+            c.setOracleText("At the beginning of your upkeep, create a basic land token. "
+                    + "Its colour is drawn from a shuffled bag of " + colors
+                    + ", refilled when empty.");
+
+            // One trigger, one Execute: bump the upkeep counter, then walk a
+            // chain of token effects each gated on the counter equalling its
+            // turn. A condition only skips its own ability and the chain runs
+            // on, so exactly one token is made per upkeep. Chaining rather
+            // than one trigger per turn keeps it to a single trigger, so there
+            // is never a "which triggers first?" question for the player.
+            c.setSVar("Turns", "Count$CardCounters.TURN");
+            for (int t = 1; t <= MANA_TURNS; t++) {
+                String next = t < MANA_TURNS ? "L" + (t + 1) : "LTail";
+                c.setSVar("L" + t, "DB$ Token | TokenScript$ " + tokenScriptFor(sequence.get(t - 1))
+                        + " | TokenOwner$ You | ConditionCheckSVar$ Turns | ConditionSVarCompare$ EQ" + t
+                        + " | SubAbility$ " + next);
+            }
+            c.setSVar("LTail", "DB$ Token | TokenScript$ command_crystal | TokenOwner$ You"
+                    + " | ConditionCheckSVar$ Turns | ConditionSVarCompare$ GE" + (MANA_TURNS + 1));
+            String eff = "DB$ PutCounter | Defined$ Self | CounterType$ TURN | CounterNum$ 1 | SubAbility$ L1";
+            String trig = "Mode$ Phase | Phase$ Upkeep | ValidPlayer$ You | TriggerZones$ Command"
+                    + " | TriggerDescription$ At the beginning of your upkeep, create a basic land token"
+                    + " drawn from your colour bag (" + colors + ").";
+            Trigger trigger = TriggerHandler.parseTrigger(trig, c, true);
+            trigger.setOverridingAbility(AbilityFactory.getAbility(eff, c));
+            c.addTrigger(trigger);
+            return c;
         }
     }
 
