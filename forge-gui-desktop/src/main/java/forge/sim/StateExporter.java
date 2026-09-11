@@ -535,7 +535,16 @@ public final class StateExporter {
         // and ABILITY_ZONES, so a commander sitting there is already marked
         // playable and already carries its ability list - it was simply in no
         // exported zone for the client to draw.
-        zone(sb, "command_zone", p.getCards(ZoneType.Command)); sb.append(',');
+        // A house-format rules card (Vanguard type, see ForgeServer.LightningFormat)
+        // shares the command zone with the commander. It has no art and is
+        // nothing the player can act on, so it is kept out of the zone the
+        // client draws; what it TRACKS is exported below as `wounds`.
+        zone(sb, "command_zone", withoutRulesCards(p.getCards(ZoneType.Command))); sb.append(',');
+        // Lightning Round: damage taken toward the next Command Crystal. The
+        // rules card holds it as wound counters (every third one is removed and
+        // becomes a crystal), so 0-2 here. -1 when the seat has no rules card,
+        // which is every game outside the format - the client hides the readout.
+        kv(sb, "wounds", woundsOf(p.getCards(ZoneType.Command))); sb.append(',');
         commanderDamage(sb, p, g); sb.append(',');
         // {2} per previous cast of that commander (CR 903.8). Reported as the
         // tax itself, not the cast count, so the client can show it verbatim.
@@ -591,6 +600,48 @@ public final class StateExporter {
             }
         } catch (Exception ignore) { }
         sb.append('}');
+    }
+
+    private static boolean isRulesCard(CardView c) {
+        try {
+            CardStateView s = c.getCurrentState();
+            return s != null && s.getType() != null && s.getType().isVanguard();
+        } catch (Exception ignore) {
+            return false;
+        }
+    }
+
+    /** The command zone minus any Vanguard-type rules card (see player()). */
+    private static List<CardView> withoutRulesCards(Iterable<CardView> cards) {
+        List<CardView> out = new ArrayList<>();
+        if (cards != null) {
+            for (CardView c : cards) {
+                if (!isRulesCard(c)) out.add(c);
+            }
+        }
+        return out;
+    }
+
+    /** Wound counters on the seat's rules card, or -1 when it has none. */
+    private static int woundsOf(Iterable<CardView> cards) {
+        if (cards == null) return -1;
+        for (CardView c : cards) {
+            if (!isRulesCard(c)) continue;
+            int n = 0;
+            try {
+                Multiset<CounterType> counters = c.getCounters();
+                if (counters != null) {
+                    for (Multiset.Entry<CounterType> e : counters.entrySet()) {
+                        if (e.getElement() != null
+                                && "WOUND".equalsIgnoreCase(e.getElement().getName())) {
+                            n += e.getCount();
+                        }
+                    }
+                }
+            } catch (Exception ignore) { }
+            return n;
+        }
+        return -1;
     }
 
     private static void zone(StringBuilder sb, String key, Iterable<CardView> cards) {

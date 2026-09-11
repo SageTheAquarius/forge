@@ -194,6 +194,14 @@ public final class ForgeServer {
         // replies. Read per game, so a flag cannot linger into the next one.
         PlayerControllerBridge.setSandbox(new File(deckDir + "_sandbox.txt").exists());
 
+        // Lightning Round (and any future house format): _format.txt next to the
+        // decks carries `key=value` lines. `life` and `hand` override what the
+        // variant would give every seat; the format's own rules live in a
+        // Vanguard-type card listed in each .dck's [Avatar] section, which
+        // Player.initVariantsZones puts into the command zone like any avatar.
+        // Absent, every seat plays exactly as before.
+        LightningFormat format = LightningFormat.read(new File(deckDir + "_format.txt"));
+
         List<RegisteredPlayer> pp = new ArrayList<>();
         // Human seats come first, so seat index == index in pp. Seat 0 keeps
         // _bridge.dck and the name "you"; further humans read
@@ -222,6 +230,7 @@ public final class ForgeServer {
             rHuman.setPlayer(lpHuman);
             humanLobby.add(lpHuman);
             pp.add(rHuman);
+            format.apply(rHuman, dHuman);
             if (scenario) {
                 rHuman.setStartingHand(0);
             }
@@ -244,6 +253,7 @@ public final class ForgeServer {
                     (aiSeats == 1 && humanSeats == 1) ? "Computer" : "AI " + (i + 1),
                     humanSeats + i, ""));
             pp.add(rOpp);
+            format.apply(rOpp, dOpp);
             if (scenario) {
                 rOpp.setStartingHand(0);
             }
@@ -662,6 +672,74 @@ public final class ForgeServer {
         }
         gs.applyInline(g);
         return true;
+    }
+
+    /**
+     * A house format's per-seat overrides, read from deckDir/_format.txt.
+     *
+     * The relay writes the file for a Lightning Round game (20-card Commander:
+     * 12 life, a 5-card hand, no lands, mana from Command Crystals) and removes
+     * it for every other game, so an absent or empty file is the ordinary
+     * variant. Only the two numbers Forge keeps on RegisteredPlayer live here;
+     * the format's triggered rules (the upkeep crystal, wounds becoming
+     * crystals) are the Vanguard-type card "Lightning Round Rules" that the
+     * .dck lists under [Avatar]. RegisteredPlayer.assignVanguardAvatar reads
+     * that section and Player.initVariantsZones puts the card in the command
+     * zone, so nothing here has to know what the rules are - only that the
+     * seat has them.
+     *
+     * apply() runs AFTER forCommander() on purpose: forCommander sets 40 life
+     * and the avatar's own HandLifeModifier is +0/+0, so the explicit numbers
+     * are the last word.
+     */
+    static final class LightningFormat {
+        final int life;      // <= 0 means "leave the variant's value alone"
+        final int hand;      // <= 0 likewise
+        final boolean avatar;
+
+        private LightningFormat(int life, int hand, boolean avatar) {
+            this.life = life;
+            this.hand = hand;
+            this.avatar = avatar;
+        }
+
+        static LightningFormat read(File f) {
+            if (!f.exists()) {
+                return new LightningFormat(0, 0, false);
+            }
+            int life = 0, hand = 0;
+            boolean avatar = false;
+            try {
+                for (String raw : new String(java.nio.file.Files.readAllBytes(
+                        f.toPath()), "UTF-8").split("\n")) {
+                    String line = raw.trim();
+                    int eq = line.indexOf('=');
+                    if (eq <= 0) continue;
+                    String key = line.substring(0, eq).trim();
+                    String val = line.substring(eq + 1).trim();
+                    if ("life".equals(key)) life = Integer.parseInt(val);
+                    else if ("hand".equals(key)) hand = Integer.parseInt(val);
+                    else if ("avatar".equals(key)) avatar = "1".equals(val) || "true".equalsIgnoreCase(val);
+                }
+            } catch (Exception e) {
+                // A malformed file must not turn a game into something nobody
+                // asked for: ignore it wholesale rather than half-apply it.
+                System.out.println("[FORMAT] unreadable " + f + ": " + e);
+                return new LightningFormat(0, 0, false);
+            }
+            System.out.println("[FORMAT] life=" + life + " hand=" + hand + " avatar=" + avatar);
+            return new LightningFormat(life, hand, avatar);
+        }
+
+        void apply(RegisteredPlayer seat, Deck deck) {
+            if (avatar && deck != null && deck.has(forge.deck.DeckSection.Avatar)) {
+                // Also applies the avatar's HandLifeModifier, which is why the
+                // explicit numbers below come after it.
+                seat.assignVanguardAvatar();
+            }
+            if (life > 0) seat.setStartingLife(life);
+            if (hand > 0) seat.setStartingHand(hand);
+        }
     }
 
     /** Build a startGameHook that applies deckDir/_scenario.txt, or null if absent. */

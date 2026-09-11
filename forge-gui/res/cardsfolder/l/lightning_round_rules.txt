@@ -1,0 +1,13 @@
+Name:Lightning Round Rules
+ManaCost:no cost
+Types:Vanguard
+HandLifeModifier:+0/+0
+T:Mode$ Phase | Phase$ Upkeep | ValidPlayer$ You | TriggerZones$ Command | Execute$ TrigCrystal | TriggerDescription$ At the beginning of your upkeep, create a Command Crystal. (It's a land with "{T}: Add one mana of any color in your commander's color identity.")
+T:Mode$ DamageDoneOnce | ValidTarget$ You | TriggerZones$ Command | Execute$ TrigWound | TriggerDescription$ Whenever you're dealt damage, put that many wound counters on this. Then, for each three wound counters on it, remove them and create a Command Crystal.
+SVar:TrigCrystal:DB$ Token | TokenScript$ command_crystal | TokenOwner$ You
+SVar:TrigWound:DB$ PutCounter | Defined$ Self | CounterType$ WOUND | CounterNum$ X | SubAbility$ DBConvert
+SVar:DBConvert:DB$ Repeat | RepeatSubAbility$ DBCrystalFromWounds | RepeatCheckSVar$ Wounds | RepeatSVarCompare$ GE3 | MaxRepeat$ 10
+SVar:DBCrystalFromWounds:DB$ RemoveCounter | Defined$ Self | CounterType$ WOUND | CounterNum$ 3 | SubAbility$ TrigCrystal
+SVar:Wounds:Count$CardCounters.WOUND
+SVar:X:TriggerCount$DamageAmount
+Oracle:Hand +0, life +0\nAt the beginning of your upkeep, create a Command Crystal. (It's a land with "{T}: Add one mana of any color in your commander's color identity.")\nWhenever you're dealt damage, put that many wound counters on this. Then, for each three wound counters on it, remove them and create a Command Crystal.
