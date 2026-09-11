@@ -44,6 +44,7 @@ import forge.game.spellability.SpellAbilityStackInstance;
 import forge.game.spellability.TargetRestrictions;
 import forge.game.spellability.StackItemView;
 import forge.game.zone.ZoneType;
+import forge.item.PaperToken;
 
 /**
  * Serializes a Forge GameView into a compact, NEUTRAL JSON game state.
@@ -738,6 +739,16 @@ public final class StateExporter {
             kvb(sb, "is_token", true); sb.append(',');
             kvs(sb, "token_art", tokenArt(s)); sb.append(',');
         }
+        // "As CARDNAME enters, choose a creature type" -- and, for the cards
+        // that then BECOME that type (Metallic Mimic, Adaptive Automaton,
+        // Realmwalker), the printed art of a token of that type, so the client
+        // can flash the card's own face and then morph it into the chosen
+        // tribe. Brass Herald and Door of Destinies choose a type without
+        // taking it, so they keep their art: the gate is the chosen type being
+        // among the card's own creature types right now.
+        String chosenType = nz(c.getChosenType());
+        kvs(sb, "chosen_type", chosenType); sb.append(',');
+        kvs(sb, "morph_art", morphArt(chosenType, s)); sb.append(',');
         kvAttachments(sb, c); sb.append(',');
         kvKeywords(sb, s); sb.append(',');
         String blk = blockingOf.get(c.getId());
@@ -1399,6 +1410,92 @@ public final class StateExporter {
         String tokenSet = edition.getTokensCode();
         if (tokenSet == null || tokenSet.isEmpty()) return "";
         return tokenSet.toLowerCase(Locale.ENGLISH) + "/" + parts[2];
+    }
+
+    /** Chosen creature type -> "<tokenSet>/<collectorNumber>" of a token of that type ("" = none). */
+    private static final Map<String, String> MORPH_ART_BY_TYPE = new HashMap<>();
+
+    /**
+     * Art for a card that has become its chosen creature type: the printed
+     * token of that type, as "<tokenSet>/<collectorNumber>" like tokenArt.
+     *
+     * Only when {@code chosen} is set AND is among the card's own creature
+     * types now (Forge's static ability has added it) AND the card is a
+     * creature -- so a Mimic morphs and a Brass Herald does not. Cached per
+     * type: the search walks every edition's token list, and every state
+     * push would otherwise repeat it.
+     */
+    private static String morphArt(String chosen, CardStateView s) {
+        if (chosen == null || chosen.isEmpty() || s == null || s.getType() == null) return "";
+        if (!s.getType().isCreature() || !s.getType().hasCreatureType(chosen)) return "";
+        synchronized (MORPH_ART_BY_TYPE) {
+            String hit = MORPH_ART_BY_TYPE.get(chosen);
+            if (hit == null) {
+                hit = findTokenArtForType(chosen);
+                MORPH_ART_BY_TYPE.put(chosen, hit);
+            }
+            return hit;
+        }
+    }
+
+    /**
+     * The token printing that best stands for one creature type, or "".
+     *
+     * Token scripts are named "<colors>_<p>_<t>_<types...>" (g_1_1_elf,
+     * br_1_1_goblin), so the script names are pre-filtered on the type word
+     * before any token is loaded -- TokenDb only materialises a PaperToken
+     * per edition on demand, and there are ~850 scripts across ~300 sets.
+     * Among the scripts that really carry the type (checked on the rules,
+     * not the name), a vanilla token wins over one with rules text, and a
+     * shorter name (fewer extra types / keywords) over a longer one, so
+     * "Goblin" is the 1/1 red Goblin and not the Goblin Construct that
+     * pings. The first edition that prints the winner supplies the art.
+     */
+    private static String findTokenArtForType(String chosen) {
+        try {
+            StaticData data = StaticData.instance();
+            if (data == null || data.getAllTokens() == null) return "";
+            String word = chosen.toLowerCase(Locale.ENGLISH).replace(' ', '_').replace('-', '_');
+            String bestName = null;
+            PaperToken best = null;
+            for (CardEdition edition : data.getEditions()) {
+                if (edition.getTokens() == null) continue;
+                for (String script : edition.getTokens().keySet()) {
+                    if (!("_" + script + "_").contains("_" + word + "_")) continue;
+                    if (script.equals(bestName)) continue;
+                    PaperToken tok;
+                    try {
+                        tok = data.getAllTokens().getToken(script, edition.getCode());
+                    } catch (RuntimeException e) {
+                        continue;  // script referenced by an edition but absent
+                    }
+                    if (tok == null || tok.getRules() == null || tok.getRules().getType() == null) continue;
+                    if (!tok.getRules().getType().isCreature()
+                            || !tok.getRules().getType().hasCreatureType(chosen)) continue;
+                    if (best == null || plainer(tok, script, best, bestName)) {
+                        best = tok; bestName = script;
+                    }
+                }
+            }
+            if (best == null) return "";
+            CardEdition edition = data.getEditions().get(best.getEdition());
+            if (edition == null) return "";
+            String tokenSet = edition.getTokensCode();
+            String number = nz(best.getCollectorNumber());
+            if (tokenSet == null || tokenSet.isEmpty() || number.isEmpty()) return "";
+            return tokenSet.toLowerCase(Locale.ENGLISH) + "/" + number;
+        } catch (RuntimeException e) {
+            return "";
+        }
+    }
+
+    /** Vanilla beats rules text; then the shorter script name; then alphabetical. */
+    private static boolean plainer(PaperToken tok, String script, PaperToken than, String thanName) {
+        boolean vanilla = nz(tok.getRules().getOracleText()).trim().isEmpty();
+        boolean thanVanilla = nz(than.getRules().getOracleText()).trim().isEmpty();
+        if (vanilla != thanVanilla) return vanilla;
+        if (script.length() != thanName.length()) return script.length() < thanName.length();
+        return script.compareTo(thanName) < 0;
     }
 
     /** Emit a card's counters as {"-1/-1":3, "+1/+1":1, ...} (name -> count). */
