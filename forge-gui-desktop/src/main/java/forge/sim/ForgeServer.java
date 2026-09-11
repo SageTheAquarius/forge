@@ -925,6 +925,49 @@ public final class ForgeServer {
     private static final class ScenarioState extends GameState {
         void applyInline(Game game) {
             applyGameOnThread(game);
+            restoreAvatars(game);
+            // GameState clears zones with removeAllCards(true): the real list
+            // is emptied, the PlayerView is not. A zone the scenario then left
+            // empty (no humanlibrary= line) kept its 19-card view, and the
+            // exporter reads views -- so the client, and any test reading
+            // library_count, saw a library that was not there.
+            for (Player p : game.getPlayers()) {
+                p.updateAllZonesForView();
+            }
+        }
+
+        /**
+         * GameState.applyToGame clears every zone, the command zone included,
+         * and a scenario cannot name a Vanguard card to put it back (they live
+         * in the variant card DB, which GameState never consults). So a
+         * Lightning Round scenario lost its rules card -- no wounds, no
+         * deck-out rule -- and nothing said so. Put each seat's avatars back
+         * the way Player.initVariantsZones placed them at game start.
+         */
+        private static void restoreAvatars(Game game) {
+            for (Player p : game.getPlayers()) {
+                RegisteredPlayer rp = p.getRegisteredPlayer();
+                if (rp == null || rp.getVanguardAvatars() == null) {
+                    continue;
+                }
+                for (forge.item.PaperCard avatar : rp.getVanguardAvatars()) {
+                    boolean present = false;
+                    for (Card c : p.getZone(ZoneType.Command).getCards()) {
+                        if (c.getName().equals(avatar.getName())) {
+                            present = true;
+                            break;
+                        }
+                    }
+                    if (present) {
+                        continue;
+                    }
+                    Card c = Card.fromPaperCard(avatar, p);
+                    c.setCollectible(true);
+                    p.getZone(ZoneType.Command).add(c);
+                    System.out.println("[SCENARIO] restored avatar " + avatar.getName()
+                            + " for seat " + game.getPlayers().indexOf(p));
+                }
+            }
         }
     }
 

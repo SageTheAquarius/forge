@@ -17,4 +17,17 @@ SVar:DBWoundCrystal:DB$ Token | TokenScript$ command_crystal | TokenOwner$ You |
 SVar:DBRemoveWounds:DB$ RemoveCounter | Defined$ Self | CounterType$ WOUND | CounterNum$ 3 | ConditionCheckSVar$ Wounds | ConditionSVarCompare$ GE3
 SVar:Wounds:Count$CardCounters.WOUND
 SVar:X:TriggerCount$DamageAmount
-Oracle:Hand +0, life +0\nWhenever you're dealt damage, put that many wound counters on this. Then, for each three wound counters on it, remove them and create a Command Crystal. (It's a land with "{T}: Add one mana of any color in your commander's color identity.")
+# No deck-out (2026-09-11). A 19-card library with clue and cantrip effects
+# in the pool ran dry on turn 11 while its owner sat at 37 life against
+# opponents at 2 and 4. Drawing from an empty library is nothing here (the
+# Mine, Mine, Mine! replacement); you are out when nothing is left to fight
+# with instead: library, hand and creatures/planeswalkers all empty. The
+# command zone is deliberately NOT counted -- a commander is always
+# recastable and the upkeep lands never stop, so counting it would turn this
+# into a stalemate rule.
+R:Event$ GameLoss | ActiveZones$ Command | ValidPlayer$ You | ValidLoseReason$ Milled | Layer$ CantHappen | Description$ You don't lose the game for drawing from an empty library.
+T:Mode$ Always | TriggerZones$ Command | CheckSVar$ Outs | SVarCompare$ EQ0 | Execute$ TrigOut | TriggerDescription$ When your library and hand are empty and you control no creatures or planeswalkers, you lose the game.
+SVar:TrigOut:DB$ LosesGame | Defined$ You
+SVar:Outs:Count$ValidLibrary,Hand Card.YouOwn/Plus.Board
+SVar:Board:Count$Valid Creature.YouCtrl,Planeswalker.YouCtrl
+Oracle:Hand +0, life +0\nWhenever you're dealt damage, put that many wound counters on this. Then, for each three wound counters on it, remove them and create a Command Crystal. (It's a land with "{T}: Add one mana of any color in your commander's color identity.")\nYou don't lose the game for drawing from an empty library. When your library and hand are empty and you control no creatures or planeswalkers, you lose the game.
