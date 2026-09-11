@@ -1445,24 +1445,35 @@ public final class StateExporter {
      * br_1_1_goblin), so the script names are pre-filtered on the type word
      * before any token is loaded -- TokenDb only materialises a PaperToken
      * per edition on demand, and there are ~850 scripts across ~300 sets.
+     *
      * Among the scripts that really carry the type (checked on the rules,
-     * not the name), a vanilla token wins over one with rules text, and a
-     * shorter name (fewer extra types / keywords) over a longer one, so
-     * "Goblin" is the 1/1 red Goblin and not the Goblin Construct that
-     * pings. The first edition that prints the winner supplies the art.
+     * not the name), the one printed in the MOST editions wins: that is the
+     * token the game keeps making -- "Angel" is the white 4/4 flier printed
+     * forty times, not the black 3/3 that exists in one custom set. Print
+     * count is the whole point: the earlier "shortest script name" rule
+     * picked b_3_3_angel_flying for Angel, a token printed only in "Old
+     * Border Custom" (OBC), which is not on Scryfall -- the client asked for
+     * tok_obc_6, got a 404, and the Mimic sat in its half-morphed ghost for
+     * the rest of the game. Ties break vanilla-first, then shorter name.
+     *
+     * The art then comes from a real, released printing of the winner: an
+     * edition Scryfall knows (not CUSTOM_SET / FUNNY / UNKNOWN / OTHER, and
+     * not the OBC-style "Promo" that hides customs), released by today, the
+     * newest of those so the art is the modern one. An edition that only
+     * lists the script but has no printing of it is skipped.
      */
     private static String findTokenArtForType(String chosen) {
         try {
             StaticData data = StaticData.instance();
             if (data == null || data.getAllTokens() == null) return "";
             String word = chosen.toLowerCase(Locale.ENGLISH).replace(' ', '_').replace('-', '_');
-            String bestName = null;
-            PaperToken best = null;
+            // script -> every (edition, printing) that carries it
+            Map<String, List<Object[]>> printings = new HashMap<>();
+            Map<String, PaperToken> sample = new HashMap<>();
             for (CardEdition edition : data.getEditions()) {
                 if (edition.getTokens() == null) continue;
                 for (String script : edition.getTokens().keySet()) {
                     if (!("_" + script + "_").contains("_" + word + "_")) continue;
-                    if (script.equals(bestName)) continue;
                     PaperToken tok;
                     try {
                         tok = data.getAllTokens().getToken(script, edition.getCode());
@@ -1470,32 +1481,75 @@ public final class StateExporter {
                         continue;  // script referenced by an edition but absent
                     }
                     if (tok == null || tok.getRules() == null || tok.getRules().getType() == null) continue;
-                    if (!tok.getRules().getType().isCreature()
-                            || !tok.getRules().getType().hasCreatureType(chosen)) continue;
-                    if (best == null || plainer(tok, script, best, bestName)) {
-                        best = tok; bestName = script;
+                    if (!sample.containsKey(script)) {
+                        if (!tok.getRules().getType().isCreature()
+                                || !tok.getRules().getType().hasCreatureType(chosen)) {
+                            sample.put(script, null);          // remembered as rejected
+                        } else {
+                            sample.put(script, tok);
+                        }
                     }
+                    if (sample.get(script) == null) continue;
+                    printings.computeIfAbsent(script, k -> new ArrayList<>())
+                             .add(new Object[]{edition, tok});
                 }
             }
-            if (best == null) return "";
-            CardEdition edition = data.getEditions().get(best.getEdition());
-            if (edition == null) return "";
-            String tokenSet = edition.getTokensCode();
-            String number = nz(best.getCollectorNumber());
-            if (tokenSet == null || tokenSet.isEmpty() || number.isEmpty()) return "";
-            return tokenSet.toLowerCase(Locale.ENGLISH) + "/" + number;
+            String bestName = null;
+            for (Map.Entry<String, List<Object[]>> e : printings.entrySet()) {
+                if (bestName == null || canonical(e.getKey(), e.getValue().size(), sample.get(e.getKey()),
+                                                  bestName, printings.get(bestName).size(), sample.get(bestName))) {
+                    bestName = e.getKey();
+                }
+            }
+            if (bestName == null) return "";
+            CardEdition artEdition = null;
+            PaperToken artTok = null;
+            for (Object[] p : printings.get(bestName)) {
+                CardEdition edition = (CardEdition) p[0];
+                PaperToken tok = (PaperToken) p[1];
+                if (!scryfallKnows(edition)) continue;
+                String tokenSet = edition.getTokensCode();
+                if (tokenSet == null || tokenSet.isEmpty() || nz(tok.getCollectorNumber()).isEmpty()) continue;
+                if (artEdition == null || edition.getDate().after(artEdition.getDate())) {
+                    artEdition = edition; artTok = tok;
+                }
+            }
+            if (artEdition == null) return "";
+            return artEdition.getTokensCode().toLowerCase(Locale.ENGLISH) + "/" + nz(artTok.getCollectorNumber());
         } catch (RuntimeException e) {
             return "";
         }
     }
 
-    /** Vanilla beats rules text; then the shorter script name; then alphabetical. */
-    private static boolean plainer(PaperToken tok, String script, PaperToken than, String thanName) {
+    /** More printings wins; then vanilla beats rules text; then the shorter script name; then alphabetical. */
+    private static boolean canonical(String script, int prints, PaperToken tok,
+                                     String thanName, int thanPrints, PaperToken than) {
+        if (prints != thanPrints) return prints > thanPrints;
         boolean vanilla = nz(tok.getRules().getOracleText()).trim().isEmpty();
         boolean thanVanilla = nz(than.getRules().getOracleText()).trim().isEmpty();
         if (vanilla != thanVanilla) return vanilla;
         if (script.length() != thanName.length()) return script.length() < thanName.length();
         return script.compareTo(thanName) < 0;
+    }
+
+    /**
+     * An edition whose token printings Scryfall serves: a real product type,
+     * released by today. Forge's custom and joke sets are filed under
+     * CUSTOM_SET / FUNNY / OTHER / UNKNOWN, and the old-border custom tokens
+     * (OBC) call themselves a Promo -- promos are excluded too, since every
+     * canonical token also has a normal-set printing to draw from.
+     */
+    private static boolean scryfallKnows(CardEdition edition) {
+        if (edition == null || edition.getDate() == null) return false;
+        if (edition.getDate().after(new java.util.Date())) return false;
+        CardEdition.Type t = edition.getType();
+        if (t == null) return false;
+        switch (t) {
+            case CUSTOM_SET: case FUNNY: case OTHER: case UNKNOWN: case PROMO: case ONLINE:
+                return false;
+            default:
+                return true;
+        }
     }
 
     /** Emit a card's counters as {"-1/-1":3, "+1/+1":1, ...} (name -> count). */
