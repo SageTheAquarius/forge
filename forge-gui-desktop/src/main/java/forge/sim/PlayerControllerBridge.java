@@ -4086,6 +4086,16 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     @Override
     public void declareAttackers(Player attacker, Combat combat) {
         if (combat.getDefendingPlayers().isEmpty()) { super.declareAttackers(attacker, combat); return; }
+        // PhaseHandler re-asks with the SAME Combat when a declaration fails
+        // validation, still holding every attacker of the refused one. The
+        // relay opens each ask with an empty pick list, so on the re-ask the
+        // board showed the stale attackers, the player's toggles counted from
+        // zero, and the pass ADDED those picks to the leftovers: with Silent
+        // Arbiter out, 3 refused -> "toggle one" -> "3 were declared" again,
+        // forever (Sage's Lightning pod, 2026-09-11 19:52). Start every ask
+        // from an empty combat, as AiController.resetCombatDecision does; the
+        // feed line from explainIfInvalid says what to change.
+        combat.clearAttackers();
         GameEntity defender = combat.getDefendingPlayers().get(0);
         List<Card> eligible = new ArrayList<>();
         for (Card c : attacker.getCreaturesInPlay()) {
