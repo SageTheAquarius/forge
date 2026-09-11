@@ -1943,13 +1943,27 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         return chosen;
     }
 
+    /**
+     * JSON string escaping for anything that reaches the client.
+     *
+     * This used to escape only backslash and quote, which is not enough: any
+     * string carrying a raw control character produced INVALID JSON, the
+     * Python relay's json.loads threw "Invalid control character at ...", and
+     * the match died mid-window and was filed as an error. Seen in a Commander
+     * match on 2026-09-07 and a Lightning Round game on 2026-09-11, both at
+     * declare-attackers. Twelve call sites passed names and labels through it.
+     *
+     * StateExporter.esc already does the whole job -- quote, backslash, \n, \r,
+     * \t and every other char below 0x20 -- and is what the rest of the wire
+     * has always used, so delegate rather than keep a second, weaker copy.
+     */
     private static String escName(String s) {
-        return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
+        return StateExporter.esc(s);
     }
 
-    /** escName plus the control characters oracle text carries. */
+    /** Same escaping; kept as a separate name for the rules-text call sites. */
     private static String escText(String s) {
-        return escName(s).replace("\r", "").replace("\n", "\\n").replace("\t", " ");
+        return StateExporter.esc(s);
     }
 
     /**
