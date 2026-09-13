@@ -3,6 +3,7 @@ package forge.sim;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -3660,6 +3661,75 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         return scrySplit(topN, "Surveil", "graveyard");
     }
 
+    /**
+     * "Put them back in any order" -- Sensei's Divining Top, Brainstorm's
+     * put-back, Ponder, the rest of a Dig, a multi-card mill. Never overridden
+     * before, so it fell through to PlayerControllerAi, which ordered the
+     * cards on its own Ponder heuristic and the player never saw them: the Top
+     * resolved as "Look at the top 3" with nothing to look at.
+     *
+     * Mirrors PlayerControllerHuman.orderMoveToZoneList: ask the player one
+     * pick at a time, closest-to-top first for the top of a deck, closest-to-
+     * bottom first otherwise, then reverse for the top because every caller
+     * moves the list in order to position 0 (the last card moved ends on top).
+     * Graveyard order is only asked for when something in the game cares
+     * (Forge's own default, GRAVEYARD_ORDERING_OWN_CARDS), or when the effect
+     * is an explicit reorder.
+     */
+    @Override
+    public CardCollectionView orderMoveToZoneList(CardCollectionView cards, ZoneType destinationZone,
+            SpellAbility source) {
+        if (cards == null) {
+            return new CardCollection();
+        }
+        if (cards.size() <= 1) {
+            return new CardCollection(cards);
+        }
+        boolean explicitReorder = source != null && source.getApi() == ApiType.ReorderZone;
+        if (destinationZone == ZoneType.Graveyard && !explicitReorder
+                && !getGame().isGraveyardOrdered(player)) {
+            return new CardCollection(cards);
+        }
+        boolean topOfDeck = orderedMoveToTopOfLibrary(destinationZone, source);
+        String what;
+        String first;
+        if (destinationZone.isDeck()) {
+            what = "into your library";
+            first = topOfDeck ? "closest to top" : "closest to bottom";
+        } else if (destinationZone == ZoneType.Graveyard) {
+            what = "into the graveyard";
+            first = "closest to bottom";
+        } else if (destinationZone == ZoneType.Battlefield) {
+            what = "onto the battlefield";
+            first = "put first";
+        } else if (destinationZone == ZoneType.Exile) {
+            what = "into exile";
+            first = "put first";
+        } else if (destinationZone == ZoneType.Stack) {
+            what = "onto the stack";
+            first = "cast first";
+        } else if (destinationZone == ZoneType.None) {
+            what = "";
+            first = "first";
+        } else {
+            return new CardCollection(cards);
+        }
+        String host = source != null && source.getHostCard() != null ? source.getHostCard().getName() : "";
+        String label = (host.isEmpty() ? "Order" : host + ": order") + (what.isEmpty() ? " the cards" : " the cards " + what);
+        CardCollection ordered = orderCards(label, cards, first);
+        // ReorderZoneEffect REPLACES the zone with whatever comes back, and
+        // four callers cast it to CardCollection: a short list would delete
+        // cards. orderCards is a permutation by construction; if it ever is
+        // not, keep the original order rather than lose a card.
+        if (ordered.size() != cards.size() || !ordered.containsAll(cards)) {
+            return new CardCollection(cards);
+        }
+        if (topOfDeck) {
+            Collections.reverse(ordered);
+        }
+        return ordered;
+    }
+
     private ImmutablePair<CardCollection, CardCollection> scrySplit(CardCollection topN,
             String verb, String dest) {
         CardCollection top = new CardCollection();
@@ -3848,13 +3918,18 @@ public class PlayerControllerBridge extends PlayerControllerAi {
 
     /** Repeatedly ask the client to pick the next card, building a full order. */
     private CardCollection orderCards(String label, CardCollectionView cards) {
+        return orderCards(label, cards, "damaged first");
+    }
+
+    /** Pick the cards one at a time; `first` says what pick #1 means. */
+    private CardCollection orderCards(String label, CardCollectionView cards, String first) {
         CardCollection ordered = new CardCollection();
         if (cards == null || cards.isEmpty()) return ordered;
         CardCollection remainingCards = new CardCollection(cards);
         while (remainingCards.size() > 1) {
             List<String> names = new ArrayList<>();
             for (Card c : remainingCards) names.add(c.getName());
-            List<Integer> sel = promptIndices(label + " — pick #" + (ordered.size() + 1) + " (damaged first)",
+            List<Integer> sel = promptIndices(label + " — pick #" + (ordered.size() + 1) + " (" + first + ")",
                 names, 1, 1, false, "choose");
             int idx = sel.isEmpty() ? 0 : sel.get(0);
             Card pick = remainingCards.get(idx);
