@@ -446,7 +446,35 @@ public final class StateExporter {
                 String nm = si.getSourceCard() != null ? si.getSourceCard().getName() : si.getKey();
                 kvs(sb, "name", nm != null ? nm : ""); sb.append(',');
                 kvs(sb, "controller", si.getActivatingPlayer() != null ? si.getActivatingPlayer().getName() : ""); sb.append(',');
-                kvs(sb, "type", si.isAbility() ? "ability" : "spell");
+                kvs(sb, "type", si.isAbility() ? "ability" : "spell"); sb.append(',');
+                // Identity and aim, for the client's effects: which card the
+                // item came from and what it points at. An item that leaves
+                // the stack between two pushes resolved (or was countered),
+                // and the effect for it plays from source_id toward the
+                // targets -- a bolt has somewhere to go, a shockwave a seat
+                // to shake. `key` tells two same-named items apart.
+                kvs(sb, "key", nz(si.getKey())); sb.append(',');
+                kvs(sb, "source_id", si.getSourceCard() != null ? String.valueOf(si.getSourceCard().getId()) : ""); sb.append(',');
+                sb.append("\"target_ids\":[");
+                boolean firstT = true;
+                if (si.getTargetCards() != null) {
+                    for (CardView tc : si.getTargetCards()) {
+                        if (tc == null) continue;
+                        if (!firstT) sb.append(','); firstT = false;
+                        sb.append('"').append(tc.getId()).append('"');
+                    }
+                }
+                sb.append("],\"target_players\":[");
+                firstT = true;
+                if (si.getTargetPlayers() != null) {
+                    for (PlayerView tp : si.getTargetPlayers()) {
+                        if (tp == null) continue;
+                        if (!firstT) sb.append(','); firstT = false;
+                        sb.append('"').append(esc(nz(tp.getName()))).append('"');
+                    }
+                }
+                sb.append("],");
+                kvs(sb, "text", nz(si.getText()));
                 sb.append('}');
             }
         }
