@@ -21,6 +21,10 @@ import forge.card.mana.ManaAtom;
 import forge.card.mana.ManaCost;
 import forge.game.Game;
 import forge.game.GameLog;
+import forge.game.event.GameEventSpellRemovedFromStack;
+import forge.game.event.GameEventSpellResolved;
+import forge.game.spellability.SpellAbilityStackInstance;
+import com.google.common.eventbus.Subscribe;
 import forge.game.GameLogEntry;
 import forge.game.GameLogEntryType;
 import forge.game.GameEntityView;
@@ -40,7 +44,6 @@ import forge.game.cost.CostRemoveCounter;
 import forge.game.spellability.SpellAbility;
 import forge.game.ability.ApiType;
 import forge.game.spellability.AbilitySub;
-import forge.game.spellability.SpellAbilityStackInstance;
 import forge.game.spellability.TargetRestrictions;
 import forge.game.spellability.StackItemView;
 import forge.game.zone.ZoneType;
@@ -113,6 +116,80 @@ public final class StateExporter {
      * a SOUND, but nothing reaches the game log, so a player had no way to see
      * their own speed or know they had hit max. */
     private static Map<Integer, Integer> speedById = Collections.emptyMap();
+    // Stack-instance id -> the SpellAbility id behind it. The client's effects
+    // layer needs the SA id because that is what the resolve/counter events
+    // carry (see StackOutcomes); StackItemView only knows the instance id.
+    private static Map<Integer, Integer> saIdByStackId = Collections.emptyMap();
+    // Card id -> the name printed on the card, for cards that are currently a
+    // COPY of something else (Deceptive Frostkite, Sarkhan, Visage Bandit).
+    // The client shows the printed face first and morphs into the copy --
+    // the Metallic Mimic wipe, driven by exactly this pair of names.
+    private static Map<Integer, String> printedNameById = Collections.emptyMap();
+
+    /**
+     * What became of each spell or ability that left the stack: resolved,
+     * fizzled (resolved with no legal target) or countered (removed without
+     * ever resolving). Forge fires GameEventSpellResolved from
+     * MagicStack.resolveStack and GameEventSpellRemovedFromStack from
+     * MagicStack.remove; a removal with no resolve before it is a counter.
+     * Without this the client saw every departure as a resolve and played
+     * Spellstutter Sprite's counter as if the spell had gone off.
+     *
+     * One per game (ForgeServer subscribes it at startMatch); exported as a
+     * bounded tail with running indices, like the game log, so the relay can
+     * skip what it already forwarded.
+     */
+    public static final class StackOutcomes {
+        private static final int TAIL = 40;
+        private final java.util.Set<Integer> resolved = new HashSet<>();
+        private final java.util.List<int[]> outcomes = new java.util.ArrayList<>();
+        private int next = 0;
+
+        @Subscribe
+        @SuppressWarnings("unused")
+        public synchronized void onResolved(GameEventSpellResolved ev) {
+            if (ev.spell() == null) return;
+            int id = ev.spell().getId();
+            resolved.add(id);
+            outcomes.add(new int[] {next++, id, ev.hasFizzled() ? 2 : 1});
+            trim();
+        }
+
+        @Subscribe
+        @SuppressWarnings("unused")
+        public synchronized void onRemoved(GameEventSpellRemovedFromStack ev) {
+            if (ev.sa() == null) return;
+            int id = ev.sa().getId();
+            if (resolved.remove(id)) return;          // the removal after its resolve
+            outcomes.add(new int[] {next++, id, 0});   // never resolved: countered
+            trim();
+        }
+
+        private void trim() {
+            while (outcomes.size() > TAIL) outcomes.remove(0);
+        }
+
+        synchronized void export(StringBuilder sb) {
+            sb.append("\"stack_outcomes\":[");
+            boolean first = true;
+            for (int[] o : outcomes) {
+                if (!first) sb.append(',');
+                first = false;
+                sb.append("{\"i\":").append(o[0]).append(",\"sa_id\":").append(o[1]).append(',');
+                kvs(sb, "outcome", o[2] == 1 ? "resolved" : o[2] == 2 ? "fizzled" : "countered");
+                sb.append('}');
+            }
+            sb.append(']');
+        }
+    }
+
+    private static StackOutcomes stackOutcomes = null;
+
+    /** ForgeServer calls this once per game, after subscribing the watcher. */
+    public static StackOutcomes newStackOutcomes() {
+        stackOutcomes = new StackOutcomes();
+        return stackOutcomes;
+    }
 
     /**
      * Per-card list of the ways this player could use that card right now,
@@ -409,6 +486,26 @@ public final class StateExporter {
             }
         }
         speedById = speeds;
+        Map<Integer, Integer> saIds = new HashMap<>();
+        Map<Integer, String> printed = new HashMap<>();
+        if (human != null && human.getGame() != null) {
+            Game game = human.getGame();
+            if (game.getStack() != null) {
+                for (SpellAbilityStackInstance si : game.getStack()) {
+                    if (si != null && si.getSpellAbility() != null) {
+                        saIds.put(si.getId(), si.getSpellAbility().getId());
+                    }
+                }
+            }
+            for (Card c : game.getCardsInGame()) {
+                if (c != null && c.isCloned() && c.getPaperCard() != null
+                        && !c.getPaperCard().getName().equals(c.getName())) {
+                    printed.put(c.getId(), c.getPaperCard().getName());
+                }
+            }
+        }
+        saIdByStackId = saIds;
+        printedNameById = printed;
 
         StringBuilder sb = new StringBuilder(4096);
         sb.append('{');
@@ -454,6 +551,10 @@ public final class StateExporter {
                 // targets -- a bolt has somewhere to go, a shockwave a seat
                 // to shake. `key` tells two same-named items apart.
                 kvs(sb, "key", nz(si.getKey())); sb.append(',');
+                // The SpellAbility id: what the resolve / counter events name
+                // (stack_outcomes). -1 when the instance is not on the real
+                // stack any more (a view of a frozen item).
+                kv(sb, "sa_id", saIdByStackId.getOrDefault(si.getId(), -1)); sb.append(',');
                 kvs(sb, "source_id", si.getSourceCard() != null ? String.valueOf(si.getSourceCard().getId()) : ""); sb.append(',');
                 sb.append("\"target_ids\":[");
                 boolean firstT = true;
@@ -481,6 +582,12 @@ public final class StateExporter {
         sb.append("],");
 
         gameLog(sb, g);
+        sb.append(',');
+        if (stackOutcomes != null) {
+            stackOutcomes.export(sb);
+        } else {
+            sb.append("\"stack_outcomes\":[]");
+        }
         sb.append('}');
         return sb.toString();
     }
@@ -720,6 +827,10 @@ public final class StateExporter {
         sb.append('{');
         kv(sb, "id", c.getId()); sb.append(',');
         kvs(sb, "name", s != null ? s.getName() : c.getName()); sb.append(',');
+        if (printedNameById.containsKey(c.getId())) {
+            // A copy: the client wears this face first, then morphs into `name`.
+            kvs(sb, "printed_name", printedNameById.get(c.getId())); sb.append(',');
+        }
         kvs(sb, "type_line", s != null && s.getType() != null ? s.getType().toString() : ""); sb.append(',');
         kvs(sb, "mana_cost", s != null && s.getManaCost() != null ? s.getManaCost().toString() : ""); sb.append(',');
         kvs(sb, "oracle_text", s != null ? nz(s.getOracleText()) : ""); sb.append(',');

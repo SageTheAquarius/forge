@@ -370,6 +370,9 @@ public final class ForgeServer {
         if (!"off".equals(System.getProperty("bridge.deathwatch"))) {
             g.subscribeToEvents(new HumanDeathWatch(g, humanSeats));
         }
+        // What each stack item became (resolved / fizzled / countered), for
+        // the client's effects layer -- see StateExporter.StackOutcomes.
+        g.subscribeToEvents(StateExporter.newStackOutcomes());
 
         // Test scaffold: if <deckDir>/_scenario.txt exists, apply it as an exact
         // board state at the start of the first turn (puzzle-style game state).
