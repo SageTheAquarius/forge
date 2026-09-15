@@ -37,8 +37,19 @@ SVar:X:TriggerCount$LifeAmount
 # recastable and the upkeep lands never stop, so counting it would turn this
 # into a stalemate rule.
 R:Event$ GameLoss | ActiveZones$ Command | ValidPlayer$ You | ValidLoseReason$ Milled | Layer$ CantHappen | Description$ You don't lose the game for drawing from an empty library.
-T:Mode$ Always | TriggerZones$ Command | CheckSVar$ Outs | SVarCompare$ EQ0 | Execute$ TrigOut | TriggerDescription$ When your library and hand are empty and you control no creatures or planeswalkers, you lose the game.
+# A state trigger (Mode$ Always) is re-evaluated on EVERY state-based-action
+# pass, twice per pass, for every seat. The first version's single SVar
+# (Count$ValidLibrary,Hand Card.YouOwn/Plus.Board) ran two isValid scans --
+# every player's library and hand, then the whole battlefield -- each time,
+# and on a 4-seat board that was ~half of a 58 s turn (2026-09-15, prod
+# turn 24). Now the cheap part gates the expensive part: CheckSVar is two
+# zone sizes (no per-card scan) and CheckSecondSVar, the battlefield scan,
+# only runs once hand and library are already empty. Same rule, same
+# state-trigger semantics (the no-outs test loses on turn 1 from a scenario
+# board with no zone change), a few list-size reads per pass instead.
+T:Mode$ Always | TriggerZones$ Command | CheckSVar$ HandLib | SVarCompare$ EQ0 | CheckSecondSVar$ Board | SecondSVarCompare$ EQ0 | Execute$ TrigOut | TriggerDescription$ When your library and hand are empty and you control no creatures or planeswalkers, you lose the game.
 SVar:TrigOut:DB$ LosesGame | Defined$ You
-SVar:Outs:Count$ValidLibrary,Hand Card.YouOwn/Plus.Board
+SVar:HandLib:Count$CardsInYourHand/Plus.Lib
+SVar:Lib:Count$CardsInYourLibrary
 SVar:Board:Count$Valid Creature.YouCtrl,Planeswalker.YouCtrl
 Oracle:Hand +0, life +0\nWhenever you lose life, put that many wound counters on this. Then, for each three wound counters on it, remove them and create a Command Crystal. (It's a land with "{T}: Add one mana of any color in your commander's color identity.")\nYou don't lose the game for drawing from an empty library. When your library and hand are empty and you control no creatures or planeswalkers, you lose the game.\nYour maximum hand size is six.

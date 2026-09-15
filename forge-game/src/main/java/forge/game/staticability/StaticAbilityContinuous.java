@@ -1012,7 +1012,16 @@ public final class StaticAbilityContinuous {
 
         final String[] strngs = params.get("Affected").split(",");
 
-        for (Player p : controller.getGame().getPlayersInTurnOrder()) {
+        // getPlayers(), not getPlayersInTurnOrder(): this only FILTERS the
+        // players, and every consumer of the list (setAffectedPlayers, the
+        // per-player keyword / hand-size / can't-lose effects) is order
+        // independent. getPlayersInTurnOrder asks isTurnOrderReversed, which
+        // walks every static ability in every static-source zone -- and this
+        // runs for EVERY continuous static on EVERY state-based-action pass,
+        // so a big board paid statics x cards x statics per pass. On a
+        // 4-seat Lightning Round (2026-09-15, turns 23-24 at 31 s and 58 s
+        // engine) that walk was the top game-thread sample. (2026-09-15)
+        for (Player p : controller.getGame().getPlayers()) {
             if (p.isValid(strngs, controller, hostCard, stAb)) {
                 players.add(p);
             }
