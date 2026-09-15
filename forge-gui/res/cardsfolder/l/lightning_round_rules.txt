@@ -2,6 +2,12 @@ Name:Lightning Round Rules
 ManaCost:no cost
 Types:Vanguard
 HandLifeModifier:+0/+0
+# Max hand size 6, opening hand 5 (2026-09-14). Game.java copies the starting
+# hand (hand=5 in _format.txt) into maxHandSize, so without this line a 5-card
+# opening hand also meant discarding to 5 at every end step. EffectZone$
+# Command because the avatar never leaves the command zone (Birds of Paradise
+# Avatar is the pattern). The opening hand is still the relay's hand=5.
+S:Mode$ Continuous | EffectZone$ Command | Affected$ You | SetMaxHandSize$ 6 | Description$ Your maximum hand size is six.
 # The upkeep land lives on a SECOND, per-seat card that ForgeServer builds in
 # memory (LightningFormat.buildManaCard), because its colour sequence is a
 # shuffled bag of the seat's chosen colours and cannot be a fixed script. This
@@ -35,4 +41,4 @@ T:Mode$ Always | TriggerZones$ Command | CheckSVar$ Outs | SVarCompare$ EQ0 | Ex
 SVar:TrigOut:DB$ LosesGame | Defined$ You
 SVar:Outs:Count$ValidLibrary,Hand Card.YouOwn/Plus.Board
 SVar:Board:Count$Valid Creature.YouCtrl,Planeswalker.YouCtrl
-Oracle:Hand +0, life +0\nWhenever you lose life, put that many wound counters on this. Then, for each three wound counters on it, remove them and create a Command Crystal. (It's a land with "{T}: Add one mana of any color in your commander's color identity.")\nYou don't lose the game for drawing from an empty library. When your library and hand are empty and you control no creatures or planeswalkers, you lose the game.
+Oracle:Hand +0, life +0\nWhenever you lose life, put that many wound counters on this. Then, for each three wound counters on it, remove them and create a Command Crystal. (It's a land with "{T}: Add one mana of any color in your commander's color identity.")\nYou don't lose the game for drawing from an empty library. When your library and hand are empty and you control no creatures or planeswalkers, you lose the game.\nYour maximum hand size is six.

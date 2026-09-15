@@ -534,6 +534,10 @@ public final class StateExporter {
         // bridge can announce a change.
         kv(sb, "speed", speedById.getOrDefault(p.getId(), 0)); sb.append(',');
         kv(sb, "library_count", count(p.getCards(ZoneType.Library))); sb.append(',');
+        // Maximum hand size. Lightning Round sets it to 6 over a 5-card opening
+        // hand (the rules card's static); Forge otherwise copies the starting
+        // hand into it, so the number is not derivable from anything else sent.
+        kv(sb, "max_hand", p.getMaxHandSize()); sb.append(',');
         // Cards drawn all game. The stats recorder used to infer this from
         // hand-size increases, which cannot see a card drawn and spent inside the
         // same priority window; this is Forge's own count, taken at the one place
