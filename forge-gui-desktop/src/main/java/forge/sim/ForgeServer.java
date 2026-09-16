@@ -432,11 +432,23 @@ public final class ForgeServer {
         private final java.util.Map<String, String> stacks = new java.util.HashMap<>();
         private int samples;
         private int waiting;
+        // [JVM-CPU]: where the turn's wall time went, per turn -- the game
+        // thread's CPU, the whole process's CPU, and the host's CPU modes from
+        // /proc/stat. The 2026-09-15 prod Lightning cliff (turns 23-24 at 31 s
+        // and 58 s) read as an engine cost in the stacks above and was the
+        // host stealing two thirds of the CPU; this line says so directly:
+        // wall >> process CPU with a high steal share is the host, process
+        // CPU >> game-thread CPU is JIT / GC / eval threads.
+        private long cpuWall = System.nanoTime();
+        private long cpuProc = processCpu();
+        private long cpuGame = -1;   // set once target is known, below
+        private long[] cpuHost = hostCpu();
 
         GameThreadSampler(Game g, Thread t) {
             super("Game Thread Sampler");
             game = g;
             target = t;
+            cpuGame = threadCpu();
             setDaemon(true);
         }
 
@@ -597,8 +609,85 @@ public final class ForgeServer {
             return d < 0 ? s : s.substring(0, d);
         }
 
+        private long processCpu() {
+            try {
+                java.lang.management.OperatingSystemMXBean os = java.lang.management.ManagementFactory.getOperatingSystemMXBean();
+                if (os instanceof com.sun.management.OperatingSystemMXBean) {
+                    return ((com.sun.management.OperatingSystemMXBean) os).getProcessCpuTime();
+                }
+            } catch (Throwable ignored) { }
+            return -1;
+        }
+
+        private long threadCpu() {
+            try {
+                java.lang.management.ThreadMXBean tm = java.lang.management.ManagementFactory.getThreadMXBean();
+                return tm.isThreadCpuTimeSupported() ? tm.getThreadCpuTime(target.getId()) : -1;
+            } catch (Throwable ignored) {
+                return -1;
+            }
+        }
+
+        /** user, nice, system, idle, iowait, irq, softirq, steal jiffies from /proc/stat; null off Linux. */
+        private static long[] hostCpu() {
+            try {
+                java.util.List<String> lines = java.nio.file.Files.readAllLines(java.nio.file.Paths.get("/proc/stat"));
+                for (String l : lines) {
+                    if (l.startsWith("cpu ")) {
+                        String[] f = l.trim().split("\\s+");
+                        long[] v = new long[8];
+                        for (int i = 0; i < 8 && i + 1 < f.length; i++) {
+                            v[i] = Long.parseLong(f[i + 1]);
+                        }
+                        return v;
+                    }
+                }
+            } catch (Throwable ignored) { }
+            return null;
+        }
+
+        private void cpuLine() {
+            long wall = System.nanoTime();
+            long proc = processCpu();
+            long game = threadCpu();
+            long[] host = hostCpu();
+            StringBuilder sb = new StringBuilder("[JVM-CPU] turn " + turn + ": wall " + fmt(wall - cpuWall));
+            if (proc >= 0 && cpuProc >= 0) {
+                sb.append("; process cpu ").append(fmt(proc - cpuProc));
+            }
+            if (game >= 0 && cpuGame >= 0) {
+                sb.append(" (game thread ").append(fmt(game - cpuGame)).append(')');
+            }
+            if (host != null && cpuHost != null) {
+                long total = 0;
+                for (int i = 0; i < 8; i++) {
+                    total += host[i] - cpuHost[i];
+                }
+                if (total > 0) {
+                    sb.append("; host user ").append(100 * (host[0] - cpuHost[0]) / total)
+                      .append("% sys ").append(100 * (host[2] - cpuHost[2]) / total)
+                      .append("% steal ").append(100 * (host[7] - cpuHost[7]) / total)
+                      .append("% idle ").append(100 * (host[3] - cpuHost[3]) / total)
+                      .append("% of ").append(Runtime.getRuntime().availableProcessors()).append(" cpus");
+                }
+            }
+            System.out.println(sb);
+            cpuWall = wall;
+            cpuProc = proc;
+            cpuGame = game;
+            cpuHost = host;
+        }
+
+        private static String fmt(long nanos) {
+            return String.format("%.1fs", nanos / 1e9);
+        }
+
         private synchronized void flush() {
-            if (turn < 0 || samples + waiting == 0) {
+            if (turn < 0) {
+                return;
+            }
+            cpuLine();
+            if (samples + waiting == 0) {
                 return;
             }
             java.util.List<java.util.Map.Entry<String, Integer>> es = new java.util.ArrayList<>(hist.entrySet());
