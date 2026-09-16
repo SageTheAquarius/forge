@@ -1550,6 +1550,13 @@ public final class StateExporter {
         if (parts.length < 3 || parts[1].isEmpty() || parts[2].isEmpty()) return "";
         CardEdition edition = StaticData.instance().getEditions().get(parts[1]);
         if (edition == null) return "";
+        // An edition Scryfall does not carry (custom, promo, online, funny...)
+        // yields a "tok_<set>_<n>" slug that 404s for the whole game -- and
+        // the client never falls back from a slug to the name. Send "" so the
+        // client asks by name and web_server's Scryfall token search answers.
+        // morphArt has always filtered this way; 7 of 135 sampled printings
+        // were missing (2026-09-16).
+        if (!scryfallKnows(edition)) return "";
         String tokenSet = edition.getTokensCode();
         if (tokenSet == null || tokenSet.isEmpty()) return "";
         return tokenSet.toLowerCase(Locale.ENGLISH) + "/" + parts[2];
