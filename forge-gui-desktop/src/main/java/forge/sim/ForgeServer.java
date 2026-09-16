@@ -65,6 +65,16 @@ public final class ForgeServer {
     private ForgeServer() {}
 
     public static void main(String[] args) throws Exception {
+        // The match runs on this thread, so it must BE the game thread as far
+        // as the engine is concerned: GameAction.invoke() runs its Runnable
+        // inline when Thread.getName() starts with "Game" (ThreadUtil.isGameThread)
+        // and otherwise posts it to a worker pool. Under the old name ("main")
+        // every such call ran concurrently with the loop -- GameState's
+        // scenario mana seeding (produceMana via invoke) raced the first state
+        // export and lost whenever start-of-game timing shifted (the [JVM-CPU]
+        // baseline's JMX init did it, 2026-09-16: test_scenario_colorless_mana_pool
+        // read an empty pool under the 3-engine suite, never alone).
+        Thread.currentThread().setName("Game loop (bridge)");
         installStampedStdout();
         GuiBase.setInterface(new GuiDesktop());
         FModel.initialize(null, null);
