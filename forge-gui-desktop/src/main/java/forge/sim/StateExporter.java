@@ -1083,7 +1083,13 @@ public final class StateExporter {
             // no candidate. Loyalty abilities get the full check (few of them,
             // see noTargetReason); everything else the stack-only one, which
             // catches counterspells and redirects in hand at no real cost.
-            String why = sa.isPwAbility() ? noTargetReason(sa) : noStackTargetReason(sa);
+            // Playable by Forge's filter, yet forbidden: a "can't be cast"
+            // static (Kutzil on its controller's turn). canPlay never asks;
+            // the cast would unwind in silence. See TargetReasons.castRestriction.
+            String why = TargetReasons.castRestriction(sa, human);
+            if (why == null) {
+                why = sa.isPwAbility() ? noTargetReason(sa) : noStackTargetReason(sa);
+            }
             // Playable by Forge's filter, yet unaffordable: the filter never
             // asks whether a human can pay, and the auto-tapper that pays for
             // them says no. See unpayableReason.

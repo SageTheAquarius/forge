@@ -341,7 +341,19 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                     // Optional ability index; default 0 (e.g. the land-play / main cast).
                     int idx = parseInt(reply, "\"ability\":");
                     if (idx < 0 || idx >= abs.size()) idx = 0;
-                    return Lists.newArrayList(abs.get(idx));
+                    SpellAbility pick = abs.get(idx);
+                    // In the playable list, yet a "can't be cast" static forbids
+                    // it (Kutzil, Malamet Exemplar on its controller's turn).
+                    // Handed to the engine this unwinds with nothing said, and
+                    // the drag-to-cast path never reads the greyed caption. Say
+                    // why and keep the window, as a rejected click does.
+                    String forbidden = TargetReasons.castRestriction(pick, me);
+                    if (forbidden != null) {
+                        ask("{\"kind\":\"feed\",\"lines\":[\""
+                                + StateExporter.esc(chosen.getName() + ": " + forbidden) + "\"]}");
+                        return chooseSpellAbilityToPlay();
+                    }
+                    return Lists.newArrayList(pick);
                 }
                 // Forge says this card has nothing playable right now, and the
                 // old code fell straight through to "pass priority" - so the
@@ -622,6 +634,14 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             String modes = TargetReasons.noModeReason(sa, getPlayer());
             if (modes != null) {
                 ask("{\"kind\":\"feed\",\"lines\":[\"" + StateExporter.esc(name + ": " + modes) + "\"]}");
+                return;
+            }
+            // A "can't be cast" static: Spell.checkRestrictions said no inside
+            // the precost chain, silently. (Reached only by a path that skipped
+            // the check at the click, e.g. a cast-from-elsewhere effect.)
+            String cast = TargetReasons.castRestriction(sa, getPlayer());
+            if (cast != null) {
+                ask("{\"kind\":\"feed\",\"lines\":[\"" + StateExporter.esc(name + ": " + cast) + "\"]}");
                 return;
             }
             String why = StateExporter.unpayableReason(sa, getPlayer(), null);
@@ -1991,9 +2011,15 @@ public class PlayerControllerBridge extends PlayerControllerAi {
 
     private static boolean canPlaySomething(Player me, Card c) {
         for (SpellAbility sa : StateExporter.possibleAbilities(c, me)) {
-            if (!sa.isManaAbility()) {
-                return true;
+            if (sa.isManaAbility()) {
+                continue;
             }
+            // A spell a "can't be cast" static forbids is not a reason to
+            // stop: the window would offer nothing but a greyed card.
+            if (TargetReasons.castRestriction(sa, me) != null) {
+                continue;
+            }
+            return true;
         }
         return false;
     }

@@ -31,7 +31,9 @@ import forge.game.spellability.SpellAbilityStackInstance;
 import forge.game.spellability.TargetChoices;
 import forge.game.spellability.TargetRestrictions;
 import forge.game.staticability.StaticAbility;
+import forge.game.staticability.StaticAbilityCantBeCast;
 import forge.game.staticability.StaticAbilityCantTarget;
+import forge.game.staticability.StaticAbilityMode;
 import forge.game.trigger.WrappedAbility;
 import forge.game.zone.Zone;
 import forge.game.zone.ZoneType;
@@ -510,6 +512,48 @@ final class TargetReasons {
         }
     }
 
+    // ------------------------------------------------ cast restrictions ---
+
+    /**
+     * Why a spell that Forge lists as playable still cannot be cast: a
+     * "can't be cast" static on the board -- Kutzil, Malamet Exemplar
+     * ("Your opponents can't cast spells during your turn"), Grand
+     * Abolisher, Teferi, Time Raveler, Conqueror's Flail.
+     *
+     * Card.getAllPossibleAbilities(player, true) filters on canPlay(), and
+     * Spell.canPlay never consults those statics. Only the cast itself does,
+     * in PlaySpellAbility's precost chain (Spell.checkRestrictions), and that
+     * unwinds with a bare false. So on 2026-09-17 a Spell Pierce sat in a
+     * Lightning hand looking castable, the game stopped for a response to
+     * Basilisk Collar on Kutzil's controller's turn, and three clicks
+     * vanished: no prompt, no feed line, no stdout. This is the same walk
+     * StaticAbilityCantBeCast.cantBeCastAbility makes, minus its setCastSA
+     * side effect, and it keeps the static it stopped on: the host card,
+     * whose it is, and the card's own words. Null when nothing forbids it.
+     */
+    static String castRestriction(SpellAbility sa, Player me) {
+        try {
+            if (sa == null || me == null || !sa.isSpell()) return null;
+            Card host = sa.getHostCard();
+            Game g = me.getGame();
+            if (host == null || g == null) return null;
+            if (sa.getActivatingPlayer() == null) sa.setActivatingPlayer(me);
+            for (Card src : g.getStaticSourcesAnd(host)) {
+                for (StaticAbility st : src.getStaticAbilities()) {
+                    if (!st.checkConditions(StaticAbilityMode.CantBeCast)) continue;
+                    if (!StaticAbilityCantBeCast.applyCantBeCastAbility(st, sa, host, me)) continue;
+                    Player owner = src.getController();
+                    String whose = owner == null || owner == me ? "" : " (" + owner.getName() + ")";
+                    String text = st.getParamOrDefault("Description", "can't be cast").trim();
+                    return "can't be cast right now - " + src.getName() + whose + ": " + text;
+                }
+            }
+            return null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     // --------------------------------------------------- refused casts ---
 
     /**
@@ -536,6 +580,8 @@ final class TargetReasons {
                     return "a restriction on the card isn't met right now (wrong zone, "
                             + "already used this turn, or a condition in its text)";
                 }
+                String cast = castRestriction(sa, me);
+                if (cast != null) return cast;
                 String modes = noModeReason(sa, me);
                 if (modes != null) return modes;
                 String tgt = StateExporter.noTargetReason(sa);
