@@ -1023,6 +1023,36 @@ public final class StateExporter {
     }
 
     /** @param payMemo the affordability memo, or null to skip the captions entirely. */
+    /**
+     * A soft warning, not a refusal: an ability whose whole effect is sized
+     * by the attackers ("attacking creatures you control get +X/+X, where X
+     * is the number of attacking creatures") is perfectly legal in a main
+     * phase and does nothing there. On 2026-09-16 Jazal Goldmane was activated
+     * precombat for five mana, X was 0, and the report was "the ability
+     * doesn't work". The client shows this next to the item and still sends
+     * the click - it is the player's call.
+     */
+    static String attackingNote(SpellAbility sa, Player human) {
+        Card host = sa.getHostCard();
+        if (sa.isSpell() && host != null && !host.isInstant() && !host.isSorcery()) {
+            return null;   // a permanent spell's text is not its effect now
+        }
+        String valid = sa.getParamOrDefault("ValidCards", "") + " "
+                + sa.getParamOrDefault("Defined", "") + " "
+                + sa.getParamOrDefault("ValidTgts", "");
+        String desc = sa.getDescription() == null ? "" : sa.getDescription().toLowerCase();
+        boolean aboutAttackers = valid.contains("attacking")
+                || desc.contains("attacking creature") || desc.contains("number of attacking");
+        if (!aboutAttackers) {
+            return null;
+        }
+        forge.game.combat.Combat combat = human.getGame().getCombat();
+        if (combat != null && !combat.getAttackers().isEmpty()) {
+            return null;
+        }
+        return "nothing is attacking right now - use it after attackers are declared";
+    }
+
     private static void putAbilities(Map<Integer, String> out, Card c, Player human,
             Map<String, String> payMemo) {
         List<SpellAbility> sas = possibleAbilities(c, human);
@@ -1063,6 +1093,12 @@ public final class StateExporter {
             if (why != null) {
                 sb.append(',');
                 kvs(sb, "disabled", why);
+            } else {
+                String note = attackingNote(sa, human);
+                if (note != null) {
+                    sb.append(',');
+                    kvs(sb, "note", note);
+                }
             }
             sb.append('}');
         }

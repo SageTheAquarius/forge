@@ -12,12 +12,17 @@ public class LondonMulligan extends AbstractMulligan {
 
     @Override
     public boolean canMulligan() {
-        return !kept && tuckCardsDuringMulligan() <= player.getMaxHandSize();
+        return !kept && tuckCardsDuringMulligan() <= player.getStartingHandSize();
     }
 
     @Override
     public int handSizeAfterNextMulligan() {
-        return player.getMaxHandSize();
+        // CR 103.4: a mulligan redraws the STARTING hand size. Forge used the
+        // maximum hand size, which is the same number in every stock format
+        // and so never showed - until Lightning Round (5-card opener, maximum
+        // hand 6, first mulligan free): every first mulligan drew a free
+        // 6-card hand. See forge_bridge/test_lightning_round.py.
+        return player.getStartingHandSize();
     }
 
     @Override

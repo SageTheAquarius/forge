@@ -464,15 +464,25 @@ public class PlayerControllerBridge extends PlayerControllerAi {
              .append(p.getCardsIn(ZoneType.Graveyard).size()).append(',')
              .append(p.getCardsIn(ZoneType.Exile).size()).append(',')
              .append(p.getCardsIn(ZoneType.Command).size()).append(',');
-            int tapped = 0, damage = 0, counters = 0, n = 0;
+            int tapped = 0, damage = 0, counters = 0, n = 0, power = 0, toughness = 0;
             for (Card c : p.getCardsIn(ZoneType.Battlefield)) {
                 n++;
                 if (c.isTapped()) tapped++;
                 damage += c.getDamage();
                 counters += c.getNumAllCounters();
+                // Live P/T: a "+X/+X until end of turn" pump (Jazal Goldmane,
+                // a combat trick) taps nothing, marks nothing and adds no
+                // counter, so without this term the pumped board was
+                // byte-identical to the last one pushed and the client kept
+                // drawing the old numbers (2026-09-16).
+                if (c.isCreature()) {
+                    power += c.getNetPower();
+                    toughness += c.getNetToughness();
+                }
             }
             b.append(n).append(',').append(tapped).append(',')
-             .append(damage).append(',').append(counters).append(';');
+             .append(damage).append(',').append(counters).append(',')
+             .append(power).append('/').append(toughness).append(';');
         }
         return b.toString();
     }
