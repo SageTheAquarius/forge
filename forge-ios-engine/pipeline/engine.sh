@@ -48,13 +48,20 @@ case "$MODE" in
         echo "=== robovm:install (framework target) ==="
         # -Dmaven.main.skip: should any lifecycle compile sneak in, it must
         # NOT replace the transformed target/classes with fresh Java 17 ones.
+        # Full output kept in target/robovm-install.log (uploaded by CI): the
+        # "Compiling X" line right before a Soot/ASM failure names the class.
+        MVNLOG="$ROOT/forge-ios-engine/target/robovm-install.log"
         (cd "$ROOT/forge-ios-engine" && mvn -B -ntp -e robovm:install --settings "$SETTINGS" \
-            -Dmaven.repo.local="$CLONE" -DskipTests -Dmaven.main.skip=true 2>&1 \
-            | grep -v '^\[INFO\] Compiling ' | tail -80)
+            -Dmaven.repo.local="$CLONE" -DskipTests -Dmaven.main.skip=true > "$MVNLOG" 2>&1) || true
+        grep -v '^\[INFO\] Compiling \|Downloading\|Downloaded\|Progress (' "$MVNLOG" | tail -40
         FW="$ROOT/forge-ios-engine/target/robovm/ForgeEngine.framework"
         if [ ! -d "$FW" ]; then
             echo "FRAMEWORK MISSING - build failed; target/robovm holds:"
             ls -R "$ROOT/forge-ios-engine/target/robovm" 2>/dev/null | head -40
+            echo "=== last classes RoboVM was compiling before the failure ==="
+            grep '^\[INFO\] Compiling ' "$MVNLOG" | tail -5
+            echo "=== first error lines ==="
+            grep -n -m1 -A25 'Caused by\|\[ERROR\] Failed' "$MVNLOG" | head -40
             echo "=== target/classes after the run (was it recompiled?) ==="
             python3 "$HERE/classver.py" "$ROOT/forge-ios-engine/target/classes" | tail -3
             CFG="$ROOT/forge-ios-engine/target/robovm.tmp/config.xml"

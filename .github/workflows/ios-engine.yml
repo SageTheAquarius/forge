@@ -112,6 +112,7 @@ jobs:
         with:
           name: ios-engine-build-reports
           path: |
+            forge-ios-engine/target/robovm-install.log
             tmp/jvmdg/work/bridge-report.txt
             tmp/jvmdg/work/gui-ios-bridge-report.txt
             tmp/jvmdg/work/audit-report.txt
