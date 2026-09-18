@@ -1,6 +1,5 @@
 package forge.sim;
 
-import forge.GuiDesktop;
 import forge.LobbyPlayer;
 import forge.deck.Deck;
 import forge.deck.io.DeckSerializer;
@@ -16,6 +15,7 @@ import forge.game.player.RegisteredPlayer;
 import forge.game.spellability.Spell;
 import forge.util.MyRandom;
 import forge.gui.GuiBase;
+import forge.gui.interfaces.IGuiBase;
 import forge.localinstance.properties.ForgeConstants;
 import forge.model.FModel;
 import forge.player.GamePlayerUtil;
@@ -74,9 +74,38 @@ public final class ForgeServer {
         // export and lost whenever start-of-game timing shifted (the [JVM-CPU]
         // baseline's JMX init did it, 2026-09-16: test_scenario_colorless_mana_pool
         // read an empty pool under the 3-engine suite, never alone).
-        Thread.currentThread().setName("Game loop (bridge)");
         installStampedStdout();
-        GuiBase.setInterface(new GuiDesktop());
+        GuiBase.setInterface(chooseGui());
+        serve(Integer.getInteger("bridge.port", 8781), null);
+    }
+
+    /**
+     * The GUI this host runs under. The prod fat jar carries forge.GuiDesktop
+     * and keeps using it, so nothing about the container changes; a classpath
+     * without it (the iOS framework, a forge-sim-server-only jar) gets
+     * GuiHeadless, and -Dbridge.gui=headless forces that anywhere.
+     */
+    private static IGuiBase chooseGui() {
+        if ("headless".equals(System.getProperty("bridge.gui"))) {
+            return GuiHeadless.fromSystemProperties();
+        }
+        try {
+            final Class<?> desktop = Class.forName("forge.GuiDesktop");
+            return (IGuiBase) desktop.getDeclaredConstructor().newInstance();
+        } catch (ReflectiveOperationException | LinkageError e) {
+            System.out.println("[ForgeServer] forge.GuiDesktop unavailable (" + e + "); running headless");
+            return GuiHeadless.fromSystemProperties();
+        }
+    }
+
+    /**
+     * Load the card database and answer bridge connections on 127.0.0.1:port
+     * until the process ends. GuiBase.setInterface must already have run.
+     * onReady (may be null) fires once the socket is bound -- the iOS host
+     * polls it before letting the relay connect.
+     */
+    public static void serve(final int port, final Runnable onReady) throws Exception {
+        Thread.currentThread().setName("Game loop (bridge)");
         FModel.initialize(null, null);
 
         // Forge's own performance switch, off by default and read by FModel from
@@ -100,10 +129,12 @@ public final class ForgeServer {
         // Spell.canPlay when the activator is not the controller.
         // -Dbridge.perfmode=false turns it back off, for A/B measurement only.
         Spell.setPerformanceMode(!"false".equals(System.getProperty("bridge.perfmode")));
-        int port = Integer.getInteger("bridge.port", 8781);
         ServerSocket ss = new ServerSocket(port, 4, InetAddress.getByName("127.0.0.1"));
         System.out.println("FORGE_SERVER_READY port=" + port);
         System.out.flush();
+        if (onReady != null) {
+            onReady.run();
+        }
 
         while (true) {
             Socket sock = ss.accept();

@@ -1,0 +1,68 @@
+<config>
+  <!-- ForgeEngine.framework: headless Forge engine for the EconomyDraft iOS app.
+       Device only for now (arm64); an arm64-simulator slice doubles the AOT
+       time and only matters once a simulator smoke test exists. -->
+  <os>ios</os>
+  <arch>arm64</arch>
+  <target>framework</target>
+  <imageName>${framework.name}</imageName>
+  <infoPList>Info.plist.xml</infoPList>
+
+  <resources>
+    <!-- The hand-written umbrella header + module map the host app compiles
+         against. Card scripts, editions etc. are NOT bundled here: the app
+         ships res/ itself and passes its path to start(). -->
+    <resource>
+      <directory>headers</directory>
+      <targetPath>../Headers</targetPath>
+    </resource>
+    <resource>
+      <directory>modules</directory>
+      <targetPath>../Modules</targetPath>
+    </resource>
+  </resources>
+
+  <!-- What the host app links against: the framework-support entry point that
+       boots the VM and hands back the facade, and the facade's ObjC class. -->
+  <exportedSymbols>
+    <symbol>rvmInstantiateFramework</symbol>
+    <symbol>rvmInitializeFrameworkWithJVM</symbol>
+    <symbol>JNI_CreateJavaVM</symbol>
+    <symbol>OBJC_CLASS_$_ForgeEngineImpl</symbol>
+    <symbol>OBJC_METACLASS_$_ForgeEngineImpl</symbol>
+  </exportedSymbols>
+
+  <forceLinkClasses>
+    <!-- the facade, reached only from ObjC by name -->
+    <pattern>forge.ios.engine.**</pattern>
+    <!-- the bridge and the whole engine: Forge resolves effects, AI logic,
+         triggers, replacements and statics from script text at runtime -->
+    <pattern>forge.sim.**</pattern>
+    <pattern>forge.game.**</pattern>
+    <pattern>forge.ai.**</pattern>
+    <pattern>forge.card.**</pattern>
+    <pattern>forge.util.**</pattern>
+    <pattern>java.util.logging.**</pattern>
+    <!-- Xalan picks its output serializer by name (see forge-gui-ios/robovm.xml) -->
+    <pattern>org.apache.xalan.processor.TransformerFactoryImpl</pattern>
+    <pattern>org.apache.xml.serializer.**</pattern>
+    <!-- XStream / Java serialization used by preferences and game state -->
+    <pattern>com.thoughtworks.xstream.**</pattern>
+    <pattern>java.io.ObjectInputStream</pattern>
+    <pattern>java.io.ObjectOutputStream</pattern>
+    <pattern>java.io.ObjectStreamClass</pattern>
+    <pattern>java.io.ObjectStreamField</pattern>
+    <!-- ==== MobiVM modern-Java pipeline (tmp/jvmdg) ====
+         reached only via rewritten bytecode, invisible to the tree-shaker -->
+    <pattern>java8.**</pattern>
+    <pattern>xyz.wagyourtail.jvmdg.**</pattern>
+    <pattern>java.time.**</pattern>
+    <pattern>java.nio.file.**</pattern>
+    <pattern>java.io.UncheckedIOException</pattern>
+    <pattern>forge.compat.**</pattern>
+  </forceLinkClasses>
+
+  <frameworks>
+    <framework>Foundation</framework>
+  </frameworks>
+</config>

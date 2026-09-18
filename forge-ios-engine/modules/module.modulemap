@@ -1,0 +1,5 @@
+framework module ForgeEngine {
+    umbrella header "ForgeEngine.h"
+    export *
+    module * { export * }
+}

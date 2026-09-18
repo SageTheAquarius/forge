@@ -68,6 +68,7 @@
         <module>forge-gui</module>
         <module>forge-gui-mobile</module>
         <module>forge-gui-mobile-dev</module>
+        <module>forge-sim-server</module>
         <module>forge-gui-desktop</module>
         <module>forge-lda</module>
         <module>adventure-editor</module>
@@ -387,6 +388,7 @@
             <id>ios</id>
             <modules>
                 <module>forge-gui-ios</module>
+                <module>forge-ios-engine</module>
             </modules>
         </profile>
     </profiles>

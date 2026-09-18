@@ -319,6 +319,13 @@ try {
             <version>${project.version}</version>
         </dependency>
         <dependency>
+            <!-- forge.sim.ForgeServer and friends (the EconomyDraft bridge);
+                 the fat jar keeps shipping them at the same class names -->
+            <groupId>forge</groupId>
+            <artifactId>forge-sim-server</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
             <groupId>com.miglayout</groupId>
             <artifactId>miglayout-swing</artifactId>
             <version>4.2</version>

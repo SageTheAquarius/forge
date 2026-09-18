@@ -1,0 +1,118 @@
+name: iOS engine framework
+
+# ForgeEngine.framework for the EconomyDraft iOS app (branch ios-server).
+#
+# audit      every push: Linux, ~5 min, no Apple tooling. JvmDowngrader +
+#            MobiVmBridge + link audit of forge-core/game/ai/gui +
+#            forge-sim-server + forge-ios-engine. Fails on any Java API the
+#            phone runtime lacks.
+# framework  macOS RoboVM AOT build, 30-60 min cold. Runs on manual dispatch
+#            or when the commit message carries [framework]. This repo is
+#            public, so the macOS minutes are free.
+
+on:
+  push:
+    branches: [ios-server]
+    paths:
+      - 'forge-sim-server/**'
+      - 'forge-ios-engine/**'
+      - 'forge-gui-ios/pipeline/**'
+      - 'forge-gui-ios/src/forge/compat/**'
+      - 'forge-core/**'
+      - 'forge-game/**'
+      - 'forge-ai/**'
+      - 'forge-gui/src/**'
+      - 'pom.xml'
+      - '.github/workflows/ios-engine.yml'
+  workflow_dispatch:
+    inputs:
+      build_framework:
+        description: 'Run the macOS AOT build after the audit'
+        required: false
+        default: 'yes'
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    name: iOS/MobiVM link audit (engine)
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'maven'
+
+      - name: Cache pipeline tool jars
+        uses: actions/cache@v5
+        with:
+          path: tmp/jvmdg/tools
+          key: jvmdg-tools-${{ hashFiles('forge-gui-ios/pipeline/ios-pipeline.sh') }}
+
+      - name: Run engine audit
+        run: bash forge-ios-engine/pipeline/engine.sh audit
+
+      - name: Upload transform reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ios-engine-audit-reports
+          path: |
+            tmp/jvmdg/work/bridge-report.txt
+            tmp/jvmdg/work/gui-ios-bridge-report.txt
+            tmp/jvmdg/work/audit-report.txt
+          if-no-files-found: ignore
+
+  framework:
+    needs: audit
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.build_framework != 'no')
+      || contains(github.event.head_commit.message, '[framework]')
+    runs-on: macos-15
+    timeout-minutes: 120
+    name: RoboVM AOT build (ForgeEngine.framework)
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'maven'
+
+      - name: Cache pipeline tool jars
+        uses: actions/cache@v5
+        with:
+          path: tmp/jvmdg/tools
+          key: jvmdg-tools-${{ hashFiles('forge-gui-ios/pipeline/ios-pipeline.sh') }}
+
+      - name: Cache RoboVM SDK + AOT cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.robovm
+          key: robovm-engine-${{ runner.os }}-${{ hashFiles('forge-ios-engine/pom.xml') }}
+
+      - name: Build ForgeEngine.framework
+        run: SKIP_CACHE_CLEAR=1 bash forge-ios-engine/pipeline/engine.sh framework
+
+      - name: Upload framework
+        uses: actions/upload-artifact@v6
+        with:
+          name: ForgeEngine-framework
+          path: forge-ios-engine/target/robovm/ForgeEngine.framework.zip
+          if-no-files-found: error
+
+      - name: Upload build reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ios-engine-build-reports
+          path: |
+            tmp/jvmdg/work/bridge-report.txt
+            tmp/jvmdg/work/gui-ios-bridge-report.txt
+            tmp/jvmdg/work/audit-report.txt
+          if-no-files-found: ignore

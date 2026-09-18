@@ -35,7 +35,11 @@ set -e
 MODE="${1:-classpath}"
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PIPE="$ROOT/forge-gui-ios/pipeline"
+# The RoboVM module under build. forge-gui-ios is the full game; forge-ios-engine
+# (pipeline/engine.sh) is the headless engine framework EconomyDraft embeds.
+IOS_MODULE="${IOS_MODULE:-forge-gui-ios}"
+IOS_INSTALL_MODULES="${IOS_INSTALL_MODULES:-.,forge-core,forge-game,forge-gui,forge-gui-mobile,forge-ai}"
+PIPE="$ROOT/$IOS_MODULE/pipeline"
 JV="$ROOT/tmp/jvmdg"
 WORK="$JV/work"
 CLONE="$ROOT/tmp/ios-m2"
@@ -97,7 +101,7 @@ SIM_ARCH="x86_64"; [ "$(uname -m)" = "arm64" ] && SIM_ARCH="arm64-simulator"
 
 # app identity: robovm.properties (untracked) is generated from the tracked
 # template using YOUR bundle identifier (APP_ID from .env / environment)
-PROPS="$ROOT/forge-gui-ios/robovm.properties"
+PROPS="$ROOT/$IOS_MODULE/robovm.properties"
 if [ ! -f "$PROPS" ]; then
     if [ -z "$APP_ID" ]; then
         echo "ERROR: $PROPS does not exist and APP_ID is not set." >&2
@@ -105,7 +109,7 @@ if [ ! -f "$PROPS" ]; then
         echo "       to $ROOT/.env, then re-run. See robovm.properties.template." >&2
         exit 1
     fi
-    sed "s/@APP_ID@/$APP_ID/" "$ROOT/forge-gui-ios/robovm.properties.template" > "$PROPS"
+    sed "s/@APP_ID@/$APP_ID/" "$ROOT/$IOS_MODULE/robovm.properties.template" > "$PROPS"
     echo "generated $PROPS for $APP_ID"
 fi
 APP_ID="${APP_ID:-$(sed -n 's/^app\.id=//p' "$PROPS")}"
@@ -140,6 +144,8 @@ RT="$M2/com/mobidevelop/robovm/robovm-rt/2.3.24/robovm-rt-2.3.24.jar"
 ROBOVM_OBJC="$M2/com/mobidevelop/robovm/robovm-objc/2.3.24/robovm-objc-2.3.24.jar"
 ROBOVM_CT="$M2/com/mobidevelop/robovm/robovm-cocoatouch/2.3.24/robovm-cocoatouch-2.3.24.jar"
 GDXB="$M2/com/badlogicgames/gdx/gdx-backend-robovm/1.14.2/gdx-backend-robovm-1.14.2.jar"
+# absent when the module under build has no libGDX dependency (forge-ios-engine)
+[ -f "$GDXB" ] || GDXB=""
 
 # ---------------------------------------------------------------- bootstrap
 bootstrap() {
@@ -215,7 +221,7 @@ classpath() {
     # portable in-place sed: GNU (Linux/CI) uses -i, BSD (macOS) uses -i ''
     if sed --version >/dev/null 2>&1; then SEDI=(sed -i); else SEDI=(sed -i ''); fi
     find "$M2/forge" -name "*.pom" -exec "${SEDI[@]}" "s/\\\${revision}/$VERSION/g" {} \;
-    (cd "$ROOT/forge-gui-ios" && mvn -q dependency:build-classpath \
+    (cd "$ROOT/$IOS_MODULE" && mvn -q dependency:build-classpath \
         -Dmdep.outputFile="$CP_FILE" --settings "$SETTINGS")
 
     echo "=== [2/8] reset work dirs + clone maven repo ==="
@@ -304,7 +310,7 @@ classpath() {
     echo "=== [8/8] linkage audit (this report = your porting workload) ==="
     SCAN=$(ls "$WORK"/out/*.jar | tr '\n' ',' | sed 's/,$//')
     java -cp "$TOOLS_CP" MobiVmLinkAudit \
-        --rt "$RT,$ROBOVM_OBJC,$ROBOVM_CT,$GDXB,$SS_JAR,$SSCF_JAR,$WORK/out/jvmdg-java-api-mobivm.jar,$WORK/java-time-supply.jar,$NIO_JAR,$KEEP_CS,$SCAN" \
+        --rt "$RT,$ROBOVM_OBJC,$ROBOVM_CT,${GDXB:+$GDXB,}$SS_JAR,$SSCF_JAR,$WORK/out/jvmdg-java-api-mobivm.jar,$WORK/java-time-supply.jar,$NIO_JAR,$KEEP_CS,$SCAN" \
         --scan "$SCAN" > "$WORK/audit-report.txt" 2>&1 || true
     head -1 "$WORK/audit-report.txt"
     echo "full reports: $WORK/bridge-report.txt  $WORK/audit-report.txt"
@@ -315,16 +321,16 @@ build_module() {
     echo "=== compile forge-gui-ios (against UNtransformed ~/.m2 jars) ==="
     # Source is written for java.util.* types; the bridge below rewrites the
     # compiled classes to match the transformed runtime classpath.
-    (cd "$ROOT/forge-gui-ios" && mvn clean compile --settings "$SETTINGS" -DskipTests -q)
+    (cd "$ROOT/$IOS_MODULE" && mvn clean compile --settings "$SETTINGS" -DskipTests -q)
 
     echo "=== transform forge-gui-ios/target/classes (jvmdg + bridge) ==="
-    cd "$ROOT/forge-gui-ios/target"
+    cd "$ROOT/$IOS_MODULE/target"
     jar cf gui-ios-raw.jar -C classes .
     java -jar "$JVMDG_JAR" -q -c 52 downgrade -t gui-ios-raw.jar gui-ios-dg.jar \
         -cp "$(tr ':' '\n' < "$CP_FILE" | tr '\n' ':')$SS_JAR:$SSCF_JAR:$NIO_JAR" 2>&1 | grep -v '^\[' || true
     DG_JARS=$(ls "$WORK"/out/*.jar | tr '\n' ',' | sed 's/,$//')
     java -cp "$TOOLS_CP" MobiVmBridge --rules "$PIPE/bridge.cfg" \
-        --index "$RT,$ROBOVM_OBJC,$ROBOVM_CT,$GDXB,$SS_JAR,$SSCF_JAR,$WORK/java-time-supply.jar,$NIO_JAR,$DG_JARS,gui-ios-dg.jar" \
+        --index "$RT,$ROBOVM_OBJC,$ROBOVM_CT,${GDXB:+$GDXB,}$SS_JAR,$SSCF_JAR,$WORK/java-time-supply.jar,$NIO_JAR,$DG_JARS,gui-ios-dg.jar" \
         --in gui-ios-dg.jar --out gui-ios-bridged.jar > "$WORK/gui-ios-bridge-report.txt" 2>&1 || true
     # same link gate as the dependency pass: an unbridged jvmdg stub reachable
     # from the app module is a guaranteed runtime crash on device
@@ -337,7 +343,7 @@ build_module() {
 
     echo "=== audit forge-gui-ios classes ==="
     java -cp "$TOOLS_CP" MobiVmLinkAudit \
-        --rt "$RT,$ROBOVM_OBJC,$ROBOVM_CT,$GDXB,$SS_JAR,$SSCF_JAR,$WORK/out/jvmdg-java-api-mobivm.jar,$WORK/java-time-supply.jar,$NIO_JAR,$DG_JARS,gui-ios-bridged.jar" \
+        --rt "$RT,$ROBOVM_OBJC,$ROBOVM_CT,${GDXB:+$GDXB,}$SS_JAR,$SSCF_JAR,$WORK/out/jvmdg-java-api-mobivm.jar,$WORK/java-time-supply.jar,$NIO_JAR,$DG_JARS,gui-ios-bridged.jar" \
         --scan gui-ios-bridged.jar || true
     cd "$ROOT"
 }
@@ -348,8 +354,8 @@ build_module() {
 # target needs from the committed source. The tracked libs/libForgeOSLog.a is
 # the DEVICE flavor (also used by a plain `mvn robovm:ios-device`); sim() swaps
 # in a simulator flavor and restores the committed lib on exit.
-OSLOG_SRC="$ROOT/forge-gui-ios/oslog_wrapper/ForgeOSLog.m"
-OSLOG_LIB="$ROOT/forge-gui-ios/libs/libForgeOSLog.a"
+OSLOG_SRC="$ROOT/$IOS_MODULE/oslog_wrapper/ForgeOSLog.m"
+OSLOG_LIB="$ROOT/$IOS_MODULE/libs/libForgeOSLog.a"
 
 build_oslog() { # <device|sim>  -> (over)writes $OSLOG_LIB with that flavor
     local target="$1" work; work="$(mktemp -d)"
@@ -402,7 +408,7 @@ _swap_sim_framework() { # <framework> <natives-ios-jar> <app>
 # finish with the standalone AppCompiler and fix up the simulator platform tags
 # the maven launch path would otherwise have handled.
 assemble_arm64_sim_app() {
-    local TMP="$ROOT/forge-gui-ios/target/robovm.tmp"
+    local TMP="$ROOT/$IOS_MODULE/target/robovm.tmp"
     local APP="$TMP/$APP_EXEC.app"
     local RVHOME CJ
     RVHOME="$(ls -d "$M2"/com/mobidevelop/robovm/robovm-dist/*/unpacked/robovm-* 2>/dev/null | sort | tail -1)"
@@ -456,13 +462,13 @@ sim() {
         # simulator). All we need from it is config.xml, written once the link is done:
         # stop it there and let assemble_arm64_sim_app rebundle with the AppCompiler
         # (the AOT cache is content-hashed, so nothing recompiles).
-        local TMPD="$ROOT/forge-gui-ios/target/robovm.tmp" mvnpid
+        local TMPD="$ROOT/$IOS_MODULE/target/robovm.tmp" mvnpid
         # not under robovm.tmp: the mojo wipes that directory after mvn has opened the log
-        local MVNLOG="$ROOT/forge-gui-ios/target/ipad-sim.log"
+        local MVNLOG="$ROOT/$IOS_MODULE/target/ipad-sim.log"
         mkdir -p "$TMPD"
         rm -f "$TMPD/config.xml"
         set -m
-        (cd "$ROOT/forge-gui-ios" && mvn robovm:ipad-sim --settings "$SETTINGS" \
+        (cd "$ROOT/$IOS_MODULE" && mvn robovm:ipad-sim --settings "$SETTINGS" \
             -Dmaven.repo.local="$CLONE" -Drobovm.arch="$SIM_ARCH" -DskipTests \
             > "$MVNLOG" 2>&1) &
         mvnpid=$!
@@ -475,12 +481,12 @@ sim() {
         [ -s "$TMPD/config.xml" ] || { echo "robovm build failed, last lines:"; tail -12 "$MVNLOG"; }
     else
         # Intel: the mojo bundles the .app itself in its launch phase — let it run.
-        (cd "$ROOT/forge-gui-ios" && mvn robovm:ipad-sim --settings "$SETTINGS" \
+        (cd "$ROOT/$IOS_MODULE" && mvn robovm:ipad-sim --settings "$SETTINGS" \
             -Dmaven.repo.local="$CLONE" -Drobovm.arch="$SIM_ARCH" -DskipTests 2>&1 | tail -8) || true
     fi
     mv -f "$OSLOG_LIB.committed" "$OSLOG_LIB"; trap - EXIT
 
-    APP="$ROOT/forge-gui-ios/target/robovm.tmp/$APP_EXEC.app"
+    APP="$ROOT/$IOS_MODULE/target/robovm.tmp/$APP_EXEC.app"
     if [ "$SIM_ARCH" = "arm64-simulator" ]; then
         assemble_arm64_sim_app
     fi
@@ -498,9 +504,9 @@ device() {
     require_env IPAD_UDID SIGN_ID PROFILE TEAM_ID
     prep_build
     echo "=== robovm ios-device build (deploy attempt may fail: >1 iPad) ==="
-    (cd "$ROOT/forge-gui-ios" && mvn robovm:ios-device --settings "$SETTINGS" \
+    (cd "$ROOT/$IOS_MODULE" && mvn robovm:ios-device --settings "$SETTINGS" \
         -Dmaven.repo.local="$CLONE" -DskipTests 2>&1 | tail -8) || true
-    APP="$ROOT/forge-gui-ios/target/robovm.tmp/$APP_EXEC.app"
+    APP="$ROOT/$IOS_MODULE/target/robovm.tmp/$APP_EXEC.app"
     [ -f "$APP/$APP_EXEC" ] || { echo "DEVICE BINARY MISSING - build failed"; exit 1; }
 
     echo "=== sign ==="
@@ -540,7 +546,7 @@ audit() {
     # '.' installs the parent POM too — required on a fresh clone, else the
     # iOS classpath resolution fails on the forge:forge:pom \${revision} parent
     (cd "$ROOT" && mvn -B -ntp -q install \
-        -pl .,forge-core,forge-game,forge-gui,forge-gui-mobile,forge-ai -DskipTests)
+        -pl "$IOS_INSTALL_MODULES" -DskipTests)
     classpath
     build_module
     echo "iOS COMPATIBILITY GATE PASSED"
@@ -553,11 +559,11 @@ ipa() {
     # '.' installs the parent POM too — required on a fresh clone, else the
     # iOS classpath resolution fails on the forge:forge:pom \${revision} parent
     (cd "$ROOT" && mvn -B -ntp -q install \
-        -pl .,forge-core,forge-game,forge-gui,forge-gui-mobile,forge-ai -DskipTests)
+        -pl "$IOS_INSTALL_MODULES" -DskipTests)
     classpath
     prep_build
     echo "=== robovm:create-ipa (unsigned) ==="
-    (cd "$ROOT/forge-gui-ios" && mvn robovm:create-ipa --settings "$SETTINGS" \
+    (cd "$ROOT/$IOS_MODULE" && mvn robovm:create-ipa --settings "$SETTINGS" \
         -Dmaven.repo.local="$CLONE" -DskipTests \
         -Drobovm.iosSkipSigning=true 2>&1 | tail -12)
     IPA=$(ls "$ROOT"/forge-gui-ios/target/robovm/*.ipa 2>/dev/null | head -1)
@@ -565,6 +571,8 @@ ipa() {
     echo "UNSIGNED IPA: $IPA"
 }
 
+# IOS_PIPELINE_LIB=1: sourced for its functions (forge-ios-engine/pipeline/engine.sh)
+if [ -z "$IOS_PIPELINE_LIB" ]; then
 bootstrap
 case "$MODE" in
     classpath) classpath ;;
@@ -574,3 +582,4 @@ case "$MODE" in
     ipa)       ipa ;;
     *) echo "usage: $0 [classpath|sim|device|audit|ipa]"; exit 1 ;;
 esac
+fi

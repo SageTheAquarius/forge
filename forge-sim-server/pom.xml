@@ -1,0 +1,48 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <artifactId>forge</artifactId>
+        <groupId>forge</groupId>
+        <version>${revision}</version>
+    </parent>
+
+    <artifactId>forge-sim-server</artifactId>
+    <packaging>jar</packaging>
+    <name>Forge Sim Server</name>
+    <!--
+        The EconomyDraft bridge: forge.sim.ForgeServer and the classes it drives
+        a game with (PlayerControllerBridge, StateExporter, Channel,
+        TargetReasons). It lived in forge-gui-desktop until 2026-09-18, but the
+        only thing it took from that module was `new GuiDesktop()`, and Swing
+        cannot exist on iOS, where this same server runs inside the phone app.
+        So the server now depends on forge-gui only and picks its IGuiBase at
+        boot: GuiDesktop when that class is on the classpath (the prod fat jar,
+        unchanged behaviour), GuiHeadless otherwise or when -Dbridge.gui=headless.
+        forge-gui-desktop depends on this module, so its fat jar still carries
+        forge.sim.ForgeServer at the same class name.
+    -->
+
+    <dependencies>
+        <dependency>
+            <groupId>forge</groupId>
+            <artifactId>forge-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>forge</groupId>
+            <artifactId>forge-game</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>forge</groupId>
+            <artifactId>forge-ai</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>forge</groupId>
+            <artifactId>forge-gui</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+    </dependencies>
+</project>

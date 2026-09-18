@@ -1,0 +1,185 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        ForgeEngine.framework: the Forge rules engine + AI + the EconomyDraft
+        bridge server (forge-sim-server), compiled to native arm64 by MobiVM
+        (RoboVM) as an embeddable iOS framework. No libGDX, no Forge UI: the
+        Godot app is the UI and talks to forge.sim.ForgeServer over
+        127.0.0.1 exactly as the fly.io server does.
+
+        Built by pipeline/engine.sh, which reuses forge-gui-ios/pipeline
+        (JvmDowngrader + MobiVmBridge + link audit) with IOS_MODULE set to
+        this module. Never by a plain `mvn package`.
+    -->
+
+    <properties>
+        <packaging.type>jar</packaging.type>
+        <robovm.version>2.3.24</robovm.version>
+    </properties>
+
+    <parent>
+        <artifactId>forge</artifactId>
+        <groupId>forge</groupId>
+        <version>${revision}</version>
+    </parent>
+
+    <artifactId>forge-ios-engine</artifactId>
+    <packaging>${packaging.type}</packaging>
+    <name>Forge iOS Engine Framework</name>
+
+    <build>
+        <sourceDirectory>src</sourceDirectory>
+        <plugins>
+            <plugin>
+                <!-- forge-gui-ios/src/forge/compat/** are the rewrite targets of
+                     pipeline/bridge.cfg (Java 8 surface MobiVM lacks); shared
+                     with the full game module rather than copied. forge/ios/*
+                     (the libGDX Main and its os_log helpers) stays out. -->
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                    <execution>
+                        <id>add-compat-sources</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>add-source</goal>
+                        </goals>
+                        <configuration>
+                            <sources>
+                                <source>${project.basedir}/../forge-gui-ios/src</source>
+                            </sources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <source>17</source>
+                    <target>17</target>
+                    <excludes>
+                        <exclude>forge/ios/*.java</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>com.mobidevelop.robovm</groupId>
+                <artifactId>robovm-maven-plugin</artifactId>
+                <version>${robovm.version}</version>
+                <configuration>
+                    <propertiesFile>robovm.properties</propertiesFile>
+                    <configFile>robovm.xml</configFile>
+                    <iosInfoPList>Info.plist.xml</iosInfoPList>
+                    <iosSkipSigning>true</iosSkipSigning>
+                </configuration>
+            </plugin>
+        </plugins>
+        <finalName>forge-ios-engine-${revision}</finalName>
+    </build>
+
+    <dependencies>
+        <dependency>
+            <groupId>forge</groupId>
+            <artifactId>forge-core</artifactId>
+            <version>${revision}</version>
+        </dependency>
+        <dependency>
+            <groupId>forge</groupId>
+            <artifactId>forge-game</artifactId>
+            <version>${revision}</version>
+        </dependency>
+        <dependency>
+            <groupId>forge</groupId>
+            <artifactId>forge-ai</artifactId>
+            <version>${revision}</version>
+        </dependency>
+        <dependency>
+            <groupId>forge</groupId>
+            <artifactId>forge-gui</artifactId>
+            <version>${revision}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.jupnp</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.eclipse.jetty</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>forge</groupId>
+            <artifactId>forge-sim-server</artifactId>
+            <version>${revision}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.jupnp</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.eclipse.jetty</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <!-- RoboVM runtime + Foundation bindings: NSObject, ObjCProtocol,
+             @Method, @CustomClass for the framework facade. The full game gets
+             these transitively through gdx-backend-robovm. -->
+        <dependency>
+            <groupId>com.mobidevelop.robovm</groupId>
+            <artifactId>robovm-rt</artifactId>
+            <version>${robovm.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.mobidevelop.robovm</groupId>
+            <artifactId>robovm-cocoatouch</artifactId>
+            <version>${robovm.version}</version>
+        </dependency>
+        <!-- ==== MobiVM modern-Java pipeline supplies (tmp/jvmdg) ====
+             Same set as forge-gui-ios: streamsupport backports, JvmDowngrader
+             runtime stubs, relocated java.time, java.nio.file supply,
+             java.util.function stubs. Installed into ~/.m2 by
+             ios-pipeline.sh bootstrap. -->
+        <dependency>
+            <groupId>forge.stubs</groupId>
+            <artifactId>java-function-stubs</artifactId>
+            <version>1.0</version>
+        </dependency>
+        <dependency>
+            <groupId>net.sourceforge.streamsupport</groupId>
+            <artifactId>streamsupport</artifactId>
+            <version>1.7.4</version>
+        </dependency>
+        <dependency>
+            <groupId>net.sourceforge.streamsupport</groupId>
+            <artifactId>streamsupport-cfuture</artifactId>
+            <version>1.7.4</version>
+        </dependency>
+        <dependency>
+            <groupId>xyz.wagyourtail.jvmdowngrader</groupId>
+            <artifactId>jvmdowngrader-java-api</artifactId>
+            <version>1.3.6-mobivm</version>
+        </dependency>
+        <dependency>
+            <groupId>forge.stubs</groupId>
+            <artifactId>java-time-supply</artifactId>
+            <version>1.0</version>
+        </dependency>
+        <dependency>
+            <groupId>forge.stubs</groupId>
+            <artifactId>java-nio-supply</artifactId>
+            <version>1.0</version>
+        </dependency>
+        <!-- compile-only: IGuiBase.getUpnpPlatformService's return type; the
+             runtime jars stay excluded above (no UPnP on the phone) -->
+        <dependency>
+            <groupId>org.jupnp</groupId>
+            <artifactId>org.jupnp</artifactId>
+            <version>3.0.5</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+</project>
