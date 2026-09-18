@@ -14,11 +14,11 @@
          ships res/ itself and passes its path to start(). -->
     <resource>
       <directory>headers</directory>
-      <targetPath>../Headers</targetPath>
+      <targetPath>../../Headers</targetPath>
     </resource>
     <resource>
       <directory>modules</directory>
-      <targetPath>../Modules</targetPath>
+      <targetPath>../../Modules</targetPath>
     </resource>
   </resources>
 
