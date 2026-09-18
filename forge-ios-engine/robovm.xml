@@ -41,7 +41,9 @@
     <pattern>forge.game.**</pattern>
     <pattern>forge.ai.**</pattern>
     <pattern>forge.card.**</pattern>
-    <pattern>forge.util.**</pattern>
+    <!-- NOT forge.util.**: it drags forge-gui's desktop-only helpers (the
+         RSS news reader and its library, whose bytecode Soot rejects) into
+         the link; the engine reaches the util classes it needs on its own. -->
     <pattern>java.util.logging.**</pattern>
     <!-- Xalan picks its output serializer by name (see forge-gui-ios/robovm.xml) -->
     <pattern>org.apache.xalan.processor.TransformerFactoryImpl</pattern>
