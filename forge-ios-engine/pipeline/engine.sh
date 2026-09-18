@@ -46,12 +46,23 @@ case "$MODE" in
         python3 "$HERE/classver.py" "$ROOT/forge-ios-engine/target/classes" \
             $(tr ':' '\n' < "$CP_FILE" | sed "s#^$M2#$CLONE#" | tr '\n' ' ')
         echo "=== robovm:install (framework target) ==="
+        # -Dmaven.main.skip: should any lifecycle compile sneak in, it must
+        # NOT replace the transformed target/classes with fresh Java 17 ones.
         (cd "$ROOT/forge-ios-engine" && mvn -B -ntp -e robovm:install --settings "$SETTINGS" \
-            -Dmaven.repo.local="$CLONE" -DskipTests 2>&1 | grep -v '^\[INFO\] Compiling ' | tail -60)
+            -Dmaven.repo.local="$CLONE" -DskipTests -Dmaven.main.skip=true 2>&1 \
+            | grep -v '^\[INFO\] Compiling ' | tail -80)
         FW="$ROOT/forge-ios-engine/target/robovm/ForgeEngine.framework"
         if [ ! -d "$FW" ]; then
             echo "FRAMEWORK MISSING - build failed; target/robovm holds:"
             ls -R "$ROOT/forge-ios-engine/target/robovm" 2>/dev/null | head -40
+            echo "=== target/classes after the run (was it recompiled?) ==="
+            python3 "$HERE/classver.py" "$ROOT/forge-ios-engine/target/classes" | tail -3
+            CFG="$ROOT/forge-ios-engine/target/robovm.tmp/config.xml"
+            if [ -f "$CFG" ]; then
+                echo "=== RoboVM's own classpath (config.xml) checked for post-Java-8 bytecode ==="
+                python3 "$HERE/classver.py" $(grep -o '<classpathentry>[^<]*' "$CFG" | sed 's/<classpathentry>//' | tr '\n' ' ') | tail -12
+                grep -c '<classpathentry>' "$CFG"
+            fi
             exit 1
         fi
         (cd "$ROOT/forge-ios-engine/target/robovm" && rm -f ForgeEngine.framework.zip \
