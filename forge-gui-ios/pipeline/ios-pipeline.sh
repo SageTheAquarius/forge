@@ -308,7 +308,7 @@ classpath() {
     # The nio supply is compiled with --release 17 (--patch-module needs a
     # modular target), so install its DOWNGRADED+bridged copy from step [6/8]:
     # the raw jar's major-61 classes kill the RoboVM/Soot class reader.
-    NIO_INSTALL="$WORK/out/$(basename "$NIO_JAR")"
+    NIO_INSTALL="$WORK/out/java-nio-supply-1.0.jar"   # named after the ~/.m2 jar, not $NIO_JAR
     [ -f "$NIO_INSTALL" ] || NIO_INSTALL="$NIO_JAR"
     "${MVN_I[@]}" -Dfile="$NIO_INSTALL" -DgroupId=forge.stubs -DartifactId=java-nio-supply -Dversion=1.0
 
