@@ -39,7 +39,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # (pipeline/engine.sh) is the headless engine framework EconomyDraft embeds.
 IOS_MODULE="${IOS_MODULE:-forge-gui-ios}"
 IOS_INSTALL_MODULES="${IOS_INSTALL_MODULES:-.,forge-core,forge-game,forge-gui,forge-gui-mobile,forge-ai}"
-PIPE="$ROOT/$IOS_MODULE/pipeline"
+PIPE="$ROOT/forge-gui-ios/pipeline"
 JV="$ROOT/tmp/jvmdg"
 WORK="$JV/work"
 CLONE="$ROOT/tmp/ios-m2"
@@ -354,8 +354,8 @@ build_module() {
 # target needs from the committed source. The tracked libs/libForgeOSLog.a is
 # the DEVICE flavor (also used by a plain `mvn robovm:ios-device`); sim() swaps
 # in a simulator flavor and restores the committed lib on exit.
-OSLOG_SRC="$ROOT/$IOS_MODULE/oslog_wrapper/ForgeOSLog.m"
-OSLOG_LIB="$ROOT/$IOS_MODULE/libs/libForgeOSLog.a"
+OSLOG_SRC="$ROOT/forge-gui-ios/oslog_wrapper/ForgeOSLog.m"
+OSLOG_LIB="$ROOT/forge-gui-ios/libs/libForgeOSLog.a"
 
 build_oslog() { # <device|sim>  -> (over)writes $OSLOG_LIB with that flavor
     local target="$1" work; work="$(mktemp -d)"
