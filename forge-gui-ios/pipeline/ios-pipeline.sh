@@ -305,7 +305,12 @@ classpath() {
     "${MVN_I[@]}" -Dfile="$SSCF_JAR" -DgroupId=net.sourceforge.streamsupport -DartifactId=streamsupport-cfuture -Dversion=$SS_VER
     "${MVN_I[@]}" -Dfile="$WORK/out/jvmdg-java-api-mobivm.jar" -DgroupId=xyz.wagyourtail.jvmdowngrader -DartifactId=jvmdowngrader-java-api -Dversion=$JVMDG_VER-mobivm
     "${MVN_I[@]}" -Dfile="$WORK/java-time-supply.jar" -DgroupId=forge.stubs -DartifactId=java-time-supply -Dversion=1.0
-    "${MVN_I[@]}" -Dfile="$NIO_JAR" -DgroupId=forge.stubs -DartifactId=java-nio-supply -Dversion=1.0
+    # The nio supply is compiled with --release 17 (--patch-module needs a
+    # modular target), so install its DOWNGRADED+bridged copy from step [6/8]:
+    # the raw jar's major-61 classes kill the RoboVM/Soot class reader.
+    NIO_INSTALL="$WORK/out/$(basename "$NIO_JAR")"
+    [ -f "$NIO_INSTALL" ] || NIO_INSTALL="$NIO_JAR"
+    "${MVN_I[@]}" -Dfile="$NIO_INSTALL" -DgroupId=forge.stubs -DartifactId=java-nio-supply -Dversion=1.0
 
     echo "=== [8/8] linkage audit (this report = your porting workload) ==="
     SCAN=$(ls "$WORK"/out/*.jar | tr '\n' ',' | sed 's/,$//')
