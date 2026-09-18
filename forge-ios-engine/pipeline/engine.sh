@@ -39,9 +39,15 @@ case "$MODE" in
             rm -rf ~/.robovm/cache
         fi
         build_module
+        echo "=== class-file versions on the RoboVM classpath (fail fast) ==="
+        # target/classes (transformed in build_module) + every dependency jar
+        # as the clone repo now holds it: MobiVM only says "Unsupported class
+        # file major version 61", never which file.
+        python3 "$HERE/classver.py" "$ROOT/forge-ios-engine/target/classes" \
+            $(tr ':' '\n' < "$CP_FILE" | sed "s#^$M2#$CLONE#" | tr '\n' ' ')
         echo "=== robovm:install (framework target) ==="
-        (cd "$ROOT/forge-ios-engine" && mvn -B -ntp robovm:install --settings "$SETTINGS" \
-            -Dmaven.repo.local="$CLONE" -DskipTests 2>&1 | tail -30)
+        (cd "$ROOT/forge-ios-engine" && mvn -B -ntp -e robovm:install --settings "$SETTINGS" \
+            -Dmaven.repo.local="$CLONE" -DskipTests 2>&1 | grep -v '^\[INFO\] Compiling ' | tail -60)
         FW="$ROOT/forge-ios-engine/target/robovm/ForgeEngine.framework"
         if [ ! -d "$FW" ]; then
             echo "FRAMEWORK MISSING - build failed; target/robovm holds:"
