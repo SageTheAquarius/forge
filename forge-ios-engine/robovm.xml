@@ -28,8 +28,9 @@
     <symbol>rvmInstantiateFramework</symbol>
     <symbol>rvmInitializeFrameworkWithJVM</symbol>
     <symbol>JNI_CreateJavaVM</symbol>
-    <symbol>OBJC_CLASS_$_ForgeEngineImpl</symbol>
-    <symbol>OBJC_METACLASS_$_ForgeEngineImpl</symbol>
+    <!-- no OBJC_CLASS_$_/OBJC_METACLASS_$_ entries: RoboVM registers a
+         @CustomClass with the ObjC runtime at startup, so there is no link
+         symbol to export (ld: "_OBJC_METACLASS_$_ForgeEngineImpl" undefined) -->
   </exportedSymbols>
 
   <forceLinkClasses>
