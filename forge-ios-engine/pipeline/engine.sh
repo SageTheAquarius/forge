@@ -51,7 +51,7 @@ case "$MODE" in
         # Full output kept in target/robovm-install.log (uploaded by CI): the
         # "Compiling X" line right before a Soot/ASM failure names the class.
         MVNLOG="$ROOT/forge-ios-engine/target/robovm-install.log"
-        (cd "$ROOT/forge-ios-engine" && mvn -B -ntp -e robovm:install --settings "$SETTINGS" \
+        (cd "$ROOT/forge-ios-engine" && mvn -B -ntp -e com.mobidevelop.robovm:robovm-maven-plugin:2.3.24:install --settings "$SETTINGS" \
             -Dmaven.repo.local="$CLONE" -DskipTests -Dmaven.main.skip=true > "$MVNLOG" 2>&1) || true
         grep -v '^\[INFO\] Compiling \|Downloading\|Downloaded\|Progress (' "$MVNLOG" | tail -40
         FW="$ROOT/forge-ios-engine/target/robovm/ForgeEngine.framework"
