@@ -54,6 +54,15 @@ public class ForgeEngineImpl extends NSObject implements ForgeEngineApi {
             System.setProperty("user.timezone", "UTC");
         }
         System.setProperty("bridge.port", Integer.toString(port0));
+        // The two AI switches the production JVM is started with
+        // (deploy/entrypoint.sh: -Dai.trimzones -Dai.sacache): presence is
+        // what Forge tests, so an empty value is the same as the flag.
+        if (System.getProperty("ai.trimzones") == null) {
+            System.setProperty("ai.trimzones", "");
+        }
+        if (System.getProperty("ai.sacache") == null) {
+            System.setProperty("ai.sacache", "");
+        }
         GuiBase.setInterface(new GuiHeadless(assets, false));
         port = port0;
         ready = false;

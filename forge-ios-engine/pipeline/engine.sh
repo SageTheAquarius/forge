@@ -54,7 +54,7 @@ case "$MODE" in
         (cd "$ROOT/forge-ios-engine" && mvn -B -ntp -e com.mobidevelop.robovm:robovm-maven-plugin:2.3.24:install --settings "$SETTINGS" \
             -Dmaven.repo.local="$CLONE" -DskipTests -Dmaven.main.skip=true > "$MVNLOG" 2>&1) || true
         grep -v '^\[INFO\] Compiling \|Downloading\|Downloaded\|Progress (' "$MVNLOG" | tail -40
-        FW="$ROOT/forge-ios-engine/target/robovm/ForgeEngine.framework"
+        FW="$ROOT/forge-ios-engine/target/robovm/ForgeEngine.xcframework"
         if [ ! -d "$FW" ]; then
             echo "FRAMEWORK MISSING - build failed; target/robovm holds:"
             ls -R "$ROOT/forge-ios-engine/target/robovm" 2>/dev/null | head -40
@@ -72,10 +72,10 @@ case "$MODE" in
             fi
             exit 1
         fi
-        (cd "$ROOT/forge-ios-engine/target/robovm" && rm -f ForgeEngine.framework.zip \
-            && zip -qry ForgeEngine.framework.zip ForgeEngine.framework)
+        (cd "$ROOT/forge-ios-engine/target/robovm" && rm -f ForgeEngine.xcframework.zip \
+            && zip -qry ForgeEngine.xcframework.zip ForgeEngine.xcframework)
         echo "FRAMEWORK: $FW"
-        ls -la "$FW" | head -20
+        find "$FW" -maxdepth 3 -not -path '*/Resources/*' | sort | head -30
         ;;
     *)
         echo "usage: $0 [audit|framework]"; exit 1 ;;

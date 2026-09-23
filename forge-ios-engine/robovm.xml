@@ -1,10 +1,12 @@
 <config>
-  <!-- ForgeEngine.framework: headless Forge engine for the EconomyDraft iOS app.
-       Device only for now (arm64); an arm64-simulator slice doubles the AOT
-       time and only matters once a simulator smoke test exists. -->
+  <!-- ForgeEngine.xcframework: headless Forge engine for the EconomyDraft iOS
+       app. Device (arm64) plus the arm64 simulator slice, so CI can boot the
+       whole app in the iOS simulator and play a game against it; the AOT
+       compile is ~5 min per slice. -->
   <os>ios</os>
   <arch>arm64</arch>
-  <target>framework</target>
+  <arch>arm64-simulator</arch>
+  <target>xcframework</target>
   <imageName>${framework.name}</imageName>
   <infoPList>Info.plist.xml</infoPList>
 

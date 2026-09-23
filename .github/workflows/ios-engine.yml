@@ -31,6 +31,9 @@ on:
         required: false
         default: 'yes'
 
+permissions:
+  contents: write   # the rolling ios-engine-latest release
+
 jobs:
   audit:
     runs-on: ubuntu-latest
@@ -103,8 +106,24 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: ForgeEngine-framework
-          path: forge-ios-engine/target/robovm/ForgeEngine.framework.zip
+          path: forge-ios-engine/target/robovm/ForgeEngine.xcframework.zip
           if-no-files-found: error
+
+      - name: Publish to the ios-engine-latest release
+        # Release assets on this public repo download without a token, which
+        # is how the private EconomyDraft repo's iOS build fetches the engine.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG=ios-engine-latest
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
+            --title "ForgeEngine.xcframework (latest ios-server build)" \
+            --notes "Rolling release: the newest green build of forge-ios-engine on branch ios-server. Not a Forge release." \
+            --target "$GITHUB_SHA"
+          cp forge-ios-engine/target/robovm/ForgeEngine.xcframework.zip ForgeEngine.xcframework.zip
+          echo "$GITHUB_SHA" > ForgeEngine.xcframework.sha
+          gh release upload "$TAG" ForgeEngine.xcframework.zip ForgeEngine.xcframework.sha --clobber
 
       - name: Upload build reports
         if: always()
