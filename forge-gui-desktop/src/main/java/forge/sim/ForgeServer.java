@@ -302,9 +302,16 @@ public final class ForgeServer {
             // per table shape: -Dbridge.duelsim=full|hybrid|off for the one
             // AI of a duel, -Dbridge.podsim=hybrid|off for a pod's seats.
             // The measured defaults are in the constants below.
-            java.util.Set<forge.ai.AIOption> simOptions = simOptionsFor(
+            // Constructed tables only: GameSimulator's GameCopier throws
+            // "Couldn't map Commander Effect" from copyCommandersToSnapshot
+            // on any Commander game (a Lightning duel included), which ended
+            // test_lightning_no_deckout on turn 2 with the AI seat gone.
+            java.util.Set<forge.ai.AIOption> simOptions = commander ? null : simOptionsFor(
                     aiSeats == 1 && humanSeats == 1 ? DUEL_SIM
                             : "full".equals(POD_SIM) ? "hybrid" : POD_SIM);
+            if (commander && i == 0 && (simOptionsFor(DUEL_SIM) != null || simOptionsFor(POD_SIM) != null)) {
+                System.out.println("[AI-PROFILE] simulation AI skipped: Commander table (GameCopier cannot map the Commander Effect)");
+            }
             LobbyPlayer lpOpp = simOptions == null
                     ? GamePlayerUtil.createAiPlayer(seatName, humanSeats + i, profile)
                     : GamePlayerUtil.createAiPlayer(seatName, humanSeats + i, 0, simOptions, profile);
