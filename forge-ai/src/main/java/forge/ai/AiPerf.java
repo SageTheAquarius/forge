@@ -172,8 +172,18 @@ public final class AiPerf {
     /** Player -> {turn, ms spent deciding in that turn}. */
     private static final Map<Player, long[]> SPENT = Collections.synchronizedMap(new WeakHashMap<>());
 
+    /**
+     * -Dbridge.decisionlog=1: print every AI decision's wall time as
+     * [AI-SPENT] (measurement only; the [AI-DECISION] line covers only
+     * declarations over 500ms). Never set in production.
+     */
+    public static final boolean DECISION_LOG = System.getProperty("bridge.decisionlog") != null;
+
     /** Record wall time one AI seat spent on a decision. */
     public static void spent(Player ai, long ms) {
+        if (DECISION_LOG && ai != null) {
+            System.out.println("[AI-SPENT] " + ms + "ms seat=" + ai.getName() + " turn=" + currentTurn(ai));
+        }
         if (ai == null || TURN_BUDGET_MS <= 0) {
             return;
         }

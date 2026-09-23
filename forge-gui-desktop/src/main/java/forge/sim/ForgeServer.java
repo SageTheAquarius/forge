@@ -296,9 +296,21 @@ public final class ForgeServer {
             // seat a player is looking at reads unambiguously.
             String seatName = (aiSeats == 1 && humanSeats == 1) ? "Computer" : "AI " + (i + 1);
             String profile = i < seatProfiles.size() ? seatProfiles.get(i) : "";
-            LobbyPlayer lpOpp = GamePlayerUtil.createAiPlayer(seatName, humanSeats + i, profile);
-            if (!profile.isEmpty()) {
-                System.out.println("[AI-PROFILE] " + seatName + ": " + profile);
+            // Forge's simulation-based spell picker (SpellAbilityPicker /
+            // GameSimulator), off in every game until 2026-09-23. It is a
+            // per-decision cost with no timeout of its own, so it is opt-in
+            // per table shape: -Dbridge.duelsim=full|hybrid|off for the one
+            // AI of a duel, -Dbridge.podsim=hybrid|off for a pod's seats.
+            // The measured defaults are in the constants below.
+            java.util.Set<forge.ai.AIOption> simOptions = simOptionsFor(
+                    aiSeats == 1 && humanSeats == 1 ? DUEL_SIM
+                            : "full".equals(POD_SIM) ? "hybrid" : POD_SIM);
+            LobbyPlayer lpOpp = simOptions == null
+                    ? GamePlayerUtil.createAiPlayer(seatName, humanSeats + i, profile)
+                    : GamePlayerUtil.createAiPlayer(seatName, humanSeats + i, 0, simOptions, profile);
+            if (!profile.isEmpty() || simOptions != null) {
+                System.out.println("[AI-PROFILE] " + seatName + ": " + (profile.isEmpty() ? "default" : profile)
+                        + (simOptions == null ? "" : " sim=" + simOptions.iterator().next()));
             }
             rOpp.setPlayer(lpOpp);
             pp.add(rOpp);
@@ -848,6 +860,30 @@ public final class ForgeServer {
     static final int EARLY_TIMEOUT_TURN = Integer.getInteger("bridge.earlytimeout", 15);
     /** ...or while fewer permanents than this are on the battlefield, whatever the turn. */
     static final int EARLY_TIMEOUT_PERMANENTS = 25;
+
+    /**
+     * -Dbridge.duelsim=full|hybrid|off: the simulation picker for the single
+     * AI of a duel. -Dbridge.podsim=hybrid|off: the same for a pod's seats
+     * (full is refused there: three seats simulating is the late-game lag
+     * this whole file exists to avoid). Defaults are what the 2026-09-23
+     * measurement supported (seeded 40-card duel, fresh JVM per arm, two
+     * seeds, -Dbridge.decisionlog=1): off avg 6-8ms/decision; hybrid avg
+     * 20-62ms, p95 135-245ms, max 0.8s, engine time 1.7-3.5x; full ran
+     * 6-8.6s single decisions and threw OutOfMemoryError at -Xmx1500m. So
+     * the duel defaults to hybrid, full is opt-in only, and pods stay off.
+     */
+    static final String DUEL_SIM = System.getProperty("bridge.duelsim", "hybrid").trim().toLowerCase();
+    static final String POD_SIM = System.getProperty("bridge.podsim", "off").trim().toLowerCase();
+
+    static java.util.Set<forge.ai.AIOption> simOptionsFor(String mode) {
+        if ("full".equals(mode)) {
+            return java.util.EnumSet.of(forge.ai.AIOption.USE_FULL_SIMULATION);
+        }
+        if ("hybrid".equals(mode)) {
+            return java.util.EnumSet.of(forge.ai.AIOption.USE_HYBRID_SIMULATION);
+        }
+        return null;
+    }
 
     /**
      * Sets g.AI_TIMEOUT at every turn start: the duel's 5s while the game is
