@@ -6,6 +6,9 @@
   <os>ios</os>
   <arch>arm64</arch>
   <arch>arm64-simulator</arch>
+  <!-- Godot 4.5 ships its simulator library for x86_64 only, so the app's
+       simulator build is x86_64 (Rosetta on Apple Silicon runners). -->
+  <arch>x86_64</arch>
   <target>xcframework</target>
   <imageName>${framework.name}</imageName>
   <infoPList>Info.plist.xml</infoPList>
