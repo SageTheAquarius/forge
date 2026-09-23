@@ -11,6 +11,7 @@ import forge.game.GameState;
 import forge.game.GameType;
 import forge.game.Match;
 import forge.game.event.GameEvent;
+import forge.game.event.GameEventTurnBegan;
 import forge.game.player.Player;
 import forge.game.player.RegisteredPlayer;
 import forge.game.spellability.Spell;
@@ -332,6 +333,19 @@ public final class ForgeServer {
         // the seats that actually need it. With no AI at all there is nothing to
         // budget and the guard keeps this off a divide by zero.
         g.AI_TIMEOUT = aiSeats > 0 ? Math.max(2, 5 / aiSeats) : g.AI_TIMEOUT;
+        // ...but not from turn 1. The division was measured on turn 25 of a
+        // live pod; on turn 5 the same window cost 0.2s, and a 1-2s budget
+        // there only makes the AI misplay its opening (a timed-out evaluation
+        // plays nothing) for no pace gain. So a pod keeps the duel's 5s while
+        // the game is young -- before turn EARLY_TIMEOUT_TURN or while fewer
+        // than EARLY_TIMEOUT_PERMANENTS are on the battlefield -- and the
+        // per-seat share only applies once the board is big enough to need it.
+        // Re-evaluated at every turn start (GameEventTurnBegan, as AiMood does).
+        if (aiSeats > 1 && EARLY_TIMEOUT_TURN > 0) {
+            EarlyTimeout early = new EarlyTimeout(g, g.AI_TIMEOUT);
+            early.apply(1);
+            g.subscribeToEvents(early);
+        }
         // -Dbridge.notimeout=1: let every AI evaluation run to completion. A
         // timeout cuts the eval thread at a wall-clock moment, so it consumes a
         // different amount of RNG each run and a seeded game still diverges.
@@ -796,6 +810,53 @@ public final class ForgeServer {
         }
         gs.applyInline(g);
         return true;
+    }
+
+    /**
+     * -Dbridge.earlytimeout=<turn>: a pod keeps the duel's 5s AI_TIMEOUT
+     * before this turn (and while the board is small), default 15. 0 turns
+     * the lever off: the per-seat share applies from turn 1 as it did before.
+     */
+    static final int EARLY_TIMEOUT_TURN = Integer.getInteger("bridge.earlytimeout", 15);
+    /** ...or while fewer permanents than this are on the battlefield, whatever the turn. */
+    static final int EARLY_TIMEOUT_PERMANENTS = 25;
+
+    /**
+     * Sets g.AI_TIMEOUT at every turn start: the duel's 5s while the game is
+     * young, the shared per-seat budget once it is not. Subscribed to the
+     * game's event bus, so it runs on the game thread between decisions.
+     */
+    static final class EarlyTimeout {
+        private final Game g;
+        private final int shared;
+        private int current = -1;
+
+        EarlyTimeout(Game g, int shared) {
+            this.g = g;
+            this.shared = shared;
+        }
+
+        @Subscribe
+        public void onTurnBegan(GameEventTurnBegan ev) {
+            try {
+                apply(ev.turnNumber());
+            } catch (Exception ignore) {
+                // never let a pacing knob take the game thread down
+            }
+        }
+
+        void apply(int turn) {
+            int permanents = g.getCardsIn(ZoneType.Battlefield).size();
+            boolean early = turn < EARLY_TIMEOUT_TURN || permanents < EARLY_TIMEOUT_PERMANENTS;
+            int want = early ? 5 : shared;
+            if (want == current) {
+                return;
+            }
+            current = want;
+            g.AI_TIMEOUT = want;
+            System.out.println("[AI-TIMEOUT] turn " + turn + ", " + permanents
+                    + " permanents: " + want + "s per decision" + (early ? " (early game)" : " (shared)"));
+        }
     }
 
     /**
