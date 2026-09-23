@@ -193,6 +193,30 @@ public final class ForgeServer {
             }
         }
 
+        // AI profile per AI seat (forge-gui/res/ai/<name>.ai: Default,
+        // Reckless, Cautious, Experimental), one line per seat in seat order,
+        // from _ai_profile.txt. The relay writes it from the draft's difficulty
+        // or deals a shuffled rotation to a pod; absent, or a line that names
+        // no shipped profile, means "" -- Forge's own default, as before.
+        List<String> seatProfiles = new ArrayList<>();
+        File profileFlag = new File(deckDir + "_ai_profile.txt");
+        if (profileFlag.exists()) {
+            try {
+                List<String> known = forge.ai.AiProfileUtil.getAvailableProfiles();
+                for (String raw : new String(java.nio.file.Files.readAllBytes(
+                        profileFlag.toPath()), "UTF-8").split("\n")) {
+                    String p = raw.trim();
+                    if (!p.isEmpty() && !known.contains(p)) {
+                        System.out.println("[AI-PROFILE] unknown profile " + p + " (have " + known + "); using default");
+                        p = "";
+                    }
+                    seatProfiles.add(p);
+                }
+            } catch (Exception e) {
+                seatProfiles.clear();   // unreadable: stock behaviour
+            }
+        }
+
         // _commander.txt is the AI seat count and _humans.txt the human one, so
         // the table is simply the sum - no arithmetic between them. A 4-seat pod
         // with two humans is _humans.txt=2 alongside _commander.txt=2.
@@ -270,9 +294,13 @@ public final class ForgeServer {
             // "Computer" is the duel's name for the sole opponent; once there
             // is more than one human at the table it is always "AI N", so the
             // seat a player is looking at reads unambiguously.
-            rOpp.setPlayer(GamePlayerUtil.createAiPlayer(
-                    (aiSeats == 1 && humanSeats == 1) ? "Computer" : "AI " + (i + 1),
-                    humanSeats + i, ""));
+            String seatName = (aiSeats == 1 && humanSeats == 1) ? "Computer" : "AI " + (i + 1);
+            String profile = i < seatProfiles.size() ? seatProfiles.get(i) : "";
+            LobbyPlayer lpOpp = GamePlayerUtil.createAiPlayer(seatName, humanSeats + i, profile);
+            if (!profile.isEmpty()) {
+                System.out.println("[AI-PROFILE] " + seatName + ": " + profile);
+            }
+            rOpp.setPlayer(lpOpp);
             pp.add(rOpp);
             format.apply(rOpp, dOpp);
             if (scenario) {
