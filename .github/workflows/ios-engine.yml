@@ -125,6 +125,29 @@ jobs:
           echo "$GITHUB_SHA" > ForgeEngine.xcframework.sha
           gh release upload "$TAG" ForgeEngine.xcframework.zip ForgeEngine.xcframework.sha --clobber
 
+      - name: Publish the engine's res/ subset (forge-res.zip)
+        # What the engine reads at runtime, minus the desktop-only bulk that
+        # deploy/assemble.ps1 also drops for prod (adventure, skins, music,
+        # quest, conquest, deckgendecks, ..., non-English card names). The
+        # card scripts ship in full; the app build prunes them to its sets.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd forge-gui
+          zip -qr ../forge-res.zip res \
+            -x 'res/adventure/*' 'res/skins/*' 'res/music/*' 'res/quest/*' 'res/conquest/*' \
+               'res/deckgendecks/*' 'res/geneticaidecks/*' 'res/cube/*' 'res/puzzle/*' \
+               'res/tutorial/*' 'res/sealed/*' 'res/draft/*' \
+               'res/languages/cardnames-de-DE.txt' 'res/languages/cardnames-es-ES.txt' \
+               'res/languages/cardnames-fr-FR.txt' 'res/languages/cardnames-it-IT.txt' \
+               'res/languages/cardnames-ja-JP.txt' 'res/languages/cardnames-ko-KR.txt' \
+               'res/languages/cardnames-pt-BR.txt' 'res/languages/cardnames-ru-RU.txt' \
+               'res/languages/cardnames-zh-CN.txt' 'res/cardsfolder/cardsfolder.zip'
+          cd ..
+          ls -la forge-res.zip
+          gh release upload ios-engine-latest forge-res.zip --clobber
+
       - name: Upload build reports
         if: always()
         uses: actions/upload-artifact@v6

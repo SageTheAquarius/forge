@@ -67,7 +67,10 @@ public class ForgeEngineImpl extends NSObject implements ForgeEngineApi {
         port = port0;
         ready = false;
         lastError = "";
-        server = new Thread(() -> {
+        // 8 MB stack: the rules engine recurses deeply (replacement effects,
+        // AI simulation) and a phone thread's default is far smaller than a
+        // desktop JVM's.
+        server = new Thread(null, () -> {
             try {
                 ForgeServer.serve(port0, () -> ready = true);
             } catch (Throwable t) {
@@ -75,7 +78,7 @@ public class ForgeEngineImpl extends NSObject implements ForgeEngineApi {
                 System.err.println("[ForgeEngine] server thread died: " + t);
                 t.printStackTrace();
             }
-        }, "Game loop (bridge)");
+        }, "Game loop (bridge)", 8L * 1024 * 1024);
         server.setDaemon(true);
         server.start();
     }
