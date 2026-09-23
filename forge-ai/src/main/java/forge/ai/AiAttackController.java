@@ -207,6 +207,45 @@ public class AiAttackController {
             return Iterables.getFirst(opponents, null);
         }
 
+        Map<Player, Integer> threatScores = threatScores(ai, opponents, forCombatDmg);
+        // round away slightly so a single land drop doesn't mean players with earlier turn order are predictably attacked
+        // grows with game age since by then threat ranges become less narrow
+        int threatLimit = Collections.max(threatScores.values()) - 10 - ai.getGame().getPhaseHandler().getTurn();
+        threatScores.values().removeIf(e -> e < threatLimit);
+        return Aggregates.random(threatScores.keySet());
+    }
+
+    // EconomyDraft (2026-09-23): the low-life term. Stock Forge added
+    // (threshold - life)^2 for every opponent under min(20, starting life),
+    // which in a 40-life Commander game is a nudge and in Lightning (12-15
+    // life) is the whole decision: every AI seat piled onto whichever seat
+    // was lowest, and the LAST AI seat to act farmed the win (12 of the 22
+    // AI wins in prod). Now the quadratic only applies to a seat that is in
+    // lethal range; anyone else gets a linear deficit plus a "spread" term
+    // that leans toward the HEALTHIEST opponent, scaled by starting life so
+    // it decides a 12-life table and barely registers at 40.
+    /** Per point of life below the threshold, outside lethal range. */
+    static final int DEFICIT_LINEAR = 4;
+    /** A seat this low is in range of any attack at all. */
+    static final int LETHAL_LIFE = 3;
+    /** Spread weight: SPREAD_K / startingLife^2 per point above the mean (25/pt at 12 life, 2/pt at 40). */
+    static final int SPREAD_K = 3600;
+    /** The spread term never exceeds this either way; a lethal seat gets it as a bonus on top of the quadratic. */
+    static final int SPREAD_CAP = 150;
+
+    /** Each opponent's threat score as {@link #choosePreferredDefenderPlayer} sees it (package-visible for tests). */
+    static Map<Player, Integer> threatScores(Player ai, PlayerCollection opponents, boolean forCombatDmg) {
+        int available = cheapAvailablePower(ai);
+        int liveOpps = 0;
+        int lifeTotal = 0;
+        for (Player opp : opponents) {
+            if (opp.getLife() > 0) {
+                liveOpps++;
+                lifeTotal += opp.getLife();
+            }
+        }
+        double meanLife = liveOpps == 0 ? 0 : lifeTotal / (double) liveOpps;
+
         Map<Player, Integer> threatScores = Maps.newHashMap();
         for (Player opp : opponents) {
             final int life = opp.getLife();
@@ -215,10 +254,18 @@ public class AiAttackController {
             // not only who is winning. Zero when moods are off.
             score += AiMood.grudgeBonus(ai, opp);
             int lowLifeThreshold = Math.min(20, opp.getStartingLife());
-            if (life > 0 && life < lowLifeThreshold) {
+            boolean lethalRange = life > 0 && (life <= LETHAL_LIFE || life <= available);
+            if (lethalRange) {
                 // TODO commander damage
-                int lifeDeficit = lowLifeThreshold - life;
-                score += lifeDeficit * lifeDeficit;
+                int lifeDeficit = Math.max(1, lowLifeThreshold - life);
+                score += lifeDeficit * lifeDeficit + SPREAD_CAP;
+            } else {
+                if (life > 0 && life < lowLifeThreshold) {
+                    score += (lowLifeThreshold - life) * DEFICIT_LINEAR;
+                }
+                int start = Math.max(1, opp.getStartingLife());
+                int spread = (int) Math.round((life - meanLife) * SPREAD_K / (double) (start * start));
+                score += Math.max(-SPREAD_CAP, Math.min(SPREAD_CAP, spread));
             }
             if (forCombatDmg) {
                 if (opp.isMonarch() && ai.canBecomeMonarch()) {
@@ -236,11 +283,24 @@ public class AiAttackController {
             }
             threatScores.put(opp, score);
         }
-        // round away slightly so a single land drop doesn't mean players with earlier turn order are predictably attacked
-        // grows with game age since by then threat ranges become less narrow
-        int threatLimit = Collections.max(threatScores.values()) - 10 - ai.getGame().getPhaseHandler().getTurn();
-        threatScores.values().removeIf(e -> e < threatLimit);
-        return Aggregates.random(threatScores.keySet());
+        return threatScores;
+    }
+
+    /**
+     * Combat damage this seat could send at a player right now if nothing
+     * blocked: the net power of its untapped, non-sick creatures. Deliberately
+     * no block prediction (that is the per-opponent simulation the pod's
+     * late-game lag came from); this only asks "is that seat in reach?".
+     */
+    static int cheapAvailablePower(Player ai) {
+        int power = 0;
+        for (Card c : ai.getCreaturesInPlay()) {
+            if (c.isTapped() || c.isSick()) {
+                continue;
+            }
+            power += Math.max(0, c.getNetCombatDamage());
+        }
+        return power;
     }
 
     public static List<Card> sortAttackers(final List<Card> in) {
