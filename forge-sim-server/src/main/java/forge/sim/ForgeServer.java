@@ -987,6 +987,10 @@ public final class ForgeServer {
         // colours that seat's upkeep lands may be, as WUBRG letters ("WR"), or
         // "C" for a colourless identity. Absent seats get no mana card at all.
         final Map<Integer, String> seatColors;
+        // seat index -> the colour the seat asked to draw FIRST (firstN= in
+        // _format.txt), or absent for a random start. Only the first bag
+        // cycle is pinned; the bag is still every colour once per cycle.
+        final Map<Integer, Character> seatFirst;
 
         // Upkeep lands are drawn from a shuffled bag of the seat's colours,
         // refilled when empty, so every colour arrives once per cycle and a
@@ -999,20 +1003,24 @@ public final class ForgeServer {
         static final int MANA_TURNS = 30;
 
         private LightningFormat(int life, int hand, boolean avatar,
-                                Map<Integer, String> seatColors) {
+                                Map<Integer, String> seatColors,
+                                Map<Integer, Character> seatFirst) {
             this.life = life;
             this.hand = hand;
             this.avatar = avatar;
             this.seatColors = seatColors;
+            this.seatFirst = seatFirst;
         }
 
         static LightningFormat read(File f) {
             if (!f.exists()) {
-                return new LightningFormat(0, 0, false, Collections.emptyMap());
+                return new LightningFormat(0, 0, false, Collections.emptyMap(),
+                                           Collections.emptyMap());
             }
             int life = 0, hand = 0;
             boolean avatar = false;
             Map<Integer, String> colors = new HashMap<>();
+            Map<Integer, Character> first = new HashMap<>();
             try {
                 for (String raw : new String(java.nio.file.Files.readAllBytes(
                         f.toPath()), "UTF-8").split("\n")) {
@@ -1029,16 +1037,22 @@ public final class ForgeServer {
                         String letters = val.toUpperCase(java.util.Locale.ROOT).replaceAll("[^WUBRGC]", "");
                         if (!letters.isEmpty()) colors.put(seat, letters);
                     }
+                    else if (key.startsWith("first")) {
+                        int seat = Integer.parseInt(key.substring("first".length()));
+                        String letters = val.toUpperCase(java.util.Locale.ROOT).replaceAll("[^WUBRGC]", "");
+                        if (!letters.isEmpty()) first.put(seat, letters.charAt(0));
+                    }
                 }
             } catch (Exception e) {
                 // A malformed file must not turn a game into something nobody
                 // asked for: ignore it wholesale rather than half-apply it.
                 System.out.println("[FORMAT] unreadable " + f + ": " + e);
-                return new LightningFormat(0, 0, false, Collections.emptyMap());
+                return new LightningFormat(0, 0, false, Collections.emptyMap(),
+                                           Collections.emptyMap());
             }
             System.out.println("[FORMAT] life=" + life + " hand=" + hand + " avatar=" + avatar
-                    + " colors=" + colors);
-            return new LightningFormat(life, hand, avatar, colors);
+                    + " colors=" + colors + " first=" + first);
+            return new LightningFormat(life, hand, avatar, colors, first);
         }
 
         void apply(RegisteredPlayer seat, Deck deck) {
@@ -1074,9 +1088,11 @@ public final class ForgeServer {
                 if (i < 0 || i >= players.size()) continue;
                 try {
                     Player p = players.get(i);
-                    Card c = buildManaCard(g, p, e.getValue());
+                    Character first = seatFirst.get(i);
+                    Card c = buildManaCard(g, p, e.getValue(), first);
                     p.getZone(ZoneType.Command).add(c);
-                    System.out.println("[FORMAT] seat " + i + " upkeep lands from " + e.getValue());
+                    System.out.println("[FORMAT] seat " + i + " upkeep lands from " + e.getValue()
+                            + (first != null ? " starting with " + first : ""));
                 } catch (Exception ex) {
                     // Leave the seat with no upkeep mana rather than no game.
                     System.out.println("[FORMAT] seat " + i + " mana card failed: " + ex);
@@ -1095,7 +1111,7 @@ public final class ForgeServer {
             }
         }
 
-        private static Card buildManaCard(Game g, Player owner, String colors) {
+        private static Card buildManaCard(Game g, Player owner, String colors, Character first) {
             // The bag, drawn MANA_TURNS deep: shuffle the colours, deal them
             // out, shuffle again. A seat with one colour gets a plain sequence.
             List<Character> bag = new ArrayList<>();
@@ -1105,6 +1121,18 @@ public final class ForgeServer {
                 Collections.shuffle(bag, MyRandom.getRandom());
                 for (char ch : bag) {
                     if (sequence.size() < MANA_TURNS) sequence.add(ch);
+                }
+            }
+            // A chosen first land (2026-09-23): swap it to the front of the
+            // FIRST cycle only. The cycle still holds every colour once, so
+            // the bag's guarantee is untouched; the player just knows what
+            // turn 1 makes. A colour outside the bag is ignored, not added.
+            if (first != null && bag.contains(first) && !sequence.isEmpty()
+                    && sequence.get(0) != first) {
+                int at = sequence.indexOf(first);
+                if (at > 0 && at < bag.size()) {
+                    sequence.set(at, sequence.get(0));
+                    sequence.set(0, first);
                 }
             }
 
@@ -1134,9 +1162,16 @@ public final class ForgeServer {
             c.setSVar("LTail", "DB$ Token | TokenScript$ command_crystal | TokenOwner$ You"
                     + " | ConditionCheckSVar$ Turns | ConditionSVarCompare$ GE" + (MANA_TURNS + 1));
             String eff = "DB$ PutCounter | Defined$ Self | CounterType$ TURN | CounterNum$ 1 | SubAbility$ L1";
+            // Static$ True (2026-09-23): the land is made inside the upkeep
+            // event, never on the stack. Nobody gets a priority window for it
+            // (three AI upkeeps a round were each a stop under the default
+            // policy) and nothing can counter it. Same for the wound trigger
+            // on lightning_round_rules.txt.
             String trig = "Mode$ Phase | Phase$ Upkeep | ValidPlayer$ You | TriggerZones$ Command"
+                    + " | Static$ True"
                     + " | TriggerDescription$ At the beginning of your upkeep, create a basic land token"
-                    + " drawn from your colour bag (" + colors + ").";
+                    + " drawn from your colour bag (" + colors
+                    + (first != null ? ", " + first + " first" : "") + ").";
             Trigger trigger = TriggerHandler.parseTrigger(trig, c, true);
             trigger.setOverridingAbility(AbilityFactory.getAbility(eff, c));
             c.addTrigger(trigger);

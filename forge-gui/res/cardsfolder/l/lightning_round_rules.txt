@@ -17,7 +17,12 @@ S:Mode$ Continuous | EffectZone$ Command | Affected$ You | SetMaxHandSize$ 6 | D
 # counts combat, burn, Sheoldred-style "loses life" and paid life alike, with
 # no double count. A table of draw punishers took a player from 15 to 7 with
 # no crystal to show for it under the old damage-only wording.
-T:Mode$ LifeLost | ValidPlayer$ You | TriggerZones$ Command | Execute$ TrigWound | TriggerDescription$ Whenever you lose life, put that many wound counters on this. Then, for each three wound counters on it, remove them and create a Command Crystal. (It's a land with "{T}: Add one mana of any color in your commander's color identity.")
+# Static$ True (2026-09-23): the trigger resolves inside the life-loss event
+# and never uses the stack, so it is not a priority window for anyone and
+# cannot be targeted. Before this an AI flashed in Tishana's Tidebinder in
+# response and countered a 7-life wound trigger: no counters, no crystals.
+# The format's income is a rule of the game, not a spell to fight over.
+T:Mode$ LifeLost | ValidPlayer$ You | TriggerZones$ Command | Static$ True | Execute$ TrigWound | TriggerDescription$ Whenever you lose life, put that many wound counters on this. Then, for each three wound counters on it, remove them and create a Command Crystal. (It's a land with "{T}: Add one mana of any color in your commander's color identity.")
 SVar:TrigCrystal:DB$ Token | TokenScript$ command_crystal | TokenOwner$ You
 SVar:TrigWound:DB$ PutCounter | Defined$ Self | CounterType$ WOUND | CounterNum$ X | SubAbility$ DBConvert
 # Repeat runs its body once BEFORE testing RepeatCheckSVar (do-while), so the

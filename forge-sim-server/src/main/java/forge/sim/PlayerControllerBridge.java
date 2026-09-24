@@ -2667,6 +2667,17 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         if (grave == null || grave.isEmpty() || genericAmount <= 0) {
             return CardCollection.EMPTY;
         }
+        if (forge.game.cost.CostAdjustment.isTestPayment()) {
+            // A castability probe, not a payment. StateExporter captions
+            // every hand card with unpayableReason, which runs the AI mana
+            // checker, which reaches this chooser; prompting here embeds a
+            // fresh state export in the prompt and the export probes again.
+            // That loop overflowed the stack and dropped every Lightning
+            // game with a Delve card in hand (prod 2026-09-24). Answer the
+            // probe the way the AI would and ask the player only when the
+            // mana is really being paid. Same guard as convoke/improvise.
+            return super.chooseCardsToDelve(genericAmount, grave);
+        }
         // Optional: Delve never forces you to exile anything, so min is 0.
         return chooseCardsFrom("Delve — exile up to " + genericAmount
                 + " card(s) from your graveyard", grave, 0,
@@ -3649,6 +3660,11 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     @Override
     public CardCollectionView choosePermanentsToSacrifice(SpellAbility sa, int min, int max,
             CardCollectionView valid, String message) {
+        if (forge.game.cost.CostAdjustment.isTestPayment()) {
+            // Offering / Emerge reach this from the affordability probe
+            // (see chooseCardsToDelve): never prompt inside a probe.
+            return super.choosePermanentsToSacrifice(sa, min, max, valid, message);
+        }
         return chooseCardsFrom("Sacrifice " + rangeText(min, max) + " permanent(s)", valid, min, max);
     }
 
