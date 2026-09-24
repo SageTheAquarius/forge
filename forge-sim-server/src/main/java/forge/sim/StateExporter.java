@@ -41,6 +41,10 @@ import forge.game.player.PlayerView;
 import forge.game.cost.Cost;
 import forge.game.cost.CostPart;
 import forge.game.cost.CostRemoveCounter;
+import forge.game.cost.CostAdjustment;
+import forge.game.mana.ManaCostBeingPaid;
+import forge.game.staticability.StaticAbility;
+import forge.game.staticability.StaticAbilityMode;
 import forge.game.spellability.SpellAbility;
 import forge.game.ability.ApiType;
 import forge.game.spellability.AbilitySub;
@@ -85,6 +89,22 @@ public final class StateExporter {
     // flag the client had nothing to hang a menu item on, so those cards sat in
     // the exile viewer with no way to cast them and the effect read as broken.
     private static Set<Integer> playableElsewhere = Collections.emptySet();
+
+    // Card id -> {adjusted mana cost, why} for the human's castable cards whose
+    // mana cost is NOT the printed one right now: a tax (Thalia, Vryn Wingmare,
+    // commander tax) or a discount (Goblin Electromancer, affinity). The
+    // printed cost is on the art, so without this the client had nothing to
+    // show. Reported from a Lightning game on 2026-09-24 as "I have RR floating
+    // and can't cast Abrade" -- an opponent's noncreature tax made it {2}{R},
+    // and neither the card, the menu, nor the log said so. See costNow.
+    private static Map<Integer, String[]> costNowById = Collections.emptyMap();
+
+    // Zones a card of yours can be cast from, for the map above. Battlefield
+    // is left out on purpose: a permanent's cast cost is history, and its
+    // activated abilities carry their own cost_now (putAbilities).
+    private static final ZoneType[] COST_ZONES = {
+        ZoneType.Hand, ZoneType.Graveyard, ZoneType.Exile, ZoneType.Command,
+    };
 
     // Zones scanned for the flag above. Hand and battlefield already have their
     // own paths (every hand card is offered; battlefield uses the ability flags).
@@ -465,6 +485,26 @@ public final class StateExporter {
                     putAbilities(abilities, c, human, payMemo);
                 }
             }
+            Map<Integer, String[]> costs = new HashMap<>();
+            for (ZoneType zt : COST_ZONES) {
+                for (Card c : human.getCardsIn(zt)) {
+                    String[] cn = costNow(c, human);
+                    if (cn != null) {
+                        costs.put(c.getId(), cn);
+                    }
+                }
+            }
+            if (top != null) {
+                for (Card c : human.getCardsIn(ZoneType.Library, 1)) {
+                    String[] cn = costNow(c, human);
+                    if (cn != null) {
+                        costs.put(c.getId(), cn);
+                    }
+                }
+            }
+            costNowById = costs;
+        } else {
+            costNowById = Collections.emptyMap();
         }
         manaCards = mana;
         activatedCards = activated;
@@ -876,6 +916,12 @@ public final class StateExporter {
         kvb(sb, "has_mana_ability", manaCards.contains(c.getId())); sb.append(',');
         kvb(sb, "has_activated_abilities", activatedCards.contains(c.getId())); sb.append(',');
         kvs(sb, "cycling_cost", nz(cyclingCosts.get(c.getId()))); sb.append(',');
+        // What casting this card costs RIGHT NOW when that is not what the
+        // art says, and why ("Thalia, Guardian of Thraben +{1}"). Empty when
+        // the printed cost stands. See costNowById.
+        String[] costNow = costNowById.get(c.getId());
+        kvs(sb, "cost_now", costNow != null ? costNow[0] : ""); sb.append(',');
+        kvs(sb, "cost_why", costNow != null ? costNow[1] : ""); sb.append(',');
         kvb(sb, "playable", playableElsewhere.contains(c.getId())); sb.append(',');
         kv(sb, "damage", c.getDamage()); sb.append(',');
         if (c.isToken()) {
@@ -1030,7 +1076,16 @@ public final class StateExporter {
             }
             String why = null;
             if (!ComputerUtilMana.canPayManaCost(sa, p, 0, false)) {
-                why = "can't pay " + mc + " - no untapped mana source to auto-tap"
+                // Name the cost that was actually asked for. The caption used to
+                // quote the printed cost, so under a tax it read "can't pay {1}{R}"
+                // to a player with {R}{R} floating -- the 2026-09-24 Abrade report.
+                String costText = mc.toString();
+                ManaCost now = adjustedMana(sa, p);
+                if (now != null && !now.toString().equals(mc.toString())) {
+                    String delta = costWhy(sa, p);
+                    costText = now + " (printed " + mc + (delta.isEmpty() ? "" : ": " + delta) + ")";
+                }
+                why = "can't pay " + costText + " with what is floating plus what the auto-tapper can tap"
                         + " (creatures that came in this turn can't tap yet;"
                         + " float mana by hand first if you have another way to make it)";
             }
@@ -1042,6 +1097,144 @@ public final class StateExporter {
             // Affordability is a caption, never a reason to drop the ability.
             return null;
         }
+    }
+
+    /**
+     * {adjusted mana cost, why} for casting {@code c} right now, or null when
+     * the printed cost stands (or nothing about it can be said: no spell, an X
+     * cost, a probe already in progress). The spell asked about is the one
+     * Forge would offer first -- the flashback from a graveyard, the plain
+     * cast from hand -- falling back to the card's basic spell when nothing is
+     * offered right now (a sorcery in hand on an opponent's turn still wears
+     * its tax).
+     */
+    static String[] costNow(Card c, Player p) {
+        try {
+            SpellAbility sa = null;
+            List<SpellAbility> offered = possibleAbilities(c, p);
+            if (offered != null) {
+                for (SpellAbility cand : offered) {
+                    if (cand.isSpell() && !cand.isLandAbility()) {
+                        sa = cand;
+                        break;
+                    }
+                }
+            }
+            if (sa == null) {
+                for (SpellAbility cand : c.getBasicSpells()) {
+                    if (cand.isSpell() && !cand.isLandAbility()) {
+                        sa = cand;
+                        break;
+                    }
+                }
+            }
+            return sa == null ? null : costNowOf(sa, p);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * {adjusted mana cost, why} for {@code sa}, or null when it is what the
+     * card prints. Guarded like unpayableReason: the probe can reach the
+     * controller (convoke, improvise), which can push a board, which would
+     * export, which would probe -- and the inner answer is null, never a
+     * recursion.
+     */
+    static String[] costNowOf(SpellAbility sa, Player p) {
+        if (PROBING.get()) {
+            return null;
+        }
+        PROBING.set(Boolean.TRUE);
+        try {
+            if (sa == null || p == null || sa.isLandAbility() || sa.isManaAbility()) {
+                return null;
+            }
+            Cost cost = sa.getPayCosts();
+            if (cost == null || !cost.hasManaCost()) {
+                return null;
+            }
+            ManaCost printed = cost.getTotalMana();
+            ManaCost now = adjustedMana(sa, p);
+            if (printed == null || now == null || now.toString().equals(printed.toString())) {
+                return null;
+            }
+            return new String[] { now.toString(), costWhy(sa, p) };
+        } catch (Exception e) {
+            return null;
+        } finally {
+            PROBING.set(Boolean.FALSE);
+        }
+    }
+
+    /**
+     * The mana {@code sa} costs {@code p} right now, every raise and reduction
+     * applied, or null when the question does not apply (no mana cost, an X
+     * cost). This is the same answer the auto-tapper gets: calculateManaCost
+     * in test mode applies CostAdjustment both ways and asks nothing of the
+     * human (the bridge's chooseSingleStaticAbility never prompts).
+     */
+    static ManaCost adjustedMana(SpellAbility sa, Player p) {
+        Cost cost = sa.getPayCosts();
+        if (cost == null || !cost.hasManaCost()) {
+            return null;
+        }
+        ManaCost printed = cost.getTotalMana();
+        if (printed == null || printed.countX() > 0) {
+            return null;
+        }
+        if (sa.getActivatingPlayer() == null) {
+            sa.setActivatingPlayer(p);
+        }
+        ManaCostBeingPaid paid = ComputerUtilMana.calculateManaCost(cost, sa, p, true, 0, false);
+        return paid == null ? null : paid.toManaCost();
+    }
+
+    /**
+     * Who is moving the cost of {@code sa} and by how much, in the player's
+     * words: "Thalia, Guardian of Thraben +{1}, commander tax +{2}". Best
+     * effort -- a static whose amount is an SVar is named without a figure;
+     * the adjusted total beside it says how much. Empty when nothing can be
+     * named (the total still moved: an offering, an emerge, a pip reduction).
+     */
+    static String costWhy(SpellAbility sa, Player p) {
+        List<String> parts = new ArrayList<>();
+        try {
+            Card host = sa.getHostCard();
+            if (sa.isSpell() && host != null && host.isCommander() && host.isInZone(ZoneType.Command)) {
+                int tax = p.getCommanderCast(host) * 2;
+                if (tax > 0) {
+                    parts.add("commander tax +{" + tax + "}");
+                }
+            }
+            for (StaticAbility st : CostAdjustment.costModifiers(sa)) {
+                Card src = st.getHostCard();
+                String name = src != null ? src.getName() : "an effect";
+                boolean raise = st.checkMode(StaticAbilityMode.RaiseCost);
+                String amount = amountText(raise ? st.getParamOrDefault("Cost", "1")
+                                                 : st.getParamOrDefault("Amount", "1"));
+                parts.add(name + (raise ? " +" : " -") + amount);
+            }
+        } catch (Exception ignore) { }
+        return String.join(", ", parts);
+    }
+
+    /** "1" -> "{1}", "R" / "R R" -> "{R}{R}", "{2}{U}" as is; anything else "?". */
+    private static String amountText(String amount) {
+        if (amount == null) {
+            return "?";
+        }
+        String a = amount.trim();
+        if (a.matches("\\d+")) {
+            return "{" + a + "}";
+        }
+        if (a.matches("(\\{[^}]+\\})+")) {
+            return a;
+        }
+        if (a.matches("[WUBRGCS](?: [WUBRGCS])*")) {
+            return "{" + a.replace(" ", "}{") + "}";
+        }
+        return "?";
     }
 
     private static void putAbilities(Map<Integer, String> out, Card c, Player human) {
@@ -1105,6 +1298,16 @@ public final class StateExporter {
             kvs(sb, "kind", abilityKind(sa)); sb.append(',');
             kvs(sb, "cost", abilityCost(sa, c)); sb.append(',');
             kvs(sb, "label", abilityLabel(sa, c));
+            // The mana part of `cost` as it stands right now, when a tax or a
+            // discount has moved it off the printed figure, and why. The menu
+            // used to quote the printed cost beside a greyed item, so a player
+            // with exactly that much floating read the grey as a bug.
+            String[] costNow = costNowOf(sa, human);
+            if (costNow != null) {
+                sb.append(',');
+                kvs(sb, "cost_now", costNow[0]); sb.append(',');
+                kvs(sb, "cost_why", costNow[1]);
+            }
             // Playable by Forge's filter, yet doomed: a mandatory target with
             // no candidate. Loyalty abilities get the full check (few of them,
             // see noTargetReason); everything else the stack-only one, which

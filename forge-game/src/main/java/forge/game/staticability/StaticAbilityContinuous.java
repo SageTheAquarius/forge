@@ -896,9 +896,17 @@ public final class StaticAbilityContinuous {
                     }
                 }
 
-                Player mayPlayController = params.containsKey("MayPlayPlayer") ?
-                    AbilityUtils.getDefinedPlayers(affectedCard, params.get("MayPlayPlayer"), stAb).get(0) :
-                    controller;
+                Player mayPlayController = controller;
+                if (params.containsKey("MayPlayPlayer")) {
+                    // A simulated game (GameCopier) can lose an effect card's link to its
+                    // source, so a MayPlayPlayer such as EffectSourceController (the Prepare
+                    // mechanic) resolves to nobody. Keep the host's controller rather than
+                    // throwing out of checkStateEffects and killing the game thread.
+                    PlayerCollection defined = AbilityUtils.getDefinedPlayers(affectedCard, params.get("MayPlayPlayer"), stAb);
+                    if (!defined.isEmpty()) {
+                        mayPlayController = defined.get(0);
+                    }
+                }
                 affectedCard.setMayPlay(mayPlayController, mayPlayWithoutManaCost,
                         mayPlayAltCost != null ? new Cost(mayPlayAltCost, false, affectedCard.equals(hostCard)) : null, mayPlayWithFlash,
                         mayPlayGrantZonePermissions, stAb);

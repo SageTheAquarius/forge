@@ -147,6 +147,16 @@ public class GameCopier {
                         if (o instanceof Card && ((Card)o).getZone() == null) {
                            continue;
                         }
+                        // The zone walk above can also miss a card that IS in a zone: the
+                        // Prepare mechanic parks a copy of a creature's spell face in exile by
+                        // hand and remembers it on a command-zone effect card. Once the AI has
+                        // tried to cast that copy, find() has nothing to map it to and used to
+                        // throw out of the whole simulation, killing the game thread. Skip it;
+                        // the effect then affects nothing in the copy, which is fine for scoring.
+                        if (o instanceof Card && !cardMap.containsKey(o)) {
+                            System.out.println("GameCopier: skipping unmapped remembered " + o + " on " + c);
+                            continue;
+                        }
                         c.addRemembered(find((GameObject) o));
                     } else {
                         System.err.println(c + " Remembered: " + o + "/" + o.getClass());
@@ -164,7 +174,16 @@ public class GameCopier {
 
         // Undo effects first before calculating them below, to avoid them applying twice.
         for (StaticEffect effect : origGame.getStaticEffects().getEffects()) {
-            effect.removeMapped(gameObjectMap);
+            try {
+                effect.removeMapped(gameObjectMap);
+            } catch (RuntimeException e) {
+                // Same straggler as above: a Prepare effect's affected card (the parked
+                // spell copy) that the zone walk never copied. The effect is
+                // recalculated by checkStateEffects below anyway; never let one
+                // unmappable card abort the whole simulation.
+                System.out.println("GameCopier: skipping unmappable static effect of "
+                        + effect.getSource() + ": " + e.getMessage());
+            }
         }
 
         if (origPhaseHandler.getCombat() != null) {
