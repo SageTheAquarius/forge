@@ -450,6 +450,11 @@ public final class ForgeServer {
         if (PlayEvents.enabled()) {
             g.subscribeToEvents(new PlayEvents(g));
         }
+        // Board snapshots at main-phase decision points, for the offline
+        // evaluator (<deckDir>/_decisions.jsonl). See DecisionSnapshots.
+        if (DecisionSnapshots.enabled()) {
+            g.subscribeToEvents(new DecisionSnapshots(g, deckDir));
+        }
 
         // Test scaffold: if <deckDir>/_scenario.txt exists, apply it as an exact
         // board state at the start of the first turn (puzzle-style game state).
