@@ -980,7 +980,33 @@ public final class StateExporter {
         }
     }
 
+    /**
+     * True while unpayableReason is running on this thread. A cost probe
+     * that reaches a bridge prompt exports the state again from inside the
+     * prompt; the nested export must not probe, or the recursion never
+     * ends (StackOverflowError on a Delve card in hand, prod 2026-09-24).
+     * The specific choosers are guarded in PlayerControllerBridge; this is
+     * the backstop for the next one.
+     */
+    private static final ThreadLocal<Boolean> PROBING = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    static boolean isProbing() {
+        return PROBING.get();
+    }
+
     static String unpayableReason(SpellAbility sa, Player p, Map<String, String> memo) {
+        if (PROBING.get()) {
+            return null;
+        }
+        PROBING.set(Boolean.TRUE);
+        try {
+            return unpayableReasonInner(sa, p, memo);
+        } finally {
+            PROBING.set(Boolean.FALSE);
+        }
+    }
+
+    private static String unpayableReasonInner(SpellAbility sa, Player p, Map<String, String> memo) {
         try {
             if (sa == null || p == null || sa.isLandAbility() || sa.isManaAbility()) {
                 return null;

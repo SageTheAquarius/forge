@@ -242,10 +242,22 @@ public class CostAdjustment {
         }
 
         if (sa.isSpell() && sa.isOffering()) {
-            adjustCostByOffering(cost, sa);
+            final boolean prev = TEST_PAYMENT.get();
+            TEST_PAYMENT.set(test);
+            try {
+                adjustCostByOffering(cost, sa);
+            } finally {
+                TEST_PAYMENT.set(prev);
+            }
         }
         if (sa.isSpell() && sa.isEmerge() && sa.getKeyword() instanceof Emerge emerge) {
-            adjustCostByEmerge(cost, sa, emerge);
+            final boolean prev = TEST_PAYMENT.get();
+            TEST_PAYMENT.set(test);
+            try {
+                adjustCostByEmerge(cost, sa, emerge);
+            } finally {
+                TEST_PAYMENT.set(prev);
+            }
         }
 
         // Set cost (only used by Trinisphere) is applied last
@@ -263,7 +275,20 @@ public class CostAdjustment {
 
                 final CardZoneTable table = new CardZoneTable();
                 final CardCollection mutableGrave = new CardCollection(activator.getCardsIn(ZoneType.Graveyard));
-                final CardCollectionView toExile = activator.getController().chooseCardsToDelve(cost.getUnpaidShards(ManaCostShard.GENERIC), mutableGrave);
+                // EconomyDraft bridge patch: the AI's affordability probe
+                // (test=true) reaches this chooser too. Tell the controller
+                // it is a probe so the bridge answers like the AI instead of
+                // prompting the human -- a prompt exports the state, the
+                // export probes affordability, and the probe prompts again
+                // (StackOverflowError, prod 2026-09-24).
+                final CardCollectionView toExile;
+                final boolean prevProbe = TEST_PAYMENT.get();
+                TEST_PAYMENT.set(test);
+                try {
+                    toExile = activator.getController().chooseCardsToDelve(cost.getUnpaidShards(ManaCostShard.GENERIC), mutableGrave);
+                } finally {
+                    TEST_PAYMENT.set(prevProbe);
+                }
                 for (final Card c : toExile) {
                     cost.decreaseGenericMana(1);
                     if (cardsToDelveOut != null) {
