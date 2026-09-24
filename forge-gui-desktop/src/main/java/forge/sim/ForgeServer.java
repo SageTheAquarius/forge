@@ -444,6 +444,12 @@ public final class ForgeServer {
         // What each stack item became (resolved / fizzled / countered), for
         // the client's effects layer -- see StateExporter.StackOutcomes.
         g.subscribeToEvents(StateExporter.newStackOutcomes());
+        // Structured play events ("evt {...}" game-log lines) for the post-game
+        // quality report -- which cost a spell was cast for, fizzles, targets,
+        // what was left in hand with mana up. See PlayEvents; -Dbridge.playevents=off.
+        if (PlayEvents.enabled()) {
+            g.subscribeToEvents(new PlayEvents(g));
+        }
 
         // Test scaffold: if <deckDir>/_scenario.txt exists, apply it as an exact
         // board state at the start of the first turn (puzzle-style game state).
