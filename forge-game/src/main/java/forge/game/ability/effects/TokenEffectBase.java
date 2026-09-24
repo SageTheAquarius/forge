@@ -18,6 +18,7 @@ import forge.GameCommand;
 import forge.game.Game;
 import forge.game.GameEntity;
 import forge.game.GameEntityCounterTable;
+import forge.game.GameLogEntryType;
 import forge.game.ability.AbilityKey;
 import forge.game.ability.AbilityUtils;
 import forge.game.ability.SpellAbilityEffect;
@@ -168,6 +169,24 @@ public abstract class TokenEffectBase extends SpellAbilityEffect {
                     continue;
                 }
                 triggerList.put(ZoneType.None, moved.getZone().getZoneType(), moved);
+
+                // A token made by a Static$ True trigger never crosses the stack,
+                // so nothing else logs it: no "X triggered Y" (STACK_ADD), no
+                // resolve line. The Lightning Round upkeep land and wound crystal
+                // went off the stack on 2026-09-23 and the game log lost every
+                // land and crystal a seat received. Stack-borne token effects
+                // are still described by their STACK_RESOLVE entry; log only the
+                // off-stack ones, on the battlefield, so nothing is said twice.
+                final SpellAbility rootSa = sa.getRootAbility();
+                if (moved.getZone().getZoneType() == ZoneType.Battlefield && rootSa.isTrigger()
+                        && rootSa.getTrigger() != null && rootSa.getTrigger().isStatic()) {
+                    String tokName = moved.getName();
+                    if (tokName.endsWith(" Token")) { // "Plains Token" reads as "Plains"
+                        tokName = tokName.substring(0, tokName.length() - " Token".length());
+                    }
+                    game.getGameLog().add(GameLogEntryType.ZONE_CHANGE,
+                            creator + " created " + tokName + " (" + host.getName() + ")");
+                }
 
                 triggerList.addToken(lki, creator.getNumTokenCreatedThisTurn() == 0);
                 creator.addTokensCreatedThisTurn(lki);
