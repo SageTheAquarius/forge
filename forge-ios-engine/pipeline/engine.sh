@@ -32,6 +32,21 @@ case "$MODE" in
         audit
         ;;
     framework)
+        # ENGINE_ARCHS (comma list, e.g. "arm64" or "arm64-simulator,x86_64")
+        # narrows robovm.xml's <arch> list for THIS build only, so CI can
+        # compile the device slice and the simulator slices on two runners
+        # in parallel instead of all three in a row (~7 min each).
+        if [ -n "${ENGINE_ARCHS:-}" ]; then
+            python3 - "$ROOT/forge-ios-engine/robovm.xml" "$ENGINE_ARCHS" <<'PY'
+import re, sys
+path, archs = sys.argv[1], sys.argv[2].split(",")
+s = open(path, encoding="utf-8").read()
+s = re.sub(r"[ \t]*<arch>[^<]*</arch>\n", "", s)
+s = s.replace("<os>ios</os>\n", "<os>ios</os>\n" + "".join("  <arch>%s</arch>\n" % a.strip() for a in archs), 1)
+open(path, "w", encoding="utf-8").write(s)
+print("robovm.xml archs ->", archs)
+PY
+        fi
         echo "=== install forge modules ==="
         (cd "$ROOT" && mvn -B -ntp -q install -pl "$IOS_INSTALL_MODULES" -DskipTests)
         classpath
@@ -72,8 +87,9 @@ case "$MODE" in
             fi
             exit 1
         fi
-        (cd "$ROOT/forge-ios-engine/target/robovm" && rm -f ForgeEngine.xcframework.zip \
-            && zip -qry ForgeEngine.xcframework.zip ForgeEngine.xcframework)
+        ZIP="${ENGINE_ZIP_NAME:-ForgeEngine.xcframework.zip}"
+        (cd "$ROOT/forge-ios-engine/target/robovm" && rm -f "$ZIP" \
+            && zip -qry "$ZIP" ForgeEngine.xcframework)
         echo "FRAMEWORK: $FW"
         find "$FW" -maxdepth 3 -not -path '*/Resources/*' | sort | head -30
         ;;

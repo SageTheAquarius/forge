@@ -76,7 +76,22 @@ jobs:
       || contains(github.event.head_commit.message, '[framework]')
     runs-on: macos-15
     timeout-minutes: 120
-    name: RoboVM AOT build (ForgeEngine.framework)
+    # Two runners in parallel: the device slice (what the phone runs) lands
+    # on the release ~8 min after a push; the simulator slices, used only by
+    # the app repo's CI smoke test, take their own ~15 min alongside.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - slice: device
+            archs: arm64
+            asset: ForgeEngine.xcframework.zip
+            publish_res: "yes"
+          - slice: simulator
+            archs: arm64-simulator,x86_64
+            asset: ForgeEngine-sim.xcframework.zip
+            publish_res: "no"
+    name: RoboVM AOT build (${{ matrix.slice }})
     steps:
       - uses: actions/checkout@v5
 
@@ -99,14 +114,17 @@ jobs:
           path: ~/.robovm
           key: robovm-engine-${{ runner.os }}-${{ hashFiles('forge-ios-engine/pom.xml') }}
 
-      - name: Build ForgeEngine.framework
+      - name: Build ForgeEngine.xcframework (${{ matrix.archs }})
+        env:
+          ENGINE_ARCHS: ${{ matrix.archs }}
+          ENGINE_ZIP_NAME: ${{ matrix.asset }}
         run: SKIP_CACHE_CLEAR=1 bash forge-ios-engine/pipeline/engine.sh framework
 
       - name: Upload framework
         uses: actions/upload-artifact@v6
         with:
-          name: ForgeEngine-framework
-          path: forge-ios-engine/target/robovm/ForgeEngine.xcframework.zip
+          name: ForgeEngine-framework-${{ matrix.slice }}
+          path: forge-ios-engine/target/robovm/${{ matrix.asset }}
           if-no-files-found: error
 
       - name: Publish to the ios-engine-latest release
@@ -121,11 +139,12 @@ jobs:
             --title "ForgeEngine.xcframework (latest ios-server build)" \
             --notes "Rolling release: the newest green build of forge-ios-engine on branch ios-server. Not a Forge release." \
             --target "$GITHUB_SHA"
-          cp forge-ios-engine/target/robovm/ForgeEngine.xcframework.zip ForgeEngine.xcframework.zip
-          echo "$GITHUB_SHA" > ForgeEngine.xcframework.sha
-          gh release upload "$TAG" ForgeEngine.xcframework.zip ForgeEngine.xcframework.sha --clobber
+          cp "forge-ios-engine/target/robovm/${{ matrix.asset }}" "${{ matrix.asset }}"
+          echo "$GITHUB_SHA" > "${{ matrix.asset }}.sha"
+          gh release upload "$TAG" "${{ matrix.asset }}" "${{ matrix.asset }}.sha" --clobber
 
       - name: Publish the engine's res/ subset (forge-res.zip)
+        if: matrix.publish_res == 'yes'
         # What the engine reads at runtime, minus the desktop-only bulk that
         # deploy/assemble.ps1 also drops for prod (adventure, skins, music,
         # quest, conquest, deckgendecks, ..., non-English card names). The
@@ -152,7 +171,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: ios-engine-build-reports
+          name: ios-engine-build-reports-${{ matrix.slice }}
           path: |
             forge-ios-engine/target/robovm-install.log
             tmp/jvmdg/work/bridge-report.txt
