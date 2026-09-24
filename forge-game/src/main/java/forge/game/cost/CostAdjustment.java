@@ -554,7 +554,42 @@ public class CostAdjustment {
             }
         }
         return 0;
-    }    
+    }
+
+    /**
+     * The static abilities that raise or reduce the cost of {@code sa} for its
+     * activating player right now -- the same candidates adjust() applies, in
+     * the same order, minus the applying. For display: the bridge names them
+     * beside the adjusted cost ("Thalia, Guardian of Thraben +{1}") so a taxed
+     * spell in hand says who is taxing it. Nothing here changes game state.
+     */
+    public static List<StaticAbility> costModifiers(final SpellAbility sa) {
+        final List<StaticAbility> out = Lists.newArrayList();
+        if (sa == null || sa.isTrigger() || sa.isReplacementAbility()) {
+            return out;
+        }
+        final Player activator = sa.getActivatingPlayer();
+        if (activator == null) {
+            return out;
+        }
+        final Game game = activator.getGame();
+        final Card host = sa.getHostCard();
+        CardCollection cards = new CardCollection(game.getCardsIn(ZoneType.Battlefield));
+        cards.addAll(game.getCardsIn(ZoneType.Stack));
+        cards.addAll(game.getCardsIn(ZoneType.Command));
+        if (host != null && !cards.contains(host)) {
+            cards.add(host);
+        }
+        for (Card c : cards) {
+            for (final StaticAbility stAb : c.getStaticAbilities()) {
+                if ((stAb.checkMode(StaticAbilityMode.RaiseCost) || stAb.checkMode(StaticAbilityMode.ReduceCost))
+                        && checkRequirement(sa, stAb)) {
+                    out.add(stAb);
+                }
+            }
+        }
+        return out;
+    }
 
     private static boolean checkRequirement(final SpellAbility sa, final StaticAbility st) {
         if (!st.checkConditions()) {
