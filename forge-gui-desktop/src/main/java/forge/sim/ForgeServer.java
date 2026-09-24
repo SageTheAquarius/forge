@@ -406,7 +406,11 @@ public final class ForgeServer {
         // index so the client on the other end of the shared Channel knows which
         // player it is being asked about. Seats beyond humanSeats keep the AI
         // controller they were registered with.
-        for (int i = 0; i < humanSeats && i < g.getPlayers().size(); i++) {
+        // An evaluation run (<deckDir>/_eval.txt, see Evaluate) replays a
+        // snapshot with the Forge AI in EVERY seat: no bridge controller,
+        // so the socket only ever sees game_over.
+        final boolean evalRun = Evaluate.present(deckDir);
+        for (int i = 0; !evalRun && i < humanSeats && i < g.getPlayers().size(); i++) {
             Player ph = g.getPlayers().get(i);
             ph.dangerouslySetController(
                     new PlayerControllerBridge(g, ph, humanLobby.get(i), i));
@@ -438,7 +442,7 @@ public final class ForgeServer {
         // reason PlayerControllerBridge.endIfAbandoned() uses when the socket
         // dies: "used to end multiplayer games where all humans have lost or
         // conceded while AIs cannot end match by themselves".
-        if (!"off".equals(System.getProperty("bridge.deathwatch"))) {
+        if (!evalRun && !"off".equals(System.getProperty("bridge.deathwatch"))) {
             g.subscribeToEvents(new HumanDeathWatch(g, humanSeats));
         }
         // What each stack item became (resolved / fizzled / countered), for
@@ -447,12 +451,12 @@ public final class ForgeServer {
         // Structured play events ("evt {...}" game-log lines) for the post-game
         // quality report -- which cost a spell was cast for, fizzles, targets,
         // what was left in hand with mana up. See PlayEvents; -Dbridge.playevents=off.
-        if (PlayEvents.enabled()) {
+        if (PlayEvents.enabled() && !evalRun) {
             g.subscribeToEvents(new PlayEvents(g));
         }
         // Board snapshots at main-phase decision points, for the offline
         // evaluator (<deckDir>/_decisions.jsonl). See DecisionSnapshots.
-        if (DecisionSnapshots.enabled()) {
+        if (DecisionSnapshots.enabled() && !evalRun) {
             g.subscribeToEvents(new DecisionSnapshots(g, deckDir));
         }
 
@@ -1191,6 +1195,12 @@ public final class ForgeServer {
                     gs.applyInline(g);
                     System.out.println("SCENARIO_APPLIED lines=" + lines.size());
                     System.out.flush();
+                    // Evaluation run: the board is a decision snapshot; list
+                    // the seat's candidates or force one and play on.
+                    Evaluate ev = Evaluate.read(deckDir);
+                    if (ev != null) {
+                        ev.afterApply(g);
+                    }
                 } catch (Exception e) {
                     e.printStackTrace();
                 }

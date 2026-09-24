@@ -367,7 +367,9 @@ public final class PlayEvents {
                 switch (ch) {
                     case '"': o.append("\\\""); break;
                     case '\\': o.append("\\\\"); break;
-                    case '\n': case '\r': case '\t': o.append(' '); break;
+                    case '\n': o.append("\\n"); break;
+                    case '\r': o.append("\\r"); break;
+                    case '\t': o.append("\\t"); break;
                     default:
                         if (ch < 0x20) o.append(' '); else o.append(ch);
                 }
