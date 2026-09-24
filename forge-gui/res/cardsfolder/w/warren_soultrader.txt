@@ -3,5 +3,6 @@ ManaCost:2 B
 Types:Creature Zombie Goblin Wizard
 PT:3/3
 A:AB$ Token | Cost$ PayLife<1> Sac<1/Creature.Other/another creature> | TokenScript$ c_a_treasure_sac | TokenOwner$ You | SpellDescription$ Create a Treasure token. (It's an artifact with "{T}, Sacrifice this token: Add one mana of any color.")
+SVar:AIPreference:SacCost$Creature.token,Creature.Other+cmcLE1+powerLE1
 DeckHas:Ability$Sacrifice|Token & Type$Treasure
 Oracle:Pay 1 life, Sacrifice another creature: Create a Treasure token. (It's an artifact with "{T}, Sacrifice this token: Add one mana of any color.")

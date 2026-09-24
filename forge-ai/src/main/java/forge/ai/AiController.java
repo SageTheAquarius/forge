@@ -1629,7 +1629,15 @@ public class AiController {
         memory.clearMemorySet(AiCardMemory.MemorySet.HELD_MANA_SOURCES_FOR_NEXT_SPELL);
 
         if (usesFullSimulation()) {
-            return singleSpellAbilityList(simPicker.chooseSpellAbilityToPlay(null));
+            // The simulation picker bypasses the timed evaluation below, so
+            // account for it here or the turn budget and [AI-SPENT] never
+            // see the one path that costs the most.
+            long simT0 = System.currentTimeMillis();
+            try {
+                return singleSpellAbilityList(simPicker.chooseSpellAbilityToPlay(null));
+            } finally {
+                AiPerf.spent(player, System.currentTimeMillis() - simT0);
+            }
         }
 
         CardCollection playBeforeLand = CardLists.filter(

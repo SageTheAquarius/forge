@@ -10,6 +10,7 @@ import forge.game.GameState;
 import forge.game.GameType;
 import forge.game.Match;
 import forge.game.event.GameEvent;
+import forge.game.event.GameEventTurnBegan;
 import forge.game.player.Player;
 import forge.game.player.RegisteredPlayer;
 import forge.game.spellability.Spell;
@@ -223,6 +224,30 @@ public final class ForgeServer {
             }
         }
 
+        // AI profile per AI seat (forge-gui/res/ai/<name>.ai: Default,
+        // Reckless, Cautious, Experimental), one line per seat in seat order,
+        // from _ai_profile.txt. The relay writes it from the draft's difficulty
+        // or deals a shuffled rotation to a pod; absent, or a line that names
+        // no shipped profile, means "" -- Forge's own default, as before.
+        List<String> seatProfiles = new ArrayList<>();
+        File profileFlag = new File(deckDir + "_ai_profile.txt");
+        if (profileFlag.exists()) {
+            try {
+                List<String> known = forge.ai.AiProfileUtil.getAvailableProfiles();
+                for (String raw : new String(java.nio.file.Files.readAllBytes(
+                        profileFlag.toPath()), "UTF-8").split("\n")) {
+                    String p = raw.trim();
+                    if (!p.isEmpty() && !known.contains(p)) {
+                        System.out.println("[AI-PROFILE] unknown profile " + p + " (have " + known + "); using default");
+                        p = "";
+                    }
+                    seatProfiles.add(p);
+                }
+            } catch (Exception e) {
+                seatProfiles.clear();   // unreadable: stock behaviour
+            }
+        }
+
         // _commander.txt is the AI seat count and _humans.txt the human one, so
         // the table is simply the sum - no arithmetic between them. A 4-seat pod
         // with two humans is _humans.txt=2 alongside _commander.txt=2.
@@ -300,9 +325,32 @@ public final class ForgeServer {
             // "Computer" is the duel's name for the sole opponent; once there
             // is more than one human at the table it is always "AI N", so the
             // seat a player is looking at reads unambiguously.
-            rOpp.setPlayer(GamePlayerUtil.createAiPlayer(
-                    (aiSeats == 1 && humanSeats == 1) ? "Computer" : "AI " + (i + 1),
-                    humanSeats + i, ""));
+            String seatName = (aiSeats == 1 && humanSeats == 1) ? "Computer" : "AI " + (i + 1);
+            String profile = i < seatProfiles.size() ? seatProfiles.get(i) : "";
+            // Forge's simulation-based spell picker (SpellAbilityPicker /
+            // GameSimulator), off in every game until 2026-09-23. It is a
+            // per-decision cost with no timeout of its own, so it is opt-in
+            // per table shape: -Dbridge.duelsim=full|hybrid|off for the one
+            // AI of a duel, -Dbridge.podsim=hybrid|off for a pod's seats.
+            // The measured defaults are in the constants below.
+            // Constructed tables only: GameSimulator's GameCopier throws
+            // "Couldn't map Commander Effect" from copyCommandersToSnapshot
+            // on any Commander game (a Lightning duel included), which ended
+            // test_lightning_no_deckout on turn 2 with the AI seat gone.
+            java.util.Set<forge.ai.AIOption> simOptions = commander ? null : simOptionsFor(
+                    aiSeats == 1 && humanSeats == 1 ? DUEL_SIM
+                            : "full".equals(POD_SIM) ? "hybrid" : POD_SIM);
+            if (commander && i == 0 && (simOptionsFor(DUEL_SIM) != null || simOptionsFor(POD_SIM) != null)) {
+                System.out.println("[AI-PROFILE] simulation AI skipped: Commander table (GameCopier cannot map the Commander Effect)");
+            }
+            LobbyPlayer lpOpp = simOptions == null
+                    ? GamePlayerUtil.createAiPlayer(seatName, humanSeats + i, profile)
+                    : GamePlayerUtil.createAiPlayer(seatName, humanSeats + i, 0, simOptions, profile);
+            if (!profile.isEmpty() || simOptions != null) {
+                System.out.println("[AI-PROFILE] " + seatName + ": " + (profile.isEmpty() ? "default" : profile)
+                        + (simOptions == null ? "" : " sim=" + simOptions.iterator().next()));
+            }
+            rOpp.setPlayer(lpOpp);
             pp.add(rOpp);
             format.apply(rOpp, dOpp);
             if (scenario) {
@@ -363,6 +411,19 @@ public final class ForgeServer {
         // the seats that actually need it. With no AI at all there is nothing to
         // budget and the guard keeps this off a divide by zero.
         g.AI_TIMEOUT = aiSeats > 0 ? Math.max(2, 5 / aiSeats) : g.AI_TIMEOUT;
+        // ...but not from turn 1. The division was measured on turn 25 of a
+        // live pod; on turn 5 the same window cost 0.2s, and a 1-2s budget
+        // there only makes the AI misplay its opening (a timed-out evaluation
+        // plays nothing) for no pace gain. So a pod keeps the duel's 5s while
+        // the game is young -- before turn EARLY_TIMEOUT_TURN or while fewer
+        // than EARLY_TIMEOUT_PERMANENTS are on the battlefield -- and the
+        // per-seat share only applies once the board is big enough to need it.
+        // Re-evaluated at every turn start (GameEventTurnBegan, as AiMood does).
+        if (aiSeats > 1 && EARLY_TIMEOUT_TURN > 0) {
+            EarlyTimeout early = new EarlyTimeout(g, g.AI_TIMEOUT);
+            early.apply(1);
+            g.subscribeToEvents(early);
+        }
         // -Dbridge.notimeout=1: let every AI evaluation run to completion. A
         // timeout cuts the eval thread at a wall-clock moment, so it consumes a
         // different amount of RNG each run and a seeded game still diverges.
@@ -827,6 +888,77 @@ public final class ForgeServer {
         }
         gs.applyInline(g);
         return true;
+    }
+
+    /**
+     * -Dbridge.earlytimeout=<turn>: a pod keeps the duel's 5s AI_TIMEOUT
+     * before this turn (and while the board is small), default 15. 0 turns
+     * the lever off: the per-seat share applies from turn 1 as it did before.
+     */
+    static final int EARLY_TIMEOUT_TURN = Integer.getInteger("bridge.earlytimeout", 15);
+    /** ...or while fewer permanents than this are on the battlefield, whatever the turn. */
+    static final int EARLY_TIMEOUT_PERMANENTS = 25;
+
+    /**
+     * -Dbridge.duelsim=full|hybrid|off: the simulation picker for the single
+     * AI of a duel. -Dbridge.podsim=hybrid|off: the same for a pod's seats
+     * (full is refused there: three seats simulating is the late-game lag
+     * this whole file exists to avoid). Defaults are what the 2026-09-23
+     * measurement supported (seeded 40-card duel, fresh JVM per arm, two
+     * seeds, -Dbridge.decisionlog=1): off avg 6-8ms/decision; hybrid avg
+     * 20-62ms, p95 135-245ms, max 0.8s, engine time 1.7-3.5x; full ran
+     * 6-8.6s single decisions and threw OutOfMemoryError at -Xmx1500m. So
+     * the duel defaults to hybrid, full is opt-in only, and pods stay off.
+     */
+    static final String DUEL_SIM = System.getProperty("bridge.duelsim", "hybrid").trim().toLowerCase();
+    static final String POD_SIM = System.getProperty("bridge.podsim", "off").trim().toLowerCase();
+
+    static java.util.Set<forge.ai.AIOption> simOptionsFor(String mode) {
+        if ("full".equals(mode)) {
+            return java.util.EnumSet.of(forge.ai.AIOption.USE_FULL_SIMULATION);
+        }
+        if ("hybrid".equals(mode)) {
+            return java.util.EnumSet.of(forge.ai.AIOption.USE_HYBRID_SIMULATION);
+        }
+        return null;
+    }
+
+    /**
+     * Sets g.AI_TIMEOUT at every turn start: the duel's 5s while the game is
+     * young, the shared per-seat budget once it is not. Subscribed to the
+     * game's event bus, so it runs on the game thread between decisions.
+     */
+    static final class EarlyTimeout {
+        private final Game g;
+        private final int shared;
+        private int current = -1;
+
+        EarlyTimeout(Game g, int shared) {
+            this.g = g;
+            this.shared = shared;
+        }
+
+        @Subscribe
+        public void onTurnBegan(GameEventTurnBegan ev) {
+            try {
+                apply(ev.turnNumber());
+            } catch (Exception ignore) {
+                // never let a pacing knob take the game thread down
+            }
+        }
+
+        void apply(int turn) {
+            int permanents = g.getCardsIn(ZoneType.Battlefield).size();
+            boolean early = turn < EARLY_TIMEOUT_TURN || permanents < EARLY_TIMEOUT_PERMANENTS;
+            int want = early ? 5 : shared;
+            if (want == current) {
+                return;
+            }
+            current = want;
+            g.AI_TIMEOUT = want;
+            System.out.println("[AI-TIMEOUT] turn " + turn + ", " + permanents
+                    + " permanents: " + want + "s per decision" + (early ? " (early game)" : " (shared)"));
+        }
     }
 
     /**

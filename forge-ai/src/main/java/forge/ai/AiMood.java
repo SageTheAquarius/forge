@@ -86,6 +86,13 @@ public class AiMood {
     private int morale = BASE_MORALE;
 
     private String profile = "";
+    /**
+     * The profile the seat was created with (ForgeServer's _ai_profile.txt
+     * override, or Forge's default). A mood swap to Reckless / Cautious
+     * returns HERE when it passes, not to the literal "Default" -- otherwise
+     * a Cautious seat that got angry once came back as Default for good.
+     */
+    private String baseProfile = "";
     private String lastDescription = "";
 
     public AiMood(AiController brain) {
@@ -131,6 +138,16 @@ public class AiMood {
         g.subscribeToEvents(this);
         subscribed = true;
         BY_PLAYER_ID.put(brain.getPlayer().getView().getId(), this);
+        LobbyPlayer lp = brain.getPlayer().getLobbyPlayer();
+        if (lp instanceof LobbyPlayerAi) {
+            String current = ((LobbyPlayerAi) lp).getAiProfile();
+            baseProfile = current == null ? "" : current;
+        }
+    }
+
+    /** The profile a calm seat plays: its override if it has one, else Forge's Default. */
+    private String baseProfile() {
+        return baseProfile.isEmpty() ? PROFILE_DEFAULT : baseProfile;
     }
 
     public boolean isEnabled() {
@@ -403,7 +420,7 @@ public class AiMood {
         } else if (morale <= 30) {
             want = PROFILE_LOW;
         } else {
-            want = PROFILE_DEFAULT;
+            want = baseProfile();
         }
         if (want.equals(profile)) {
             return;
