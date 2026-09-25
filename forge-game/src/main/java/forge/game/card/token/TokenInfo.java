@@ -43,6 +43,11 @@ public class TokenInfo {
     final int basePower;
     final int baseToughness;
     final ColorSet color;
+    // A planeswalker / battle token's printed loyalty / defense. Without it the
+    // rebuilt token's loyalty ETB replacement is "etbCounter:LOYALTY:" and
+    // makeEtbCounter throws (GameState scenarios, GameCopier simulations).
+    final String baseLoyalty;
+    final String baseDefense;
 
     public TokenInfo(Card c) {
         // TODO: Figure out how to handle legacy images?
@@ -60,6 +65,8 @@ public class TokenInfo {
         this.intrinsicKeywords   = list.toArray(new String[0]);
         this.basePower = c.getBasePower();
         this.baseToughness = c.getBaseToughness();
+        this.baseLoyalty = c.getCurrentState().getBaseLoyalty();
+        this.baseDefense = c.getCurrentState().getBaseDefense();
     }
 
     public TokenInfo(String str) {
@@ -71,6 +78,8 @@ public class TokenInfo {
         String[] keywords = null;
         String imageName = null;
         ColorSet color = null;
+        String loyalty = null;
+        String defense = null;
         for (String info : tokenInfo) {
             int index = info.indexOf(':');
             if (index == -1) {
@@ -91,6 +100,10 @@ public class TokenInfo {
                 imageName = remainder;
             } else if (info.startsWith("Color:")) {
                 color = ColorSet.fromNames(remainder);
+            } else if (info.startsWith("Loyalty:")) {
+                loyalty = remainder;
+            } else if (info.startsWith("Defense:")) {
+                defense = remainder;
             }
         }
 
@@ -102,6 +115,8 @@ public class TokenInfo {
         this.basePower = power;
         this.baseToughness = toughness;
         this.color = color;
+        this.baseLoyalty = loyalty;
+        this.baseDefense = defense;
     }
 
     private static String[] getCardTypes(Card c) {
@@ -134,6 +149,14 @@ public class TokenInfo {
 
         c.setBasePower(basePower);
         c.setBaseToughness(baseToughness);
+        // A spec written before Loyalty:/Defense: existed still loads: the
+        // scenario's Counters: sets the actual counters.
+        if (c.getType().isPlaneswalker()) {
+            c.getCurrentState().setBaseLoyalty(StringUtils.isEmpty(baseLoyalty) ? "0" : baseLoyalty);
+        }
+        if (c.getType().isBattle()) {
+            c.getCurrentState().setBaseDefense(StringUtils.isEmpty(baseDefense) ? "0" : baseDefense);
+        }
         return c;
     }
 
@@ -147,6 +170,14 @@ public class TokenInfo {
         sb.append("Color:").append(color).append(",");
         sb.append("Types:").append(Joiner.on('-').join(types)).append(',');
         sb.append("Keywords:").append(Joiner.on('-').join(intrinsicKeywords)).append(',');
+        // Before Image: GameState splits a card on '|' first, and an image
+        // name can carry one ("u_empower|FRA").
+        if (StringUtils.isNotEmpty(baseLoyalty)) {
+            sb.append("Loyalty:").append(baseLoyalty).append(',');
+        }
+        if (StringUtils.isNotEmpty(baseDefense)) {
+            sb.append("Defense:").append(baseDefense).append(',');
+        }
         sb.append("Image:").append(imageName);
         return sb.toString();
     }
