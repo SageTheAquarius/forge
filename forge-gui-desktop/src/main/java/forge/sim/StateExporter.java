@@ -16,6 +16,7 @@ import forge.ImageKeys;
 import forge.StaticData;
 import forge.ai.ComputerUtilMana;
 import forge.card.CardEdition;
+import forge.card.CardStateName;
 import forge.card.MagicColor;
 import forge.card.mana.ManaAtom;
 import forge.card.mana.ManaCost;
@@ -910,6 +911,17 @@ public final class StateExporter {
             hiddenName = nz(c.getAlternateState().getName());
         }
         kvs(sb, "face_down_name", hiddenName); sb.append(',');
+        // Prepare (SOS / FRA). AlterAttributeEffect parks the spell as a
+        // separate copy card in the owner's Exile, castable through a MayPlay
+        // effect in the Command zone, and nothing on the wire tied that copy
+        // back to its creature: the cast was only reachable from the exile
+        // tray, as a mystery card. Reported 2026-09-25 with Void Extrapolator.
+        // The creature names its copy, and the copy says it is one, so the
+        // translator can offer the cast on the creature and drop the copy.
+        CardView preparedSpell = c.getPreparedSpell();
+        kv(sb, "prepared_spell_id", preparedSpell != null ? preparedSpell.getId() : -1); sb.append(',');
+        kvb(sb, "prepared_copy", c.getZone() == ZoneType.Exile && c.getCurrentState() != null
+                && c.getCurrentState().getState() == CardStateName.PreparedSpell); sb.append(',');
         kvb(sb, "tapped", c.isTapped()); sb.append(',');
         kvb(sb, "sick", c.isSick()); sb.append(',');
         kvb(sb, "attacking", c.isAttacking()); sb.append(',');
