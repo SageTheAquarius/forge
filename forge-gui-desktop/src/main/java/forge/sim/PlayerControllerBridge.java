@@ -1120,6 +1120,17 @@ public class PlayerControllerBridge extends PlayerControllerAi {
          */
         @Override
         public PaymentDecision visit(CostRemoveCounter cost) {
+            // From the source there is no WHICH, but there is still a WHETHER.
+            // A trigger whose cost is its own "may" -- Guiding Hydra's "you may
+            // remove a +1/+1 counter from this creature. If you do, ..." -- is
+            // never asked in confirmTrigger (it leaves costed triggers to the
+            // payment), so without this the AI paid it every combat.
+            if (cost.counter != null && cost.payCostFromSource()) {
+                String n = "All".equals(cost.getAmount()) ? "all"
+                        : String.valueOf(cost.getAbilityAmount(ability));
+                return confirmSourceCost("remove " + n + " " + cost.counter.getName()
+                        + " counter(s) from " + sourceName()) ? super.visit(cost) : null;
+            }
             if (cost.counter == null || cost.payCostFromSource()
                     || "OriginalHost".equals(cost.getType())) {
                 return super.visit(cost);
