@@ -53,6 +53,10 @@ import java.util.stream.Collectors;
  */
 public final class StaticAbilityContinuous {
 
+    // Granted-ability strings already reported as unparseable (statics are
+    // re-applied constantly; one log line each is enough).
+    private static final Set<String> BAD_GRANTED_ABILITIES = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     // Private constructor to prevent instantiation
     private StaticAbilityContinuous() {
     }
@@ -782,7 +786,18 @@ public final class StaticAbilityContinuous {
                             final String costcmc = Integer.toString(affectedCard.getCMC());
                             ability = TextUtil.fastReplace(ability, "ConvertedManaCost", costcmc);
                         }
-                        addedAbilities.add(affectedCard.getSpellAbilityForStaticAbility(ability, stAb));
+                        // A malformed granted ability (Way of the Pyromancer's
+                        // SVar without "AB$", prod 2026-09-25) threw from here in
+                        // the middle of a zone change and ended the match. Skip
+                        // that one ability instead; say so once per string.
+                        try {
+                            addedAbilities.add(affectedCard.getSpellAbilityForStaticAbility(ability, stAb));
+                        } catch (RuntimeException e) {
+                            if (BAD_GRANTED_ABILITIES.add(ability)) {
+                                System.err.println("[bad-script] " + hostCard.getName()
+                                        + " grants an ability Forge cannot parse; skipped: " + e.getMessage());
+                            }
+                        }
                     }
                 }
 
