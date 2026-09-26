@@ -282,7 +282,7 @@ public class ChangeZoneAi extends SpellAbilityAi {
         if (sa.hasParam("Origin")) {
             origin = ZoneType.listValueOf(sa.getParam("Origin"));
         }
-        final String destination = sa.getParam("Destination");
+        final String destination = effectiveDestination(sa);
 
         if (sa.isNinjutsu()) {
             if (!source.ignoreLegendRule() && ai.isCardInPlay(source.getName())) {
@@ -1493,9 +1493,29 @@ public class ChangeZoneAi extends SpellAbilityAi {
         return new AiAbilityDecision(100, AiPlayDecision.WillPlay);
     }
 
+    /**
+     * Where a hidden-origin fetch really sends its cards. A reveal-and-remember
+     * step (Extrapolate the Impossible, Turtles Forever: "reveal N, an opponent
+     * chooses, put those into your hand") has no Destination$ of its own; a
+     * later ChangeZone in the chain moves the chosen cards. The AI scored such a
+     * step against a null destination and threw, which ended the game.
+     */
+    private static String effectiveDestination(final SpellAbility sa) {
+        String destination = sa.getParam("Destination");
+        for (AbilitySub sub = sa.getSubAbility(); destination == null && sub != null; sub = sub.getSubAbility()) {
+            if (sub.getApi() == ApiType.ChangeZone) {
+                destination = sub.getParam("Destination");
+            }
+        }
+        return destination == null ? "Hand" : destination;
+    }
+
     public static Card chooseCardToHiddenOriginChangeZone(ZoneType destination, List<ZoneType> origin, SpellAbility sa, CardCollection fetchList, Player player, final Player decider) {
         if (fetchList.isEmpty()) {
             return null;
+        }
+        if (destination == null) {
+            destination = ZoneType.smartValueOf(effectiveDestination(sa));
         }
         List<String> keyCards = player.getRegisteredPlayer().getDeck().getKeyCards();
         String position = sa.getParamOrDefault("LibraryPosition", null);
