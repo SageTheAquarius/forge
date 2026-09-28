@@ -61,6 +61,12 @@ public final class AiPerf {
      * those scans.
      */
     public static final boolean COMBAT_MEMO = !"false".equals(System.getProperty("bridge.combatmemo"));
+    /**
+     * The hybrid-simulation seat (the duel "Computer") asks whether it can pay
+     * for a play before OnePlaySafetyChecker copies the game to try it:
+     * -Dbridge.simafford=false. See AiController.saSideEffects.
+     */
+    public static final boolean SIM_AFFORD = !"false".equals(System.getProperty("bridge.simafford"));
 
     /** Priority evaluations (chooseSpellAbilityToPlayFromList futures). */
     public static final LongAdder evals = new LongAdder();
