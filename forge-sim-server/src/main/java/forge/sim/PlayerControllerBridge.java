@@ -1120,6 +1120,17 @@ public class PlayerControllerBridge extends PlayerControllerAi {
          */
         @Override
         public PaymentDecision visit(CostRemoveCounter cost) {
+            // From the source there is no WHICH, but there is still a WHETHER.
+            // A trigger whose cost is its own "may" -- Guiding Hydra's "you may
+            // remove a +1/+1 counter from this creature. If you do, ..." -- is
+            // never asked in confirmTrigger (it leaves costed triggers to the
+            // payment), so without this the AI paid it every combat.
+            if (cost.counter != null && cost.payCostFromSource()) {
+                String n = "All".equals(cost.getAmount()) ? "all"
+                        : String.valueOf(cost.getAbilityAmount(ability));
+                return confirmSourceCost("remove " + n + " " + cost.counter.getName()
+                        + " counter(s) from " + sourceName()) ? super.visit(cost) : null;
+            }
             if (cost.counter == null || cost.payCostFromSource()
                     || "OriginalHost".equals(cost.getType())) {
                 return super.visit(cost);
@@ -1593,19 +1604,19 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     }
 
     /**
-     * Cast-time targeting. PlaySpellAbility.setupTargets() calls this while a
-     * spell/ability is on its way to the stack. Walk the ability chain and, for
-     * each targeted part, gather legal candidates and let the client pick
-     * (min..max). Returning false cancels the cast.
+     * Cast-time targeting. SpellAbility.setupTargets() walks the ability chain
+     * itself and calls this once for EACH targeted part, so this targets only
+     * the part it is handed (as PlayerControllerHuman and PlayerControllerAi
+     * do). Returning false cancels the cast.
+     *
+     * 2026-09-28: this used to walk the rest of the chain too, so a chain of N
+     * targeted parts asked N + (N-1) + ... + 1 times. Uldaros Theorix (eight
+     * "up to one target <type> card" parts) re-asked the creature and
+     * enchantment picks three times over, and only the last answers stuck.
      */
     @Override
     public boolean chooseTargetsFor(SpellAbility ability) {
-        for (SpellAbility sa = ability; sa != null; sa = sa.getSubAbility()) {
-            if (sa.usesTargeting() && !pickTargetsForSA(sa)) {
-                return false;
-            }
-        }
-        return true;
+        return !ability.usesTargeting() || pickTargetsForSA(ability);
     }
 
     /**
@@ -1717,7 +1728,10 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         if (candidates.isEmpty()) {
             if (min > 0) {
                 explainNoTarget(sa, "nothing legal to target", missLines);
-            } else {
+            } else if (chainStep(sa).isEmpty()) {
+                // One step of a multi-part chain ("up to one target card of
+                // each type") skips quietly: the prompts that do appear name
+                // their step, and a Feed line per empty card type was noise.
                 explainOptionalTargetSkipped(sa, missLines);
             }
             return min == 0; // no legal targets: only OK if targeting is optional
@@ -1741,7 +1755,8 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         promptSource = sa.getHostCard();
         try {
             sel = promptIndices(
-                "Choose target" + (hi > 1 ? "s" : "") + " for " + host + targetingContext(sa),
+                "Choose target" + (hi > 1 ? "s" : "") + " for " + host + targetingContext(sa)
+                        + chainStep(sa),
                 names, cardNames, disabled, min, hi, min == 0, "target_select", null);
         } finally {
             promptSource = null;
@@ -4926,6 +4941,36 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             return sa.isOptionalTrigger()
                     ? "'s trigger (you choose whether to use it when it resolves)"
                     : "'s trigger";
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /**
+     * For one targeted part of a chain with several ("exile up to one target
+     * card of each card type"), what this part wants: ": nonland creature card
+     * in your graveyard". Empty when the ability has only one targeted part,
+     * whose prompt is unambiguous already.
+     *
+     * Without it, Uldaros Theorix asked "Choose target for Uldaros Theorix's
+     * trigger" eight times over and never said which card type each list was.
+     * No "step N of M": parts with nothing legal are skipped, so the count
+     * jumped (1, 3, 5, 8) and read as a bug.
+     */
+    private static String chainStep(SpellAbility sa) {
+        try {
+            SpellAbility root = sa.getRootAbility() != null ? sa.getRootAbility() : sa;
+            int total = 0;
+            boolean found = false;
+            for (SpellAbility s = root; s != null; s = s.getSubAbility()) {
+                if (s.usesTargeting()) {
+                    total++;
+                    found |= s == sa;
+                }
+            }
+            if (total < 2 || !found) return "";
+            String wants = TargetReasons.wants(sa);
+            return wants.isEmpty() ? " (one of " + total + " targeted parts)" : ": " + wants;
         } catch (Exception e) {
             return "";
         }

@@ -25,6 +25,7 @@ import forge.GameCommand;
 import forge.card.*;
 import forge.game.CardTraitBase;
 import forge.game.Game;
+import forge.game.GameLogEntryType;
 import forge.game.StaticEffect;
 import forge.game.ability.AbilityUtils;
 import forge.game.ability.ApiType;
@@ -52,6 +53,69 @@ import java.util.stream.Collectors;
  * The Class StaticAbility_Continuous.
  */
 public final class StaticAbilityContinuous {
+
+    // Granted-ability strings already reported as unparseable (statics are
+    // re-applied constantly; one log line each is enough).
+    private static final Set<String> BAD_GRANTED_ABILITIES = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    // game id + ability string: told to that game's players already. Statics are
+    // re-applied every state check, so without this the Feed would repeat the
+    // line all game long; with it every game still hears about it once.
+    private static final Set<String> BAD_GRANTED_TOLD = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * An ability granted by {@code host} to {@code affected} could not be built,
+     * so it has been left off. Tell the players (one Feed line per game) and the
+     * server (an {@code evt {"e":"bad_script",...}} line, which ws_server turns
+     * into a ticket and keeps off the Feed), so a card that silently lost an
+     * ability is never a mystery.
+     */
+    private static void reportBadGrantedAbility(final Game game, final Card host, final Card affected,
+                                                final String ability, final RuntimeException e) {
+        if (BAD_GRANTED_ABILITIES.add(ability)) {
+            System.err.println("[bad-script] " + host.getName()
+                    + " grants an ability Forge cannot parse; skipped: " + e.getMessage());
+        }
+        if (game == null || !BAD_GRANTED_TOLD.add(game.getId() + "|" + ability)) {
+            return;
+        }
+        final String who = affected != null ? affected.getName() : host.getName();
+        final String from = affected != null && affected != host ? " (from " + host.getName() + ")" : "";
+        game.getGameLog().add(GameLogEntryType.INFORMATION, who
+                + " should have an ability" + from
+                + " that the engine couldn't load, so it has been left off. This has been reported.");
+        game.getGameLog().add(GameLogEntryType.INFORMATION, "evt {\"e\":\"bad_script\""
+                + ",\"kind\":\"granted\""
+                + ",\"card\":" + jsonString(who)
+                + ",\"host\":" + jsonString(host.getName())
+                + ",\"ability\":" + jsonString(clip(ability))
+                + ",\"error\":" + jsonString(clip(String.valueOf(e.getMessage())))
+                + "}");
+    }
+
+    private static String clip(final String s) {
+        return s.length() > 300 ? s.substring(0, 300) + "..." : s;
+    }
+
+    private static String jsonString(final String s) {
+        final StringBuilder sb = new StringBuilder(s.length() + 2).append('"');
+        for (int i = 0; i < s.length(); i++) {
+            final char c = s.charAt(i);
+            switch (c) {
+                case '"': sb.append("\\\""); break;
+                case '\\': sb.append("\\\\"); break;
+                case '\n': sb.append("\\n"); break;
+                case '\r': sb.append("\\r"); break;
+                case '\t': sb.append("\\t"); break;
+                default:
+                    if (c < 0x20) {
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+            }
+        }
+        return sb.append('"').toString();
+    }
 
     // Private constructor to prevent instantiation
     private StaticAbilityContinuous() {
@@ -782,7 +846,16 @@ public final class StaticAbilityContinuous {
                             final String costcmc = Integer.toString(affectedCard.getCMC());
                             ability = TextUtil.fastReplace(ability, "ConvertedManaCost", costcmc);
                         }
-                        addedAbilities.add(affectedCard.getSpellAbilityForStaticAbility(ability, stAb));
+                        // A malformed granted ability (Way of the Pyromancer's
+                        // SVar without "AB$", prod 2026-09-25) threw from here in
+                        // the middle of a zone change and ended the match. Skip
+                        // that one ability instead, and tell the table why the
+                        // card is missing it (reportBadGrantedAbility).
+                        try {
+                            addedAbilities.add(affectedCard.getSpellAbilityForStaticAbility(ability, stAb));
+                        } catch (RuntimeException e) {
+                            reportBadGrantedAbility(game, hostCard, affectedCard, ability, e);
+                        }
                     }
                 }
 

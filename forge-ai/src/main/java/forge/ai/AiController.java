@@ -861,7 +861,16 @@ public class AiController {
         }
 
         // this is the "heaviest" check, which also sets up targets, defines X, etc.
-        AiPlayDecision canPlay = canPlaySa(sa);
+        // Bridge: marks sa so the hybrid safety check can reject an unaffordable
+        // play before it copies the game (see saSideEffects).
+        final SpellAbility outerAffordCheck = AFFORD_BEFORE_SIM.get();
+        AFFORD_BEFORE_SIM.set(sa);
+        AiPlayDecision canPlay;
+        try {
+            canPlay = canPlaySa(sa);
+        } finally {
+            AFFORD_BEFORE_SIM.set(outerAffordCheck);
+        }
 
         if (canPlay != AiPlayDecision.WillPlay) {
             return canPlay;
@@ -974,8 +983,22 @@ public class AiController {
         return saSideEffects(spellHost, sa);
     }
 
+    // The play canPlayAndPayForFace is deciding on (per thread: a timed-out
+    // evaluation can still be running while the next one starts).
+    private static final ThreadLocal<SpellAbility> AFFORD_BEFORE_SIM = new ThreadLocal<>();
+
     private AiPlayDecision saSideEffects(final Card card, final SpellAbility sa) {
         if (usesHybridSimulation()) {
+            // Bridge: canPlayAndPayForFace rejects an unaffordable play as CantAfford
+            // right after this returns, so ask first and skip the game copy. The
+            // copy also tried to pay for real and printed "cost was not paid" /
+            // "AI failed to play" for every such card on every decision (ticket
+            // T-20260924-006). Targets and X are already set here, as they are for
+            // the check it replaces. Kill switch: -Dbridge.simafford=false.
+            if (AiPerf.SIM_AFFORD && sa == AFFORD_BEFORE_SIM.get()
+                    && !ComputerUtilCost.canPayCost(sa, player, sa.isTrigger())) {
+                return AiPlayDecision.CantAfford;
+            }
             return OnePlaySafetyChecker.isAcceptable(player, sa) ? AiPlayDecision.WillPlay : AiPlayDecision.HybridSimRejected;
         }
 

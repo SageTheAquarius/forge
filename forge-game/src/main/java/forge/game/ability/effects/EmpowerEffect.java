@@ -35,11 +35,11 @@ public class EmpowerEffect extends TokenEffectBase {
 
         sb.append(type).append(" ").append(amount).append(" (Put ");
 
-        sb.append(Lang.nounWithNumeral(amount, "+1/+1 counter"));
+        // Printed reminder: loyalty counters, which is what resolve() adds.
+        sb.append(Lang.nounWithNumeral(amount, "loyalty counter"));
 
-        // TODO fix reminder after CR
         sb.append(" on a ").append(type).append(" token you control.");
-        sb.append(" If you don't control one, first create a blue ").append(type).append(" planeswalker token with \"-1: Surveil 1.\" and \"-3: Draw a card.\")");
+        sb.append(" If you don't control one, first create a blue ").append(type).append(" planeswalker token with \"[-1]: Surveil 1\" and \"[-3]: Draw a card.\")");
 
         return sb.toString();
     }
