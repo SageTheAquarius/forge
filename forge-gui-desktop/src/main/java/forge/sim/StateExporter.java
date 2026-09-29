@@ -1078,6 +1078,15 @@ public final class StateExporter {
                 return null;
             }
             Card host = sa.getHostCard();
+            // Convoke and improvise pay with creatures and artifacts the
+            // auto-tapper's probe never counts, so it called Stoke the Flames
+            // unpayable on four untapped Goblins. Not knowing is not "can't":
+            // say nothing (test_scenario_unaffordable_refused.py convoke).
+            if (sa.isSpell() && host != null
+                    && (host.hasKeyword(forge.game.keyword.Keyword.CONVOKE)
+                        || host.hasKeyword(forge.game.keyword.Keyword.IMPROVISE))) {
+                return null;
+            }
             String key = (host != null ? host.getName() : "?") + "|" + mc + "|"
                     + (sa.isSpell() ? "S" : "A");
             if (memo != null && memo.containsKey(key)) {

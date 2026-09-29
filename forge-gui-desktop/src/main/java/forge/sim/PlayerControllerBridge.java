@@ -79,6 +79,7 @@ import forge.game.cost.CostRemoveCounter;
 import forge.game.cost.CostReturn;
 import forge.game.cost.CostReveal;
 import forge.game.cost.CostTapType;
+import forge.game.cost.CostTeamwork;
 import forge.game.cost.CostUnattach;
 import forge.game.cost.CostUntapType;
 import forge.game.GameEntityCounterTable;
@@ -585,6 +586,22 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     @Override
     public boolean playChosenSpellAbility(SpellAbility sa) {
         if (sa == null) return false;
+        // Refuse a spell the mana cannot cover BEFORE its questions. Forge
+        // asks optional costs, modes and targets first and pays mana last, so
+        // an unaffordable Atlantis Attacks walked a phone player through
+        // teamwork, mode and target prompts five times, each ending in "can't
+        // pay" (prod, 2026-09-29). The drag-to-cast path never reads the
+        // greyed flag, which is how the click got here. Same probe as the
+        // grey-out, so this refuses nothing the menu would have offered.
+        if (sa.isSpell()) {
+            String why = StateExporter.unpayableReason(sa, getPlayer(), null);
+            if (why != null) {
+                Card host = sa.getHostCard();
+                ask("{\"kind\":\"feed\",\"lines\":[\"" + StateExporter.esc(
+                        (host != null ? host.getName() : "That") + ": " + why) + "\"]}");
+                return false;
+            }
+        }
         boolean played;
         try {
             played = PlaySpellAbility.playSpellAbility(this, getPlayer(), sa);
@@ -1007,10 +1024,15 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             }
             String host = ability != null && ability.getHostCard() != null
                     ? ability.getHostCard().getName() : "this";
-            String verb = ability.isCrew() ? "crew" : "tap for";
+            // Teamwork is paid LAST, after modes and targets, and the player
+            // opted in minutes ago: say what this is and what "none" costs.
+            boolean teamwork = cost instanceof CostTeamwork;
+            String what = ability.isCrew() ? "crew"
+                    : teamwork ? "teamwork" : "tap for";
+            String none = teamwork ? "none = cancel the spell" : "none = decline";
             List<Integer> sel = promptIndices(
-                    host + ": " + verb + " — tap creatures with total power "
-                            + need + " or more (none = decline)",
+                    host + ": " + what + " — tap creatures with total power "
+                            + need + " or more (" + none + ")",
                     names, 0, pool.size(), true, "choose");
             CardCollection chosen = new CardCollection();
             for (int idx : sel) {
@@ -2483,6 +2505,13 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         } catch (Exception e) {
             // The picker must open whatever the explanation does.
         }
+        // Every mode is required and none was dropped (Atlantis Attacks cast
+        // with teamwork: "choose both instead"): nothing to decide or explain,
+        // so no picker. It used to open a "pick 2 of 2" list a phone player
+        // had to tap twice. A dropped mode still opens it, greyed with why.
+        if (!allowRepeat && min >= possible.size() && names.size() == possible.size()) {
+            return new ArrayList<>(possible);
+        }
         List<Integer> sel = promptIndices("Choose mode", names, null, disabled,
                 min, Math.min(num, possible.size()), false, "choose", null);
         List<AbilitySub> result = new ArrayList<>();
@@ -3629,11 +3658,12 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             return Lists.newArrayList();
         }
         List<String> names = new ArrayList<>();
-        for (OptionalCostValue v : optionalCostValues) {
-            names.add(v.toString());
-        }
         String host = chosen != null && chosen.getHostCard() != null
                 ? chosen.getHostCard().getName() : "this spell";
+        for (OptionalCostValue v : optionalCostValues) {
+            // Teamwork's reminder text reaches us as "... other than CARDNAME".
+            names.add(v.toString().replace("CARDNAME", host));
+        }
         List<Integer> sel;
         promptSource = chosen != null ? chosen.getHostCard() : null;
         try {
