@@ -2447,14 +2447,36 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     @Override
     public boolean confirmAction(SpellAbility sa, PlayerActionConfirmMode mode, String message,
             List<String> options, Card cardToShow, Map<String, Object> params) {
+        // PlayEffect's "Do you want to play X?" -- its only confirmAction.
+        boolean playQuestion = sa != null && sa.getApi() == ApiType.Play
+                && mode == null && cardToShow != null;
+        if (playQuestion && sa == playConsent) {
+            // The trigger that IS this cast was just answered yes (Rebound).
+            playConsent = null;
+            playConfirmedId = cardToShow.getId();
+            return true;
+        }
         List<String> names = new ArrayList<>();
         if (options != null && !options.isEmpty()) names.addAll(options);
         else { names.add("Yes"); names.add("No"); }
         // cardToShow is the card the question is ABOUT (cascade's exiled card,
         // discover's find). Forwarding it is what lets the client render it.
         List<Integer> sel = promptIndices(message, names, 1, 1, false, "confirm", cardToShow);
-        return !sel.isEmpty() && sel.get(0) == 0;
+        boolean yes = !sel.isEmpty() && sel.get(0) == 0;
+        if (playQuestion && yes) playConfirmedId = cardToShow.getId();
+        return yes;
     }
+
+    /**
+     * One "may cast" is one question. A rebound upkeep asked three times --
+     * "trigger is resolving. Use it?" (OptionalDecider), "Do you want to play
+     * X?" (PlayEffect Optional$), then "Cast X?" (playSaFromPlayEffect) -- and
+     * cascade asked the last two. A yes to the first is carried forward:
+     * playConsent is the Play ability whose trigger was accepted, and
+     * playConfirmedId the card whose play question was answered yes.
+     */
+    private SpellAbility playConsent;
+    private int playConfirmedId = -1;
 
     // The widest numeric range we render as a list of options. The bail-out
     // used to be 50, which handed X back to the AI on any spell cast with more
@@ -3025,15 +3047,17 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     public boolean playSaFromPlayEffect(SpellAbility tgtSA) {
         if (tgtSA == null) return false;
         boolean mandatory = tgtSA.getPayCosts() != null && tgtSA.getPayCosts().isMandatory();
-        if (!mandatory) {
+        boolean alreadyAsked = tgtSA.getHostCard() != null
+                && tgtSA.getHostCard().getId() == playConfirmedId;
+        playConfirmedId = -1;
+        if (!mandatory && !alreadyAsked) {
             String what = tgtSA.getHostCard() != null
                     ? tgtSA.getHostCard().getName() : String.valueOf(tgtSA);
             List<String> names = new ArrayList<>();
             names.add("Cast " + what);
             names.add("Decline");
-            // Cascade asks TWICE — PlayEffect's "do you want to play it?" and
-            // then this one — so both windows need the card, or the second is
-            // the bare yes/no the first one stopped being.
+            // Only when PlayEffect did not already ask (it asks for a single
+            // optional card -- cascade, rebound; see playConfirmedId).
             List<Integer> sel = promptIndices("Cast " + what + "?", names, 1, 1, false, "confirm",
                     tgtSA.getHostCard());
             if (sel.isEmpty() || sel.get(0) != 0) return false;
@@ -3474,7 +3498,9 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         List<Integer> sel = promptIndices(
                 name + "'s trigger is resolving" + what + " Use it?",
                 names, 1, 1, false, "confirm", host);
-        return !sel.isEmpty() && sel.get(0) == 0;
+        boolean yes = !sel.isEmpty() && sel.get(0) == 0;
+        playConsent = yes && sa != null && sa.getApi() == ApiType.Play ? sa : null;
+        return yes;
     }
 
     /**
