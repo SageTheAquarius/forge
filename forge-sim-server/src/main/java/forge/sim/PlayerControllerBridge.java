@@ -1727,6 +1727,16 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     /** Prompt the client for one targeted ability's targets; assign the picks. */
     private boolean pickTargetsForSA(SpellAbility sa) {
         sa.resetTargets();
+        // A target count that evaluates to zero is "this clause has no target
+        // this time", not "any number": Cruel Alliance's two target clauses are
+        // TargetMin$/TargetMax$ Count$Teamwork.0.1 and .1.0, so one of them is
+        // always 0-0. The old max <= 0 -> candidates.size() fallback offered
+        // that clause as "up to N", the pick made isTargetNumberValid false,
+        // and PlaySpellAbility unwound the cast in silence -- with teamwork and
+        // without (prod, 2026-09-30). TargetSelection returns here too.
+        if (sa.getMinTargets() <= 0 && sa.getMaxTargets() <= 0) {
+            return true;
+        }
         // Stack targets are a separate world — see pickStackTargetsForSA.
         List<ZoneType> zones = sa.getTargetRestrictions().getZone();
         if (zones != null && zones.size() == 1 && zones.get(0) == ZoneType.Stack) {
