@@ -2176,6 +2176,14 @@ public class PlayerControllerBridge extends PlayerControllerAi {
      */
     private Card promptSource = null;
 
+    /**
+     * Where the options of a "zone_pick" prompt come from, set around a
+     * promptIndices call like promptSource: {zone, owner, verb}. MatchView
+     * draws those cards as that zone -- an opponent's revealed hand as a hand
+     * fanned over the board (ui/ZonePick.gd) -- instead of PromptModal's list.
+     */
+    private String promptZoneJson = null;
+
     private String sourceCardJson() {
         Card c = promptSource;
         if (c == null) {
@@ -2359,6 +2367,7 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                    : ",\"card\":{\"name\":\"" + escName(cardToShow.getName())
                      + "\",\"art_slug\":\"\"}")
                 + sourceCardJson()
+                + (promptZoneJson == null ? "" : ",\"zone_pick\":" + promptZoneJson)
                 + "},"
                 + "\"state\":" + stateJson() + "}";
         String reply = ask(req);
@@ -3773,15 +3782,56 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             hand, nDiscard, nDiscard);
     }
 
-    /** Effect-driven discard ("discard N cards"). */
+    /**
+     * Effect-driven discard ("discard N cards"), and "you choose a card from
+     * their hand" (Solve for Disappointment, Thoughtseize, Duress: Discard
+     * Mode$ RevealYouChoose). The second case used to fall through to the AI,
+     * so the AI picked from the opponent's hand on the human's behalf and the
+     * revealed hand only ever reached the Feed. Now the human sees the whole
+     * revealed hand, with the cards the spell can't take greyed out, and picks
+     * even when only one card qualifies. MatchView draws it as that hand
+     * (prompt_type "zone_pick"); any other scene falls back to the list.
+     */
     @Override
     public CardCollection chooseCardsToDiscardFrom(Player playerDiscard, SpellAbility sa,
             CardCollection validCards, int min, int max, CardCollectionView visibleToChooser) {
-        if (playerDiscard != getPlayer()) {
-            return super.chooseCardsToDiscardFrom(playerDiscard, sa, validCards, min, max, visibleToChooser);
-        }
         String host = (sa != null && sa.getHostCard() != null) ? sa.getHostCard().getName() : "effect";
-        return chooseCardsFrom("Discard " + rangeText(min, max) + " card(s) for " + host, validCards, min, max);
+        if (playerDiscard == getPlayer()) {
+            return chooseCardsFrom("Discard " + rangeText(min, max) + " card(s) for " + host, validCards, min, max);
+        }
+        CardCollection out = new CardCollection();
+        if (validCards == null || validCards.isEmpty() || max <= 0) return out;
+        CardCollectionView shown = visibleToChooser != null ? visibleToChooser : validCards;
+        List<Card> list = new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        List<String> disabled = new ArrayList<>();
+        for (Card c : validCards) { list.add(c); names.add(c.getName()); disabled.add(null); }
+        for (Card c : shown) {
+            if (validCards.contains(c)) continue;
+            list.add(c); names.add(c.getName()); disabled.add("Can't be chosen for " + host);
+        }
+        int hi = Math.min(max, validCards.size());
+        int lo = Math.max(0, Math.min(min, hi));
+        // Shown as that hand, not a list (Sage, 2026-10-01): prompt_type
+        // "zone_pick" and where the cards are.
+        promptZoneJson = "{\"zone\":\"hand\",\"owner\":\"" + escName(playerDiscard.getName())
+                + "\",\"verb\":\"Discard\"}";
+        List<Integer> sel;
+        try {
+            sel = promptIndices("Choose " + rangeText(lo, hi) + " card" + (hi == 1 ? "" : "s")
+                    + " to discard (" + host + ")",
+                    names, names, disabled, lo, hi, lo == 0, "zone_pick", null);
+        } finally {
+            promptZoneJson = null;
+        }
+        for (int idx : sel) {
+            // Never trust the wire with a greyed row.
+            if (idx >= 0 && idx < validCards.size() && !out.contains(list.get(idx))) out.add(list.get(idx));
+        }
+        for (int k = 0; k < validCards.size() && out.size() < lo; k++) {
+            if (!out.contains(validCards.get(k))) out.add(validCards.get(k));
+        }
+        return out;
     }
 
     /** "Sacrifice a permanent" — let the human pick which. */
