@@ -2083,6 +2083,20 @@ public class ComputerUtil {
         CardCollectionView library = ai.getCardsIn(ZoneType.Library);
         int landsInDeck = CardLists.count(library, CardPredicates.LANDS);
 
+        // EconomyDraft (2026-10-01): Lightning Round decks have no lands -- a
+        // land token arrives every upkeep -- so the no-land rule below kept
+        // every hand, five four-drops included. Judge the curve instead: one
+        // play by turn 2 and two by turn 3. The first mulligan is free; past
+        // it only a hand with nothing castable by turn 3 goes back.
+        if (landsInDeck == 0 && isLightningRound(ai)) {
+            int early = CardLists.count(handList, c -> c.getCMC() <= 2);
+            int curve = CardLists.count(handList, c -> c.getCMC() <= 3);
+            boolean keep = finalHandSize >= currentHandSize
+                    ? early >= 1 && curve >= 2
+                    : curve >= 1;
+            return keep ? finalHandSize : 0;
+        }
+
         // no land deck, can't do anything better
         if (landsInDeck == 0) {
             return finalHandSize;
@@ -2138,6 +2152,11 @@ public class ComputerUtil {
             return 0;
         }
         return score;
+    }
+
+    /** EconomyDraft: the Lightning Round rules card sits in this player's command zone. */
+    public static boolean isLightningRound(Player p) {
+        return p.isCardInCommand("Lightning Round Rules");
     }
 
     // Computer mulligans if there are no cards with converted mana cost of 0 in its hand

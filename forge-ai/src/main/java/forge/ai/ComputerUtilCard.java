@@ -175,6 +175,26 @@ public class ComputerUtilCard {
         return bestTgt;
     }
 
+    /**
+     * EconomyDraft (2026-10-01): true when this planeswalker can use its
+     * ultimate now or after one more loyalty activation -- the same test
+     * {@link #getBestPlaneswalkerToDamage} scores with its 10000 bonus.
+     */
+    public static boolean isNearUltimate(final Card pw) {
+        int curLoyalty = pw.getCounters(CounterEnumType.LOYALTY);
+        for (SpellAbility sa : pw.getSpellAbilities()) {
+            if (!sa.hasParam("Ultimate")) {
+                continue;
+            }
+            CostRemoveCounter remLoyalty = sa.getPayCosts().getCostPartByType(CostRemoveCounter.class);
+            Integer loyaltyCost = remLoyalty == null ? null : remLoyalty.convertAmount();
+            if (loyaltyCost != null && loyaltyCost != 0 && loyaltyCost - curLoyalty <= 1) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public static Card getWorstPlaneswalkerToDamage(final List<Card> pws) {
         Card bestTgt = null;
 
