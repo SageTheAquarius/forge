@@ -1106,9 +1106,14 @@ public final class StateExporter {
                     String delta = costWhy(sa, p);
                     costText = now + " (printed " + mc + (delta.isEmpty() ? "" : ": " + delta) + ")";
                 }
-                why = "can't pay " + costText + " with what is floating plus what the auto-tapper can tap"
-                        + " (creatures that came in this turn can't tap yet;"
-                        + " float mana by hand first if you have another way to make it)";
+                String restricted = restrictedManaNote(sa, p);
+                if (restricted != null) {
+                    why = "can't pay " + costText + ": " + restricted;
+                } else {
+                    why = "can't pay " + costText + " with what is floating plus what the auto-tapper can tap"
+                            + " (creatures that came in this turn can't tap yet;"
+                            + " float mana by hand first if you have another way to make it)";
+                }
             }
             if (memo != null) {
                 memo.put(key, why);
@@ -1118,6 +1123,78 @@ public final class StateExporter {
             // Affordability is a caption, never a reason to drop the ability.
             return null;
         }
+    }
+
+    /**
+     * Names the mana that can't go toward {@code sa}: floating mana, or an
+     * untapped source, whose own restriction forbids it ("This mana can't be
+     * spent to cast spells from your hand"). On 2026-10-01 a player with
+     * {G}{G}{C} floating was told only that {2}{G} couldn't be paid -- the {C}
+     * was Heartwood Crafter's. Null when no restricted mana is in play, so the
+     * generic caption stands.
+     */
+    static String restrictedManaNote(SpellAbility sa, Player p) {
+        try {
+            Map<String, String> why = new java.util.LinkedHashMap<>();
+            Map<String, Integer> floating = new java.util.LinkedHashMap<>();
+            for (forge.game.mana.Mana m : p.getManaPool()) {
+                if (m == null || !m.isRestricted() || m.meetsManaRestrictions(sa)) continue;
+                Card src = m.getSourceCard();
+                String name = src != null ? src.getName() : "a source";
+                floating.merge(name, 1, Integer::sum);
+                if (m.getManaAbility() != null && m.getManaAbility().getSourceSA() != null) {
+                    why.putIfAbsent(name, spendClause(m.getManaAbility().getSourceSA().getDescription()));
+                }
+            }
+            List<String> idle = new ArrayList<>();
+            for (Card c : p.getCardsIn(ZoneType.Battlefield)) {
+                if (c.isTapped()) continue;
+                for (SpellAbility ma : c.getManaAbilities()) {
+                    forge.game.spellability.AbilityManaPart part = ma.getManaPart();
+                    if (part == null || part.getManaRestrictions() == null
+                            || part.getManaRestrictions().isEmpty()
+                            || part.meetsManaRestrictions(sa)) {
+                        continue;
+                    }
+                    if (ma.getActivatingPlayer() == null) ma.setActivatingPlayer(p);
+                    if (!ma.canPlay()) continue;
+                    if (!idle.contains(c.getName())) idle.add(c.getName());
+                    why.putIfAbsent(c.getName(), spendClause(ma.getDescription()));
+                }
+            }
+            if (floating.isEmpty() && idle.isEmpty()) {
+                return null;
+            }
+            List<String> parts = new ArrayList<>();
+            for (Map.Entry<String, Integer> e : floating.entrySet()) {
+                parts.add(e.getValue() + " floating mana from " + e.getKey());
+            }
+            for (String n : idle) {
+                if (!floating.containsKey(n)) parts.add(n + "'s mana");
+            }
+            StringBuilder sb = new StringBuilder(String.join(" and ", parts))
+                    .append(" can't be spent on this");
+            Set<String> said = new HashSet<>();
+            List<String> clauses = new ArrayList<>();
+            for (String w : why.values()) {
+                if (w != null && !w.isEmpty() && said.add(w)) clauses.add(w);
+            }
+            if (!clauses.isEmpty()) {
+                sb.append(" (").append(String.join(" ", clauses)).append(")");
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** "This mana can't be spent to ..." out of a mana ability's text, else the text. */
+    private static String spendClause(String desc) {
+        if (desc == null) return "";
+        String d = desc.replace('\n', ' ').trim();
+        int i = d.indexOf("This mana");
+        if (i < 0) i = d.indexOf("Spend this mana");
+        return i >= 0 ? d.substring(i).trim() : d;
     }
 
     /**
