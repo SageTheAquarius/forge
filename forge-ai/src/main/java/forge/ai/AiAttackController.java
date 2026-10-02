@@ -904,11 +904,15 @@ public class AiAttackController {
             return prefDefender;
         }
 
-        // 2. attack planeswalkers
-        List<Card> pwDefending = c.getDefendingPlaneswalkers();
-        if (!pwDefending.isEmpty()) {
-            final Card pwNearUlti = ComputerUtilCard.getBestPlaneswalkerToDamage(pwDefending);
-            return pwNearUlti != null ? pwNearUlti : ComputerUtilCard.getBestPlaneswalkerAI(pwDefending);
+        // 2. attack a planeswalker only when that beats hitting the player.
+        // EconomyDraft (2026-10-01): stock Forge sent the whole attack at any
+        // planeswalker on the table, every turn, unless it had lethal on the
+        // player -- and at ANY opponent's walker, so in a pod the threat-scored
+        // choice of player above was thrown away the moment anyone cast one.
+        Card pw = choosePlaneswalkerOverPlayer(c.getDefendingPlaneswalkers(),
+                prefDefender instanceof Player p ? p : null, this.attackers);
+        if (pw != null) {
+            return pw;
         }
 
         // 3. Get the preferred battle (prefer own battles, then ally battles)
@@ -922,6 +926,63 @@ public class AiAttackController {
         }
 
         return prefDefender;
+    }
+
+    /** A player this many swings from dead is raced, not walked around. */
+    static final int RACE_SWINGS = 2;
+
+    /**
+     * EconomyDraft (2026-10-01): the planeswalker worth attacking instead of
+     * {@code player}, or null to attack the player. A walker about to
+     * ultimate always is; otherwise only one this attack can finish, and only
+     * while the player is more than {@link #RACE_SWINGS} swings from dead.
+     * Chip damage on a walker that survives is damage the player never took.
+     * Other opponents' walkers count only when they are about to ultimate.
+     */
+    Card choosePlaneswalkerOverPlayer(final List<Card> pws, final Player player, final List<Card> attacking) {
+        if (pws.isEmpty()) {
+            return null;
+        }
+        List<Card> nearUlti = CardLists.filter(pws, ComputerUtilCard::isNearUltimate);
+        if (!nearUlti.isEmpty()) {
+            return ComputerUtilCard.getBestPlaneswalkerAI(nearUlti);
+        }
+        if (player == null || !player.canLoseLife()) {
+            // nothing to race: stock behaviour
+            final Card pwNearUlti = ComputerUtilCard.getBestPlaneswalkerToDamage(pws);
+            return pwNearUlti != null ? pwNearUlti : ComputerUtilCard.getBestPlaneswalkerAI(pws);
+        }
+        List<Card> own = CardLists.filterControlledBy(pws, player);
+        if (own.isEmpty()) {
+            return null;
+        }
+        int damage = estimateUnblockedDamage(attacking, player);
+        if (damage <= 0 || player.getLife() <= damage * RACE_SWINGS) {
+            return null;
+        }
+        List<Card> killable = CardLists.filter(own,
+                pw -> ComputerUtilCombat.getDamageToKill(pw, true) <= damage);
+        return killable.isEmpty() ? null : ComputerUtilCard.getBestPlaneswalkerAI(killable);
+    }
+
+    /**
+     * Damage this attack lands if the defender's blockers each stop one of
+     * the biggest blockable attackers -- the same estimate declareAttackers
+     * uses to decide a walker has been sent enough.
+     */
+    private int estimateUnblockedDamage(final List<Card> attacking, final GameEntity defender) {
+        List<Card> sorted = new ArrayList<>(attacking);
+        CardLists.sortByPowerDesc(sorted);
+        int blockersLeft = this.blockers.size();
+        int damage = 0;
+        for (Card atta : sorted) {
+            if (blockersLeft > 0 && CombatUtil.canBeBlocked(atta, this.blockers, null)) {
+                blockersLeft--;
+            } else {
+                damage += ComputerUtilCombat.damageIfUnblocked(atta, defender, null, false);
+            }
+        }
+        return damage;
     }
 
     final boolean LOG_AI_ATTACKS = false;
@@ -1460,7 +1521,15 @@ public class AiAttackController {
                 break;
             }
             CardCollection pwDefending = new CardCollection(IterableUtil.filter(possibleDefenders, Card.class));
-            if (pwDefending.isEmpty()) {
+            // EconomyDraft: with the player still a candidate, the next walker
+            // has to earn the attack the same way the first one did.
+            Card nextPw = possibleDefenders.contains(defendingOpponent)
+                    ? choosePlaneswalkerOverPlayer(pwDefending, defendingOpponent, left) : null;
+            if (possibleDefenders.contains(defendingOpponent) && nextPw == null) {
+                defender = defendingOpponent;
+            } else if (nextPw != null) {
+                defender = nextPw;
+            } else if (pwDefending.isEmpty()) {
                 // TODO for now only looks at same player as we'd have to check the others from start too
                 //defender = new PlayerCollection(Iterables.filter(possibleDefenders, Player.class)).min(PlayerPredicates.compareByLife());
                 defender = defendingOpponent;

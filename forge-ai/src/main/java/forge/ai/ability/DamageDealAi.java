@@ -419,6 +419,13 @@ public class DamageDealAi extends DamageAiBase {
         // We can hurt a planeswalker, so rank the one which is the best target
         if (!hPlay.isEmpty() && pl.isOpponentOf(ai) && activator.equals(ai)) {
             Card pw = ComputerUtilCard.getBestPlaneswalkerToDamage(hPlay);
+            // EconomyDraft (2026-10-01): damage that leaves a walker alive is
+            // only worth more than the same damage to the player when it stops
+            // an ultimate. Stock Forge chose any walker with an ultimate here,
+            // so a Shock went into a fresh 5-loyalty walker by default.
+            if (pw != null && !mandatory && !ComputerUtilCard.isNearUltimate(pw)) {
+                pw = null;
+            }
             return pw == null && mandatory ? hPlay.get(0) : pw;
         }
 
