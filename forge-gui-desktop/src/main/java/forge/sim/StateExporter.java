@@ -1688,6 +1688,17 @@ public final class StateExporter {
         if (desc.isEmpty()) {
             desc = c != null ? c.getName() : "Ability";
         }
+        // A prepared spell offered from hand (SVar:CastFromHand on the spell
+        // face) is a different card name from the creature it is printed on;
+        // its rules text alone ("Surveil 1. You gain 3 life.") does not say
+        // which of the card's two spells the row is.
+        if (c != null && sa.isSpell() && sa.getCardStateName() == CardStateName.PreparedSpell
+                && c.getCurrentStateName() != CardStateName.PreparedSpell && sa.getCardState() != null) {
+            String spellName = sa.getCardState().getName();
+            if (spellName != null && !spellName.isEmpty() && !desc.startsWith(spellName)) {
+                desc = spellName + " - " + desc;
+            }
+        }
         return desc.length() > 90 ? desc.substring(0, 87) + "..." : desc;
     }
 

@@ -986,7 +986,9 @@ public final class GameActionUtil {
             oldCard.getZone().remove(oldCard);
 
             // might have been an alternative lki host
-            if (oldCard.getCurrentStateName() != CardStateName.PreparedSpell) {
+            // (the parked copy of a prepared spell, a token, stays itself; a real
+            // card cast as its prepared spell from hand rolls back like any other)
+            if (oldCard.getCurrentStateName() != CardStateName.PreparedSpell || !oldCard.isToken()) {
                 oldCard = ability.getCardState().getCard();
             }
 
