@@ -316,7 +316,10 @@ public class GameCopier {
     private static final boolean USE_FROM_PAPER_CARD = true;
     private Card createCardCopy(Game newGame, Player newOwner, Card c, Player aiPlayer) {
         if (c.isToken() && !c.isImmutable()) {
-            Card result = new TokenInfo(c).makeOneToken(newOwner, c.getId());
+            // The token's own SVars go on first: a keyword that names one
+            // (a token copy of an "enters prepared" creature) throws without
+            // it and takes the whole simulation, and the match, with it.
+            Card result = new TokenInfo(c).makeOneToken(newOwner, c.getId(), c);
             new CardCopyService(c).copyCopiableCharacteristics(result, null, null);
             return result;
         }
