@@ -1065,6 +1065,30 @@ public final class StateExporter {
     }
 
     private static String unpayableReasonInner(SpellAbility sa, Player p, Map<String, String> memo) {
+        // A spell from another face of the card (an Adventure, a Mythos cast
+        // from hand): the auto-tapper and every mana restriction look at the
+        // HOST, which is still the creature in hand, so "spend this mana only
+        // to cast a Mythos spell" refused the Mythos (Moonstone Splinter,
+        // 2026-10-05). Judge the spell as the face it is -- the switch
+        // ComputerUtilCard.evaluateCreature makes -- and put the card back.
+        Card host = sa == null ? null : sa.getHostCard();
+        CardStateName faceWas = null;
+        if (host != null && sa.getCardState() != null && !host.isInPlay()
+                && host.getCurrentStateName() != sa.getCardStateName()
+                && host.hasState(sa.getCardStateName())) {
+            faceWas = host.getCurrentStateName();
+            host.setState(sa.getCardStateName(), false);
+        }
+        try {
+            return unpayableReasonAsFace(sa, p, memo);
+        } finally {
+            if (faceWas != null) {
+                host.setState(faceWas, false);
+            }
+        }
+    }
+
+    private static String unpayableReasonAsFace(SpellAbility sa, Player p, Map<String, String> memo) {
         try {
             if (sa == null || p == null || sa.isLandAbility() || sa.isManaAbility()) {
                 return null;
