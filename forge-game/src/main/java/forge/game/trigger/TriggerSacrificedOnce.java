@@ -6,6 +6,7 @@ import forge.game.ability.AbilityKey;
 import forge.game.card.Card;
 import forge.game.card.CardCollection;
 import forge.game.card.CardLists;
+import forge.game.player.Player;
 import forge.game.spellability.SpellAbility;
 import forge.util.Localizer;
 
@@ -25,6 +26,26 @@ public class TriggerSacrificedOnce extends Trigger {
         }
         if (!matchesValidParam("ValidCard", runParams.get(AbilityKey.Cards))) {
             return false;
+        }
+        if (hasParam("FirstTime")) {
+            // "Whenever you sacrifice a permanent for the first time each
+            // turn": this sacrifice is the turn's first matching one. The
+            // player's sacrificed-this-turn list already holds this event's
+            // cards (GameAction.sacrifice adds each before firing), so the
+            // event is the first when nothing matching precedes it. Counted,
+            // not removed by identity: a card sacrificed, returned and
+            // sacrificed again this turn is two LKI copies with one id.
+            final Player p = (Player) runParams.get(AbilityKey.Player);
+            final CardCollection now = (CardCollection) runParams.get(AbilityKey.Cards);
+            int turnTotal = p.getSacrificedThisTurn().size();
+            int thisEvent = now.size();
+            if (hasParam("ValidCard")) {
+                turnTotal = CardLists.getValidCardsAsList(p.getSacrificedThisTurn(), getParam("ValidCard"), getHostCard().getController(), getHostCard(), this).size();
+                thisEvent = CardLists.getValidCardsAsList(now, getParam("ValidCard"), getHostCard().getController(), getHostCard(), this).size();
+            }
+            if (turnTotal > thisEvent) {
+                return false;
+            }
         }
         return true;
     }
