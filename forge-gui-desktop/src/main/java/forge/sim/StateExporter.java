@@ -536,6 +536,17 @@ public final class StateExporter {
                     if (si != null && si.getSpellAbility() != null) {
                         saIds.put(si.getId(), si.getSpellAbility().getId());
                     }
+                    // A spell cast as an adventure or split half is named
+                    // for that face ("Stomp", "Fire") while it waits on the
+                    // stack. The card images are filed under the printed
+                    // card's front face, so the hover over the stack row had
+                    // nothing to fetch (Sage, 2026-10-06). The paper name
+                    // rides along as printed_name for those items too.
+                    Card src = si != null ? si.getSourceCard() : null;
+                    if (src != null && src.getPaperCard() != null
+                            && !src.getPaperCard().getName().equals(src.getName())) {
+                        printed.put(src.getId(), src.getPaperCard().getName());
+                    }
                 }
             }
             for (Card c : game.getCardsInGame()) {
@@ -617,6 +628,10 @@ public final class StateExporter {
                 }
                 sb.append("],");
                 kvs(sb, "text", nz(si.getText()));
+                if (si.getSourceCard() != null && printedNameById.containsKey(si.getSourceCard().getId())) {
+                    sb.append(',');
+                    kvs(sb, "printed_name", printedNameById.get(si.getSourceCard().getId()));
+                }
                 sb.append('}');
             }
         }
