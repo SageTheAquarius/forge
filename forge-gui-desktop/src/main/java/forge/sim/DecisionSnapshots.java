@@ -6,7 +6,9 @@ import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import com.google.common.eventbus.Subscribe;
@@ -14,6 +16,8 @@ import com.google.common.eventbus.Subscribe;
 import forge.game.Game;
 import forge.game.GameLogEntryType;
 import forge.game.GameState;
+import forge.game.card.Card;
+import forge.game.combat.CombatUtil;
 import forge.game.event.GameEventAddLog;
 import forge.game.event.GameEventGameOutcome;
 import forge.game.event.GameEventPlayerPriority;
@@ -74,12 +78,21 @@ public final class DecisionSnapshots {
         if (out == null || game.isGameOver()) return;
         try {
             PhaseType phase = ev.phase();
-            if (phase != PhaseType.MAIN1 && phase != PhaseType.MAIN2) return;
+            // The attack decision: the active player's beginning-of-combat
+            // window in a duel. The board here is the board the attack is
+            // declared from; the evaluator re-applies it at
+            // COMBAT_DECLARE_ATTACKERS with |Attacking on a candidate set
+            // (GameState.handleCombat, which is 1v1 only, hence duels).
+            boolean attackWindow = phase == PhaseType.COMBAT_BEGIN && game.getPlayers().size() == 2;
+            if (phase != PhaseType.MAIN1 && phase != PhaseType.MAIN2 && !attackWindow) return;
             if (ev.priority() == null || ev.turn() == null) return;
             if (!ev.priority().equals(ev.turn())) return;      // the active player's own choice
             if (!game.getStack().isEmpty()) return;
             Player p = game.getPlayer(ev.priority());
             if (p == null) return;
+            // No creature that could attack: no decision to score.
+            List<Card> attackers = attackWindow ? legalAttackers(p) : null;
+            if (attackWindow && attackers.isEmpty()) return;
             long t0 = System.currentTimeMillis();
             GameState gs = new GameState();
             gs.initFromGame(game);
@@ -95,6 +108,13 @@ public final class DecisionSnapshots {
             PlayEvents.Json j = new PlayEvents.Json().n("n", seq).n("turn", turn)
                     .s("phase", phase.name()).s("seat", p.getName()).n("seat_i", idx)
                     .n("seats", game.getPlayers().size()).s("state", state);
+            if (attackers != null) {
+                List<String> rows = new ArrayList<>();
+                for (Card c : attackers) {
+                    rows.add(new PlayEvents.Json().s("c", c.getName()).n("id", c.getId()).toString());
+                }
+                j.raw("attackers", "[" + String.join(",", rows) + "]");
+            }
             out.write(j.toString());
             out.write('\n');
             out.flush();
@@ -105,6 +125,19 @@ public final class DecisionSnapshots {
         } catch (Exception ignore) {
             // a snapshot must never cost a game
         }
+    }
+
+    /** The player's creatures that could be declared as attackers right now. */
+    private static List<Card> legalAttackers(Player p) {
+        List<Card> out = new ArrayList<>();
+        try {
+            for (Card c : p.getCreaturesInPlay()) {
+                if (CombatUtil.canAttack(c)) out.add(c);
+            }
+        } catch (Exception ignore) {
+            // a creature the check cannot examine is not a candidate
+        }
+        return out;
     }
 
     @Subscribe
