@@ -186,15 +186,44 @@ public class TokenInfo {
         return makeOneToken(controller, controller.getGame().nextCardId());
     }
     public Card makeOneToken(final Player controller, int id) {
+        return makeOneToken(controller, id, null);
+    }
+    /**
+     * As {@link #makeOneToken(Player, int)}, for rebuilding a token that
+     * already exists (the AI simulator's copy of the game): {@code svarSource}'s
+     * SVars go on the new card BEFORE its keywords.
+     *
+     * A keyword can name an SVar -- "ETBReplacement:Other:DBPrepare" on every
+     * "enters prepared" creature, "ETBReplacement:Copy:..." on a clone -- and
+     * builds its traits from that SVar the moment it is added. This class
+     * keeps keywords as strings and nothing else, so a token COPY of such a
+     * card was rebuilt with the keyword and no SVar, and addIntrinsicKeyword
+     * threw "Error in Keyword ETBReplacement:Other:DBPrepare for card X" out
+     * of GameCopier.makeCopy: the AI's first look-ahead with that token on
+     * the battlefield ended the match (found 2026-10-05 by a soak of a set
+     * whose mechanic makes token copies of prepared creatures).
+     */
+    public Card makeOneToken(final Player controller, int id, final Card svarSource) {
         final Game game = controller.getGame();
         final Card c = toCard(game, id);
 
         c.setOwner(controller);
         c.setGamePieceType(GamePieceType.TOKEN);
+        if (svarSource != null) {
+            c.setSVars(svarSource.getSVars());
+        }
         CardFactoryUtil.setupKeywordedAbilities(c);
         // add them later to prevent setupKeywords from adding them multiple times
         for (final String kw : intrinsicKeywords) {
-            c.addIntrinsicKeyword(kw);
+            try {
+                c.addIntrinsicKeyword(kw);
+            } catch (RuntimeException e) {
+                // No source card to take SVars from (a token restored from a
+                // game-state spec): the keyword cannot build its traits. Leave
+                // it off rather than lose the game that is being set up.
+                System.err.println("TokenInfo: " + name + " rebuilt without keyword " + kw
+                        + " (" + e.getMessage() + ")");
+            }
         }
         return c;
     }

@@ -536,6 +536,17 @@ public final class StateExporter {
                     if (si != null && si.getSpellAbility() != null) {
                         saIds.put(si.getId(), si.getSpellAbility().getId());
                     }
+                    // A spell cast as an adventure or split half is named
+                    // for that face ("Stomp", "Fire") while it waits on the
+                    // stack. The card images are filed under the printed
+                    // card's front face, so the hover over the stack row had
+                    // nothing to fetch (Sage, 2026-10-06). The paper name
+                    // rides along as printed_name for those items too.
+                    Card src = si != null ? si.getSourceCard() : null;
+                    if (src != null && src.getPaperCard() != null
+                            && !src.getPaperCard().getName().equals(src.getName())) {
+                        printed.put(src.getId(), src.getPaperCard().getName());
+                    }
                 }
             }
             for (Card c : game.getCardsInGame()) {
@@ -617,6 +628,10 @@ public final class StateExporter {
                 }
                 sb.append("],");
                 kvs(sb, "text", nz(si.getText()));
+                if (si.getSourceCard() != null && printedNameById.containsKey(si.getSourceCard().getId())) {
+                    sb.append(',');
+                    kvs(sb, "printed_name", printedNameById.get(si.getSourceCard().getId()));
+                }
                 sb.append('}');
             }
         }
@@ -1065,6 +1080,30 @@ public final class StateExporter {
     }
 
     private static String unpayableReasonInner(SpellAbility sa, Player p, Map<String, String> memo) {
+        // A spell from another face of the card (an Adventure, a Mythos cast
+        // from hand): the auto-tapper and every mana restriction look at the
+        // HOST, which is still the creature in hand, so "spend this mana only
+        // to cast a Mythos spell" refused the Mythos (Moonstone Splinter,
+        // 2026-10-05). Judge the spell as the face it is -- the switch
+        // ComputerUtilCard.evaluateCreature makes -- and put the card back.
+        Card host = sa == null ? null : sa.getHostCard();
+        CardStateName faceWas = null;
+        if (host != null && sa.getCardState() != null && !host.isInPlay()
+                && host.getCurrentStateName() != sa.getCardStateName()
+                && host.hasState(sa.getCardStateName())) {
+            faceWas = host.getCurrentStateName();
+            host.setState(sa.getCardStateName(), false);
+        }
+        try {
+            return unpayableReasonAsFace(sa, p, memo);
+        } finally {
+            if (faceWas != null) {
+                host.setState(faceWas, false);
+            }
+        }
+    }
+
+    private static String unpayableReasonAsFace(SpellAbility sa, Player p, Map<String, String> memo) {
         try {
             if (sa == null || p == null || sa.isLandAbility() || sa.isManaAbility()) {
                 return null;
@@ -1687,6 +1726,17 @@ public final class StateExporter {
         desc = subCardName(desc, c);
         if (desc.isEmpty()) {
             desc = c != null ? c.getName() : "Ability";
+        }
+        // A prepared spell offered from hand (SVar:CastFromHand on the spell
+        // face) is a different card name from the creature it is printed on;
+        // its rules text alone ("Surveil 1. You gain 3 life.") does not say
+        // which of the card's two spells the row is.
+        if (c != null && sa.isSpell() && sa.getCardStateName() == CardStateName.PreparedSpell
+                && c.getCurrentStateName() != CardStateName.PreparedSpell && sa.getCardState() != null) {
+            String spellName = sa.getCardState().getName();
+            if (spellName != null && !spellName.isEmpty() && !desc.startsWith(spellName)) {
+                desc = spellName + " - " + desc;
+            }
         }
         return desc.length() > 90 ? desc.substring(0, 87) + "..." : desc;
     }

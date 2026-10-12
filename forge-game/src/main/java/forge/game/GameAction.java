@@ -244,8 +244,12 @@ public class GameAction {
                         }
                     }
                 }
-            } else if (copied.getCurrentStateName() != CardStateName.PreparedSpell) {
+            } else if (copied.getCurrentStateName() != CardStateName.PreparedSpell || !c.isToken()) {
                 // when a card leaves the battlefield, ensure it's in its original state
+                // (The prepared-spell state is kept only by the parked COPY of a
+                // prepared spell, which is a token. A real card cast as its
+                // prepared spell from hand goes back to being the creature card
+                // when it leaves the stack.)
                 copied.setState(CardStateName.Original, false);
                 copied.setBackSide(false);
             }

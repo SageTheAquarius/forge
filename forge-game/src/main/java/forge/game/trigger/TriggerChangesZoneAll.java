@@ -31,8 +31,21 @@ public class TriggerChangesZoneAll extends Trigger {
         }
 
         if (hasParam("FirstTime")) {
-            // currently only for Crawling Sensation
-            List<Card> entered = CardUtil.getThisTurnEntered(ZoneType.smartValueOf(getParam("Destination")), null, getParam("ValidCards"), getHostCard(), this, getHostCard().getController());
+            // "for the first time this turn": nothing this trigger would have
+            // fired on reached the destination earlier in the turn. Crawling
+            // Sensation (Origin$ Any) counts every arrival; a trigger with an
+            // Origin only counts arrivals from those zones, so "the void calls
+            // you for the first time" (Hand,Library -> Graveyard) is not
+            // silenced by a creature of yours that died earlier in the turn.
+            final ZoneType dest = ZoneType.smartValueOf(getParam("Destination"));
+            List<Card> entered = new java.util.ArrayList<>();
+            if (hasParam("Origin") && !"Any".equals(getParam("Origin"))) {
+                for (ZoneType from : ZoneType.listValueOf(getParam("Origin"))) {
+                    entered.addAll(CardUtil.getThisTurnEntered(dest, from, getParam("ValidCards"), getHostCard(), this, getHostCard().getController()));
+                }
+            } else {
+                entered = CardUtil.getThisTurnEntered(dest, null, getParam("ValidCards"), getHostCard(), this, getHostCard().getController());
+            }
             entered.removeAll(filterCards(table));
             if (!entered.isEmpty()) {
                 return false;

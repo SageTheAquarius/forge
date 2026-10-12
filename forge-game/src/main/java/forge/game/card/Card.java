@@ -3443,6 +3443,10 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
             if ((sa.isAdventure() || sa.isOmen()) && !getCurrentStateName().equals(sa.getCardStateName())) {
                 continue;
             }
+            // likewise a prepared spell that may be cast from hand
+            if (sa.getCardStateName() == CardStateName.PreparedSpell && getCurrentStateName() != CardStateName.PreparedSpell) {
+                continue;
+            }
             if (sa.isLandAbility()) {
                 continue;
             }
@@ -3453,6 +3457,11 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
         return true;
     }
 
+    /** The card's prepared-spell face may also be cast as a spell from hand (SVar:CastFromHand on that face). */
+    public final boolean hasPreparedSpellCastFromHand() {
+        return hasState(CardStateName.PreparedSpell) && getState(CardStateName.PreparedSpell).hasSVar("CastFromHand");
+    }
+
     public void updateSpellAbilities(List<SpellAbility> list, CardState state) {
         for (final ICardTraitChanges ck : getChangedCardTraitsList(state)) {
             ck.applySpellAbility(list);
@@ -3461,6 +3470,16 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
         if (!isInPlay() && hasState(CardStateName.Secondary) && state.getStateName() == CardStateName.Original) {
             // Adventure and Omen may only be cast not from Battlefield
             list.addAll(getState(CardStateName.Secondary).getSpellAbilities());
+        }
+
+        if (!isInPlay() && state.getStateName() == CardStateName.Original && hasPreparedSpellCastFromHand()) {
+            // A prepared spell is normally cast only as the copy its creature
+            // parks in exile. A spell face that says SVar:CastFromHand may also
+            // be cast as that spell wherever the card itself could be cast: the
+            // card goes on the stack as the spell and to the graveyard after.
+            // (A custom set's "Mythos": "cast this from your hand or a copy
+            // from the battlefield once". No printed card has the SVar.)
+            list.addAll(getState(CardStateName.PreparedSpell).getSpellAbilities());
         }
 
         // keywords should already been cleanup by layers
