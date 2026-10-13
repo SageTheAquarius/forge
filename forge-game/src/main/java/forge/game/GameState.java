@@ -85,6 +85,8 @@ public class GameState {
     private final Map<Card, List<String>> cardToNamedCard = new HashMap<>();
     private final Map<Card, String> cardToExiledWithId = new HashMap<>();
     private final Map<Card, Card> cardAttackMap = new HashMap<>();
+    // |Blocking:<attacker id>: blocker -> the attacker's Id, resolved in handleCombat.
+    private final Map<Card, Integer> cardBlockMap = new HashMap<>();
 
     private final Map<Card, String> cardToScript = new HashMap<>();
 
@@ -187,6 +189,11 @@ public class GameState {
                 if (zone == ZoneType.Battlefield) {
                     if (!card.getAllAttachedCards().isEmpty()) {
                         // Remember the ID of cards that have attachments
+                        cardsReferencedByID.add(card);
+                    }
+                    if (game.getCombat() != null && card.isCreature()) {
+                        // In a combat snapshot every creature keeps its ID, so an
+                        // attack or a block can be re-declared on it by ID.
                         cardsReferencedByID.add(card);
                     }
                 }
@@ -440,6 +447,11 @@ public class GameState {
                     newText.append(":").append(def.getId());
                 }
             }
+            if (c.getGame().getCombat().isBlocking(c)) {
+                for (Card attacker : c.getGame().getCombat().getAttackersBlockedBy(c)) {
+                    newText.append("|Blocking:").append(attacker.getId());
+                }
+            }
         }
 
         if (!c.getUnlockedRooms().isEmpty()) {
@@ -603,6 +615,7 @@ public class GameState {
         cardToMergedCards.clear();
         cardToScript.clear();
         cardAttackMap.clear();
+        cardBlockMap.clear();
 
         int playerTurn = playerStates.indexOf(getPlayerState(tChangePlayer));
         Player newPlayerTurn = game.getPlayers().get(playerTurn);
@@ -736,6 +749,20 @@ public class GameState {
 
         game.updateCombatForView();
         game.fireEvent(new GameEventCombatChanged());
+
+        // A block assignment to stand in for the defender's choice at the
+        // Declare Blockers step (|Blocking:<attacker id>): the evaluator's way of
+        // forcing one block configuration, as |Attacking forces an attack.
+        if (toDeclareBlockers && !cardBlockMap.isEmpty()) {
+            Map<Card, Card> forced = new HashMap<>();
+            for (Entry<Card, Integer> e : cardBlockMap.entrySet()) {
+                Card attacker = idToCard.get(e.getValue());
+                if (attacker != null) {
+                    forced.put(e.getKey(), attacker);
+                }
+            }
+            game.getPhaseHandler().devSetForcedBlocks(forced);
+        }
 
         // Gracefully proceed to Declare Blockers, giving priority to the defending player,
         // but only if the stack is empty (otherwise the game will crash).
@@ -1405,6 +1432,10 @@ public class GameState {
                     } else {
                         cardAttackMap.put(c, null);
                     }
+                } else if (info.startsWith("Blocking:")) {
+                    // Resolved against idToCard in handleCombat: the attacker may
+                    // sit on a battlefield line parsed after this one.
+                    cardBlockMap.put(c, Integer.parseInt(info.substring(info.indexOf(':') + 1)));
                 } else if (info.equals("NoETBTrigs")) {
                     cardsWithoutETBTrigs.add(c);
                 } else if (info.equals("Foretold")) {

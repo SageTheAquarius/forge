@@ -82,6 +82,10 @@ public class PhaseHandler implements java.io.Serializable, IHasForgeLog {
 
     private transient Player playerTurn = null;
     private transient Player playerPreviousTurn = null;
+    // Puzzle / evaluation: a block assignment (blocker -> attacker) that stands
+    // in for the defending controller's declareBlockers once, set by GameState
+    // from |Blocking:<attacker id> card params. Null = normal play.
+    private transient Map<Card, Card> devForcedBlocks = null;
 
     // priority player
 
@@ -653,6 +657,33 @@ public class PhaseHandler implements java.io.Serializable, IHasForgeLog {
         game.fireEvent(new GameEventCombatChanged());
     }
 
+    public final void devSetForcedBlocks(Map<Card, Card> blockerToAttacker) {
+        devForcedBlocks = blockerToAttacker;
+    }
+
+    /** The forced assignment in place of the controller's choice, once. Only
+     *  legal pairs are placed; an assignment the rules reject as a whole
+     *  (a must-block unmet, say) falls back to blocking with nothing. */
+    private void devDeclareForcedBlocks(Player p) {
+        Map<Card, Card> forced = devForcedBlocks;
+        devForcedBlocks = null;
+        for (Map.Entry<Card, Card> e : forced.entrySet()) {
+            Card blocker = e.getKey();
+            Card attacker = e.getValue();
+            if (blocker == null || attacker == null) continue;
+            if (blocker.getController() != p || !combat.isAttacking(attacker)) continue;
+            if (!CombatUtil.canBlock(attacker, blocker, combat)) continue;
+            combat.addBlocker(attacker, blocker);
+        }
+        String problem = CombatUtil.validateBlocks(combat, p);
+        if (problem != null) {
+            System.out.println("[dev] forced blocks rejected (" + problem + "); blocking with nothing");
+            for (Card b : CardLists.filterControlledBy(combat.getAllBlockers(), p)) {
+                combat.undoBlockingAssignment(b);
+            }
+        }
+    }
+
     private void declareBlockersTurnBasedAction() {
         Player p = playerTurn;
 
@@ -668,7 +699,11 @@ public class PhaseHandler implements java.io.Serializable, IHasForgeLog {
                     ReplacementResult repres = game.getReplacementHandler().run(ReplacementType.DeclareBlocker, repRunParams);
                     if (repres == ReplacementResult.NotReplaced) {
                         // If not replaced, run normal declare blockers
-                        whoDeclaresBlockers.getController().declareBlockers(p, combat);
+                        if (devForcedBlocks != null) {
+                            devDeclareForcedBlocks(p);
+                        } else {
+                            whoDeclaresBlockers.getController().declareBlockers(p, combat);
+                        }
                     }
                 }
             }
