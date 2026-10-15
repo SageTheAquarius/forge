@@ -352,7 +352,18 @@ public final class ForgeServer {
         // EconomyDraft house rule: the first mulligan is free (London mulligan
         // with no card put on the bottom). Applies to both seats, so the AI gets
         // it too. Second and later mulligans tuck as normal (1, 2, 3, ...).
-        rules.setFirstMulliganFree(true);
+        // -Dbridge.freemulligan=off: MTG Arena rules, every mulligan tucks
+        // (the Arena practice box, MTG_ARENA_RULES).
+        rules.setFirstMulliganFree(!"off".equals(System.getProperty("bridge.freemulligan")));
+        // -Dbridge.handsmoother=on: MTG Arena's Best-of-One opening hand --
+        // two hands are drawn and the one whose land count is nearer the
+        // deck's land ratio is kept (GameAction.drawStartingHand, Forge's
+        // own "filtered hands"; Arena: "draws an opening hand from each of
+        // two separately randomized copies of the deck" and "leans towards"
+        // the better mix). Every seat, the first seven only -- mulligans
+        // are a plain draw, as on Arena. Off: the stock single draw.
+        forge.StaticData.instance().setFilteredHandsEnabled(
+                "on".equals(System.getProperty("bridge.handsmoother")));
 
         Match mc = new Match(rules, pp, "Forge");
         Game g = mc.createGame();

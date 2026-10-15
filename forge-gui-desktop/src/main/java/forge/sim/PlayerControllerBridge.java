@@ -3871,6 +3871,12 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     /** Win the die roll: choose to play or draw. */
     @Override
     public Player chooseStartingPlayer(boolean isFirstGame) {
+        if ("on".equals(System.getProperty("bridge.autoplayfirst"))) {
+            // MTG Arena Best-of-One: the toss winner is on the play, no
+            // choice offered (the Arena practice box, MTG_ARENA_RULES).
+            logToFeed("You won the toss and are on the play (Arena Best-of-One: no play/draw choice).");
+            return getPlayer();
+        }
         boolean playFirst = yesNo("You won the roll — play first? (No = draw first)");
         if (playFirst) return getPlayer();
         for (Player p : getPlayer().getGame().getPlayers()) {
