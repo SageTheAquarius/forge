@@ -2300,22 +2300,37 @@ public class GameAction {
         }
     }
 
+    /**
+     * -Dbridge.aihands=N: the AI's filtered opening hand is the best of N
+     * shuffles instead of two (an opponent-cheat on the Arena practice box).
+     * Humans always get two, as Arena's smoother does. Values under 2 mean 2.
+     */
+    private static final int AI_HANDS = Math.max(2, Integer.getInteger("bridge.aihands", 2));
+
     private void drawStartingHand(Player p1) {
         //check initial hand
         List<Card> lib1 = Lists.newArrayList(p1.getZone(ZoneType.Library).getCards().threadSafeIterable());
         List<Card> hand1 = lib1.subList(0,p1.getMaxHandSize());
-
-        //shuffle
-        List<Card> shuffledCards = Lists.newArrayList(p1.getZone(ZoneType.Library).getCards().threadSafeIterable());
-        Collections.shuffle(shuffledCards, MyRandom.getRandom());
-
-        //check a second hand
-        List<Card> hand2 = shuffledCards.subList(0,p1.getMaxHandSize());
-
-        //choose better hand according to land count
         float averageLandRatio = getLandRatio(lib1);
-        if (getHandScore(hand1, averageLandRatio) > getHandScore(hand2, averageLandRatio)) {
-            p1.getZone(ZoneType.Library).setCards(shuffledCards);
+        float bestScore = getHandScore(hand1, averageLandRatio);
+        List<Card> bestOrder = null;
+
+        int hands = (p1.getController() != null && p1.getController().isAI()) ? AI_HANDS : 2;
+        for (int i = 1; i < hands; i++) {
+            //shuffle
+            List<Card> shuffledCards = Lists.newArrayList(p1.getZone(ZoneType.Library).getCards().threadSafeIterable());
+            Collections.shuffle(shuffledCards, MyRandom.getRandom());
+
+            //check another hand; choose the better hand according to land count
+            List<Card> hand2 = shuffledCards.subList(0,p1.getMaxHandSize());
+            float score = getHandScore(hand2, averageLandRatio);
+            if (score < bestScore) {
+                bestScore = score;
+                bestOrder = shuffledCards;
+            }
+        }
+        if (bestOrder != null) {
+            p1.getZone(ZoneType.Library).setCards(bestOrder);
         }
         p1.drawCards(p1.getMaxHandSize());
     }

@@ -36,13 +36,24 @@ public class LondonMulligan extends AbstractMulligan {
         }
     }
 
+    /**
+     * -Dbridge.aifreemulligan=on: the AI's first mulligan is free even when
+     * the game's is not (an opponent-cheat on the Arena practice box, where
+     * the human plays Arena's rules and the engine is given an edge to make
+     * up for how it plays). Off by default: nothing changes without it.
+     */
+    private static final boolean AI_FREE_MULLIGAN =
+            "on".equals(System.getProperty("bridge.aifreemulligan"));
+
     @Override
     public int tuckCardsDuringMulligan() {
         if (timesMulliganed == 0) {
             return 0;
         }
 
-        int extraCard = firstMulliganFree ? 1 : 0;
+        boolean free = firstMulliganFree
+                || (AI_FREE_MULLIGAN && player.getController() != null && player.getController().isAI());
+        int extraCard = free ? 1 : 0;
         return timesMulliganed - extraCard;
     }
 }
