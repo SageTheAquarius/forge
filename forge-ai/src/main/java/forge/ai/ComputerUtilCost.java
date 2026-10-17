@@ -573,8 +573,10 @@ public class ComputerUtilCost {
                 }
             }
 
-            // Try not to lose Planeswalker if not threatened
-            if (sa.isPwAbility()) {
+            // Try not to lose Planeswalker if not threatened -- unless it is a
+            // token made to be cashed in (EconomyDraft 2026-10-17: an Empower
+            // Jace token at exactly 3 loyalty never took its "-3: Draw a card").
+            if (sa.isPwAbility() && !sa.getHostCard().isToken()) {
                 for (final CostPart part : cost.getCostParts()) {
                     if (part instanceof CostRemoveCounter) {
                         if (part.convertAmount() != null && part.convertAmount() == sa.getHostCard().getCurrentLoyalty()) {

@@ -11,6 +11,7 @@ import com.google.common.collect.Lists;
 import forge.card.ICardFace;
 import forge.card.mana.ManaCost;
 import forge.game.GameEntity;
+import forge.game.ability.ApiType;
 import forge.game.ability.SpellAbilityEffect;
 import forge.game.card.Card;
 import forge.game.card.CardCollection;
@@ -55,7 +56,8 @@ public abstract class SpellAbilityAi extends SpellAbilityEffect {
 
     public final AiAbilityDecision canPlayWithSubs(final Player aiPlayer, final SpellAbility sa) {
         AiAbilityDecision decision = canPlay(aiPlayer, sa);
-        if (!decision.willingToPlay() && !"PlayForSub".equals(sa.getParam("AILogic"))) {
+        if (!decision.willingToPlay() && !"PlayForSub".equals(sa.getParam("AILogic"))
+                && !cantripFiller(aiPlayer, sa, decision)) {
             return decision;
         }
         final AbilitySub subAb = sa.getSubAbility();
@@ -64,6 +66,45 @@ public abstract class SpellAbilityAi extends SpellAbilityEffect {
         }
 
         return chkDrawbackWithSubs(aiPlayer, subAb);
+    }
+
+    /** Root effects that are harmless to fire with no particular reason. */
+    private static final java.util.EnumSet<ApiType> FILLER_ROOTS = java.util.EnumSet.of(
+            ApiType.PumpAll, ApiType.GainLife, ApiType.Scry, ApiType.Surveil, ApiType.Token,
+            ApiType.PutCounterAll, ApiType.UntapAll, ApiType.Empower);
+
+    /**
+     * EconomyDraft 2026-10-17: a cheap spell that draws a card is worth casting
+     * for the card alone when the mana would otherwise go unused. The AI judged
+     * only the first effect, so "creatures you control gain first strike, draw a
+     * card" (Artifist Acumen) was cast in 6% of the games it was in the AI's
+     * deck against 53% for the human. Main 2 of its own turn with an empty
+     * stack, an untargeted harmless first effect, a self-draw in the chain,
+     * mana value 2 or less, and a refusal that was a judgement (not "cannot").
+     */
+    private static boolean cantripFiller(final Player ai, final SpellAbility sa, final AiAbilityDecision refused) {
+        if (!sa.isSpell() || sa.usesTargeting() || sa.getApi() == null
+                || !FILLER_ROOTS.contains(sa.getApi()) || sa.getHostCard().getCMC() > 2) {
+            return false;
+        }
+        switch (refused.decision()) {
+            case CantPlaySa: case CantAfford: case CantAffordX: case CostNotAcceptable:
+            case ConditionsNotMet: case TargetingFailed: case TimingRestrictions:
+                return false;
+            default:
+                break;
+        }
+        final PhaseHandler ph = ai.getGame().getPhaseHandler();
+        if (!ph.is(PhaseType.MAIN2, ai) || !ai.getGame().getStack().isEmpty()) {
+            return false;
+        }
+        for (AbilitySub sub = sa.getSubAbility(); sub != null; sub = sub.getSubAbility()) {
+            if (sub.getApi() == ApiType.Draw && !sub.usesTargeting()
+                    && "You".equals(sub.getParamOrDefault("Defined", "You"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

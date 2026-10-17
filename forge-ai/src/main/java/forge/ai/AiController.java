@@ -1909,6 +1909,19 @@ public class AiController {
             try {
             //avoid ComputerUtil.aiLifeInDanger in loops as it slows down a lot.. call this outside loops will generally be fast...
             boolean isLifeInDanger = useLivingEnd && ComputerUtil.aiLifeInDanger(player, true, 0);
+            // EconomyDraft 2026-10-17: in its own main phase with an empty stack,
+            // a hybrid-sim seat compares up to SIM_COMPARE_CANDIDATES acceptable
+            // plays by their one-play simulated score and takes the best, where
+            // it used to take the first in a cost-sorted list. Off over budget.
+            final forge.game.phase.PhaseHandler cph = game.getPhaseHandler();
+            final int compareK = usesHybridSimulation() && !AiPerf.fast(player)
+                    && cph.isPlayerTurn(player) && cph.getPhase() != null && cph.getPhase().isMain()
+                    && game.getStack().isEmpty()
+                    ? Math.max(1, getIntProperty(AiProps.SIM_COMPARE_CANDIDATES)) : 1;
+            SpellAbility bestSa = null;
+            int bestScore = Integer.MIN_VALUE;
+            SpellAbility lastEvaluated = null;
+            int accepted = 0;
             for (final SpellAbility sa : ComputerUtilAbility.getOriginalAndAltCostAbilities(all, player)) {
                 // Don't add Counterspells to the "normal" playcard lookups
                 if (skipCounter && sa.getApi() == ApiType.Counter) {
@@ -1973,7 +1986,10 @@ public class AiController {
                     sa.setLastStateGraveyard(game.getLastStateGraveyard());
                 }
                 //override decision for living end player
+                OnePlaySafetyChecker.clearLastScore();
                 AiPlayDecision opinion = useLivingEnd && AiPlayDecision.WillPlay.equals(aiPlayDecision) ? aiPlayDecision : canPlayAndPayFor(sa);
+                final Integer simScore = OnePlaySafetyChecker.lastScore();
+                lastEvaluated = sa;
 
                 // reset LastStateBattlefield
                 sa.clearLastState();
@@ -1984,11 +2000,34 @@ public class AiController {
                     continue;
                 }
 
-                // TODO could continue to try find another with higher rating (weighted by priority ordering)
-                return sa;
+                if (compareK <= 1 || simScore == null) {
+                    // not comparing, or a play the simulation never scored (an
+                    // ability, a desperate line): the first acceptable one, as before
+                    if (bestSa == null) {
+                        return sa;
+                    }
+                    break;
+                }
+                accepted++;
+                if (bestSa == null || simScore > bestScore) {
+                    bestSa = sa;
+                    bestScore = simScore;
+                }
+                if (accepted >= compareK) {
+                    break;
+                }
             }
 
-            return null;
+            if (bestSa != null && bestSa != lastEvaluated) {
+                // Evaluating later candidates can reset choices made on this one
+                // (targets, X, charm modes); decide it again so it is cast as judged.
+                bestSa.setActivatingPlayer(player);
+                if (canPlayAndPayFor(bestSa) != AiPlayDecision.WillPlay) {
+                    return null;
+                }
+                bestSa.clearLastState();
+            }
+            return bestSa;
             } finally {
                 AiPerf.scopeEnd();
                 String memo = CardTraitMemo.end();

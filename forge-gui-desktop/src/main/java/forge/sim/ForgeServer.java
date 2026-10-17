@@ -216,6 +216,26 @@ public final class ForgeServer {
                 seatProfiles.clear();   // unreadable: stock behaviour
             }
         }
+        // All-AI evaluation runs only (the ladder): one profile per SEAT, human
+        // seats first. See the human-seat loop below.
+        List<String> evalSeatProfiles = new ArrayList<>();
+        File evalProfileFlag = new File(deckDir + "_eval_profiles.txt");
+        if (Evaluate.present(deckDir) && evalProfileFlag.exists()) {
+            try {
+                List<String> known = forge.ai.AiProfileUtil.getAvailableProfiles();
+                for (String raw : new String(java.nio.file.Files.readAllBytes(
+                        evalProfileFlag.toPath()), "UTF-8").split("\n")) {
+                    String p = raw.trim();
+                    if (!p.isEmpty() && !known.contains(p)) {
+                        System.out.println("[AI-PROFILE] unknown profile " + p + " (have " + known + "); using default");
+                        p = "";
+                    }
+                    evalSeatProfiles.add(p);
+                }
+            } catch (Exception e) {
+                evalSeatProfiles.clear();
+            }
+        }
 
         // _commander.txt is the AI seat count and _humans.txt the human one, so
         // the table is simply the sum - no arithmetic between them. A 4-seat pod
@@ -271,7 +291,29 @@ public final class ForgeServer {
             if (i < seatNames.size() && !seatNames.get(i).isEmpty()) {
                 humanName = seatNames.get(i);
             }
-            LobbyPlayer lpHuman = GamePlayerUtil.createAiPlayer(humanName, i, "");
+            // EconomyDraft 2026-10-17: in an evaluation run (all-AI: the
+            // evaluator and the ladder) this seat is played by the AI it is
+            // registered with, so give it a real profile and the same
+            // simulation mode as the other seat. Before, seat 0 was always
+            // Forge's bare default with no simulation, and _ai_profile.txt's
+            // first line went to seat 1: every ladder A/B measured "default
+            // vs the B profile", whatever --a-profile said. In an eval run
+            // the profiles come from _eval_profiles.txt, one line per seat,
+            // human seats first (the ladder writes it); without that file a
+            // replayed bundle's _ai_profile.txt keeps its meaning (AI seats).
+            LobbyPlayer lpHuman;
+            if (Evaluate.present(deckDir)) {
+                String evProfile = i < evalSeatProfiles.size() ? evalSeatProfiles.get(i) : "";
+                java.util.Set<forge.ai.AIOption> evSim = commander ? null : simOptionsFor(DUEL_SIM);
+                lpHuman = evSim == null
+                        ? GamePlayerUtil.createAiPlayer(humanName, i, evProfile)
+                        : GamePlayerUtil.createAiPlayer(humanName, i, 0, evSim, evProfile);
+                System.out.println("[AI-PROFILE] " + humanName + " (eval seat " + i + "): "
+                        + (evProfile.isEmpty() ? "default" : evProfile)
+                        + (evSim == null ? "" : " sim=" + evSim.iterator().next()));
+            } else {
+                lpHuman = GamePlayerUtil.createAiPlayer(humanName, i, "");
+            }
             rHuman.setPlayer(lpHuman);
             humanLobby.add(lpHuman);
             pp.add(rHuman);
@@ -296,6 +338,9 @@ public final class ForgeServer {
             // seat a player is looking at reads unambiguously.
             String seatName = (aiSeats == 1 && humanSeats == 1) ? "Computer" : "AI " + (i + 1);
             String profile = i < seatProfiles.size() ? seatProfiles.get(i) : "";
+            if (!evalSeatProfiles.isEmpty()) {
+                profile = humanSeats + i < evalSeatProfiles.size() ? evalSeatProfiles.get(humanSeats + i) : "";
+            }
             // Forge's simulation-based spell picker (SpellAbilityPicker /
             // GameSimulator), off in every game until 2026-09-23. It is a
             // per-decision cost with no timeout of its own, so it is opt-in

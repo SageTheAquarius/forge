@@ -52,6 +52,14 @@ public enum AiProps {
     // attackers, the chance an instant-speed answer is held for the
     // opponent's turn (ComputerUtilCard.useRemovalNow).
     HOLD_REMOVAL_FOR_OPP_TURN_CHANCE ("100"),
+    // EconomyDraft 2026-10-17: how many acceptable main-phase plays a
+    // hybrid-sim seat scores by one-play simulation before choosing (1 = the
+    // first acceptable one, Forge's own behaviour). 1 by default: two A/B runs
+    // of 256 AI-vs-AI games at 3 came out 48.0% and 48.8%, no gain for the CPU.
+    SIM_COMPARE_CANDIDATES ("1"),
+    // EconomyDraft 2026-10-17: chance an attacker is judged as if the
+    // defender's two-plus open mana and card in hand were a +2/+2 trick.
+    RESPECT_OPEN_MANA_TRICK_CHANCE ("0"),
     ENABLE_RANDOM_FAVORABLE_TRADES_ON_BLOCK ("true"),
     RANDOMLY_TRADE_EVEN_WHEN_HAVE_LESS_CREATS ("false"),
     MAX_DIFF_IN_CREATURE_COUNT_TO_TRADE ("1"),

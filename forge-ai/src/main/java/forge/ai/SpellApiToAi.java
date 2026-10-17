@@ -96,6 +96,11 @@ public enum SpellApiToAi {
             // Rewrite Regrets, Protege's Awakening... in 299 prod games). It
             // only ever helps its caster.
             .put(ApiType.Empower, AlwaysPlayAi.class)
+            // Same hole for The Hobbit's Recruit (draw, discard, a 1/1 if the
+            // discard was a nonland): Sound the Trumpets was uncastable and ten
+            // creatures' Recruit triggers were declined. Found by
+            // forge_bridge/quality/ai_api_audit.py.
+            .put(ApiType.Recruit, AlwaysPlayAi.class)
             .put(ApiType.Encode, EncodeAi.class)
             .put(ApiType.Endure, EndureAi.class)
             .put(ApiType.EndCombatPhase, EndTurnAi.class)

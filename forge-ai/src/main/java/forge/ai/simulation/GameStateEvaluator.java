@@ -266,6 +266,14 @@ public class GameStateEvaluator {
         }
         // TODO treat cards like Captive Audience negative
         // e.g. a 5 CMC permanent results in 200, whereas a 5/5 creature is ~225
+        if (c.isPlaneswalker() && c.isToken()) {
+            // EconomyDraft 2026-10-17: a planeswalker token (an Empower Jace
+            // token) is worth what its loyalty buys, a point a counter. At 50 +
+            // 2 a counter, "-3: Draw a card" scored 6 lost against a card's 5
+            // and the simulation vetoed it every time: the AI's tokens never
+            // drew in prod, the human's drew 21 times.
+            return c.getCounters(CounterEnumType.LOYALTY);
+        }
         int value = 50 + 30 * c.getCMC();
         if (c.isPlaneswalker()) {
             value += 2 * c.getCounters(CounterEnumType.LOYALTY);
