@@ -60,6 +60,17 @@ public enum AiProps {
     // EconomyDraft 2026-10-17: chance an attacker is judged as if the
     // defender's two-plus open mana and card in hand were a +2/+2 trick.
     RESPECT_OPEN_MANA_TRICK_CHANCE ("0"),
+    // EconomyDraft 2026-10-17: assume a +2/+2 trick when TrickModel's odds for
+    // the defender (prior 0.3, updated by the tricks they cast and the combats
+    // they passed with mana up) reach this percent. 0 = off. Overrides the
+    // fixed chance above when set. 60 by default: neutral against the AI
+    // (766 A/B games, 51.2%) because an AI rarely punishes attacks with tricks;
+    // it only fires against a player who has shown tricks this game.
+    TRICK_MODEL_THRESHOLD ("60"),
+    // EconomyDraft 2026-10-17: the full search (simulation picker): plays deep
+    // per line, and the time per decision after which it plays its best line.
+    SEARCH_DEPTH ("2"),
+    SEARCH_BUDGET_MS ("2500"),
     ENABLE_RANDOM_FAVORABLE_TRADES_ON_BLOCK ("true"),
     RANDOMLY_TRADE_EVEN_WHEN_HAVE_LESS_CREATS ("false"),
     MAX_DIFF_IN_CREATURE_COUNT_TO_TRADE ("1"),

@@ -101,12 +101,18 @@ public class SpellAbilityPicker {
         if (sa != null) {
             return sa;
         }
-        createNewPlan(origGameScore, candidateSAs);
+        SimulationController.startBudget(AiProfileUtil.getIntProperty(player, AiProps.SEARCH_BUDGET_MS));
+        try {
+            createNewPlan(origGameScore, candidateSAs);
+        } finally {
+            SimulationController.clearBudget();
+        }
         return getPlannedSpellAbility(origGameScore, candidateSAs);
     }
 
     private Plan formulatePlanWithPhase(Score origGameScore, List<SpellAbility> candidateSAs, PhaseType phase) {
-        SimulationController controller = new SimulationController(origGameScore);
+        SimulationController controller = new SimulationController(origGameScore,
+                Math.max(1, AiProfileUtil.getIntProperty(player, AiProps.SEARCH_DEPTH)));
         SpellAbility sa = chooseSpellAbilityToPlayImpl(controller, candidateSAs, origGameScore, phase);
         if (sa != null) {
             return controller.getBestPlan();
@@ -169,6 +175,9 @@ public class SpellAbilityPicker {
         Score bestSaValue = origGameScore;
         print("Evaluating... (orig score = " + origGameScore +  ")");
         for (int i = 0; i < candidateSAs.size(); i++) {
+            if (i > 0 && SimulationController.overBudget()) {
+                break;   // out of time: the best of what was searched
+            }
             Score value = evaluateSa(controller, phase, candidateSAs, i);
             if (value.value > bestSaValue.value) {
                 bestSaValue = value;
@@ -362,6 +371,10 @@ public class SpellAbilityPicker {
             numSimulations++;
             if (lastScore.value > bestScore.value) {
                 bestScore = lastScore;
+            }
+            if (SimulationController.overBudget()) {
+                choicesIterator.stop(lastScore);   // out of time: unwind, keep the best so far
+                break;
             }
         } while (choicesIterator.advance(lastScore));
         controller.doneEvaluating(bestScore);

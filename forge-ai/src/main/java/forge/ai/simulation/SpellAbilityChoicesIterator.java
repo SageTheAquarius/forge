@@ -218,6 +218,42 @@ public class SpellAbilityChoicesIterator {
         return false;
     }
 
+    /**
+     * EconomyDraft 2026-10-17: stop iterating (the search is out of time) and
+     * unwind every decision this iterator pushed onto the controller, in the
+     * order advance() unwinds them when the choices run out. Breaking out of
+     * the loop without this left decisions on the controller's stack and the
+     * search threw "getBestPlan() expects currentStack to be empty!".
+     */
+    public void stop(Score lastScore) {
+        for (ChoicePoint cp : choicePoints) {
+            if (lastScore.value > cp.bestScoreForChoice.value) {
+                cp.bestScoreForChoice = lastScore;
+            }
+        }
+        if (lastScore.value > bestScoreForTarget.value) {
+            bestScoreForTarget = lastScore;
+        }
+        if (lastScore.value > bestScoreForMode.value) {
+            bestScoreForMode = lastScore;
+        }
+        for (int i = choicePoints.size() - 1; i >= 0 && evalDepth > 0; i--) {
+            doneEvaluating(choicePoints.get(i).bestScoreForChoice);
+        }
+        choicePoints.clear();
+        // What is left on the stack is the target decision (inner) and the mode
+        // decision (outer); evalDepth counts exactly what was pushed.
+        if (evalDepth > 0 && cachedTargetScores != null) {
+            doneEvaluating(bestScoreForTarget);
+        }
+        while (evalDepth > 0) {
+            doneEvaluating(bestScoreForMode.value > bestScoreForTarget.value ? bestScoreForMode : bestScoreForTarget);
+        }
+        cachedTargetScores = null;
+        nextTarget = -1;
+        modeIterator = null;
+    }
+
     private void doneEvaluating(Score bestScore) {
         controller.doneEvaluating(bestScore);
         evalDepth--;

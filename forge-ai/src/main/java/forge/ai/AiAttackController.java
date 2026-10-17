@@ -1551,8 +1551,14 @@ public class AiAttackController {
         if (defendingOpponent == null || !ai.getController().isAI()) {
             return false;
         }
-        final int chance = ((PlayerControllerAi) ai.getController()).getAi()
-                .getIntProperty(AiProps.RESPECT_OPEN_MANA_TRICK_CHANCE);
+        final AiController aic = ((PlayerControllerAi) ai.getController()).getAi();
+        // The trick model: assume a trick when this defender's odds, from what
+        // they have shown this game, reach the profile's threshold (percent).
+        final int threshold = aic.getIntProperty(AiProps.TRICK_MODEL_THRESHOLD);
+        if (threshold > 0 && threshold <= 100) {
+            return TrickModel.probability(defendingOpponent) * 100.0 >= threshold;
+        }
+        final int chance = aic.getIntProperty(AiProps.RESPECT_OPEN_MANA_TRICK_CHANCE);
         if (chance <= 0 || defendingOpponent.getCardsIn(ZoneType.Hand).isEmpty()
                 || ComputerUtilMana.getAvailableManaEstimate(defendingOpponent) < 2) {
             return false;

@@ -217,8 +217,11 @@ public final class ForgeServer {
             }
         }
         // All-AI evaluation runs only (the ladder): one profile per SEAT, human
-        // seats first. See the human-seat loop below.
+        // seats first. See the human-seat loop below. A line may carry the
+        // seat's simulation mode after a bar ("Default|full", "Default|off"),
+        // so the search modes can be A/B tested against each other.
         List<String> evalSeatProfiles = new ArrayList<>();
+        evalSeatSims.clear();
         File evalProfileFlag = new File(deckDir + "_eval_profiles.txt");
         if (Evaluate.present(deckDir) && evalProfileFlag.exists()) {
             try {
@@ -226,14 +229,22 @@ public final class ForgeServer {
                 for (String raw : new String(java.nio.file.Files.readAllBytes(
                         evalProfileFlag.toPath()), "UTF-8").split("\n")) {
                     String p = raw.trim();
+                    String sim = "";
+                    int bar = p.indexOf('|');
+                    if (bar >= 0) {
+                        sim = p.substring(bar + 1).trim().toLowerCase();
+                        p = p.substring(0, bar).trim();
+                    }
                     if (!p.isEmpty() && !known.contains(p)) {
                         System.out.println("[AI-PROFILE] unknown profile " + p + " (have " + known + "); using default");
                         p = "";
                     }
                     evalSeatProfiles.add(p);
+                    evalSeatSims.add(sim);
                 }
             } catch (Exception e) {
                 evalSeatProfiles.clear();
+                evalSeatSims.clear();
             }
         }
 
@@ -304,7 +315,7 @@ public final class ForgeServer {
             LobbyPlayer lpHuman;
             if (Evaluate.present(deckDir)) {
                 String evProfile = i < evalSeatProfiles.size() ? evalSeatProfiles.get(i) : "";
-                java.util.Set<forge.ai.AIOption> evSim = commander ? null : simOptionsFor(DUEL_SIM);
+                java.util.Set<forge.ai.AIOption> evSim = commander ? null : simOptionsFor(evalSeatSim(i, DUEL_SIM));
                 lpHuman = evSim == null
                         ? GamePlayerUtil.createAiPlayer(humanName, i, evProfile)
                         : GamePlayerUtil.createAiPlayer(humanName, i, 0, evSim, evProfile);
@@ -341,6 +352,7 @@ public final class ForgeServer {
             if (!evalSeatProfiles.isEmpty()) {
                 profile = humanSeats + i < evalSeatProfiles.size() ? evalSeatProfiles.get(humanSeats + i) : "";
             }
+            final String seatSimMode = evalSeatSims.isEmpty() ? null : evalSeatSim(humanSeats + i, null);
             // Forge's simulation-based spell picker (SpellAbilityPicker /
             // GameSimulator), off in every game until 2026-09-23. It is a
             // per-decision cost with no timeout of its own, so it is opt-in
@@ -352,7 +364,8 @@ public final class ForgeServer {
             // on any Commander game (a Lightning duel included), which ended
             // test_lightning_no_deckout on turn 2 with the AI seat gone.
             java.util.Set<forge.ai.AIOption> simOptions = commander ? null : simOptionsFor(
-                    aiSeats == 1 && humanSeats == 1 ? DUEL_SIM
+                    seatSimMode != null ? seatSimMode
+                    : aiSeats == 1 && humanSeats == 1 ? DUEL_SIM
                             : "full".equals(POD_SIM) ? "hybrid" : POD_SIM);
             if (commander && i == 0 && (simOptionsFor(DUEL_SIM) != null || simOptionsFor(POD_SIM) != null)) {
                 System.out.println("[AI-PROFILE] simulation AI skipped: Commander table (GameCopier cannot map the Commander Effect)");
@@ -481,6 +494,10 @@ public final class ForgeServer {
             System.out.println("[MOOD] level " + moodLevel + " on "
                     + Math.max(0, g.getPlayers().size() - humanSeats) + " AI seat(s)");
         }
+        // What each player shows about combat tricks this game (TrickModel), read
+        // by the AI's attack logic when a profile sets TRICK_MODEL_THRESHOLD.
+        // Attached to the real game only; simulated copies read it by name.
+        forge.ai.TrickModel.attach(g);
         Player p0 = g.getPlayers().get(0);
 
         // A human seat that has lost is never asked for priority again, so the
@@ -952,6 +969,14 @@ public final class ForgeServer {
      */
     static final String DUEL_SIM = System.getProperty("bridge.duelsim", "hybrid").trim().toLowerCase();
     static final String POD_SIM = System.getProperty("bridge.podsim", "off").trim().toLowerCase();
+
+    /** Per-seat simulation modes from _eval_profiles.txt ("" = the default). */
+    static final List<String> evalSeatSims = new ArrayList<>();
+
+    static String evalSeatSim(int seat, String fallback) {
+        String s = seat < evalSeatSims.size() ? evalSeatSims.get(seat) : "";
+        return s == null || s.isEmpty() ? fallback : s;
+    }
 
     static java.util.Set<forge.ai.AIOption> simOptionsFor(String mode) {
         if ("full".equals(mode)) {

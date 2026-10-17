@@ -57,7 +57,27 @@ public class SimulationController {
     }
 
     public boolean shouldRecurse() {
-        return !GameStateEvaluator.isWinning(bestScore.value) && getRecursionDepth() < maxDepth;
+        return !GameStateEvaluator.isWinning(bestScore.value) && getRecursionDepth() < maxDepth
+                && !overBudget();
+    }
+
+    // EconomyDraft 2026-10-17: a per-decision time budget for the full search
+    // (SEARCH_BUDGET_MS), so it can run in a live duel: once the deadline
+    // passes, no deeper recursion and no further candidates or choices -- the
+    // best line found so far is played. 0 = no deadline (stock behaviour).
+    private static final ThreadLocal<Long> DEADLINE = ThreadLocal.withInitial(() -> 0L);
+
+    public static void startBudget(long millis) {
+        DEADLINE.set(millis > 0 ? System.currentTimeMillis() + millis : 0L);
+    }
+
+    public static void clearBudget() {
+        DEADLINE.set(0L);
+    }
+
+    public static boolean overBudget() {
+        long d = DEADLINE.get();
+        return d > 0 && System.currentTimeMillis() > d;
     }
 
     public Plan.Decision getLastDecision() {
