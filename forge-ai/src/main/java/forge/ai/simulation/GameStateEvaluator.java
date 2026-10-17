@@ -49,10 +49,25 @@ public class GameStateEvaluator {
             return null;
         }
 
+        // EconomyDraft 2026-10-17: a decision taken while a spell is resolving
+        // (OnePlaySafetyChecker scores those on purpose) copies a half-resolved
+        // parent ability that resolveStack cannot finish, and advancing the
+        // copy threw "Phase.nextPhase() is called, but Stack isn't empty" --
+        // the AI lost the decision (4 times in 256 ladder games). There is no
+        // upcoming combat to read from the middle of a resolution: score the
+        // board as it is.
+        if (!evalGame.getStack().isEmpty()) {
+            return null;
+        }
+
         GameCopier copier = new GameCopier(evalGame);
         Game gameCopy = copier.makeCopy(null, aiPlayer);
 
-        gameCopy.getPhaseHandler().devAdvanceToPhase(PhaseType.COMBAT_DAMAGE, () -> GameSimulator.resolveStack(gameCopy, aiPlayer.getWeakestOpponent()));
+        try {
+            gameCopy.getPhaseHandler().devAdvanceToPhase(PhaseType.COMBAT_DAMAGE, () -> GameSimulator.resolveStack(gameCopy, aiPlayer.getWeakestOpponent()));
+        } catch (IllegalStateException e) {
+            return null;   // a stack the simulation could not empty: no lookahead
+        }
         CombatSimResult result = new CombatSimResult();
         result.copier = copier;
         return result;
