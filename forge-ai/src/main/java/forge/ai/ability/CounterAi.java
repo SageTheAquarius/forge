@@ -20,6 +20,7 @@ import forge.game.cost.CostDiscard;
 import forge.game.cost.CostExile;
 import forge.game.cost.CostSacrifice;
 import forge.game.player.Player;
+import forge.game.spellability.AbilitySub;
 import forge.game.spellability.SpellAbility;
 import forge.game.spellability.SpellAbilityStackInstance;
 import forge.game.zone.ZoneType;
@@ -112,7 +113,16 @@ public class CounterAi extends SpellAbilityAi {
 
             if (toPay <= usableManaSources) {
                 // If this is a reusable Resource, feel free to play it most of the time
-                if (!playReusable(ai, sa)) {
+                boolean reusable = playReusable(ai, sa);
+                // EconomyDraft 2026-10-17: a mode of a modal spell (Icy
+                // Reception's "counter unless {3}") is an AbilitySub, which
+                // playReusable waves through as if it were a trigger, so the
+                // AI countered into open mana and was paid off 8 of 12 times
+                // in prod logs. A sub of a spell is the spell.
+                if (sa instanceof AbilitySub && sa.getRootAbility() != null && sa.getRootAbility().isSpell()) {
+                    reusable = false;
+                }
+                if (!reusable) {
                     return new AiAbilityDecision(0, AiPlayDecision.CantAfford);
                 }
             }

@@ -3,6 +3,7 @@ package forge.ai.ability;
 import forge.ai.AiAbilityDecision;
 import forge.ai.AiPlayDecision;
 import forge.ai.ComputerUtilAbility;
+import forge.ai.ComputerUtilCard;
 import forge.game.Game;
 import forge.game.ability.AbilityFactory;
 import forge.game.card.Card;
@@ -47,6 +48,17 @@ public class PermanentNoncreatureAi extends PermanentAi {
             }
             if (targets.isEmpty()) {
                 return new AiAbilityDecision(0, AiPlayDecision.TargetingFailed);
+            }
+            // EconomyDraft 2026-10-17: an "exile until this leaves" permanent
+            // is one-shot removal; do not spend it on a 2-drop on turn 3
+            // (Memory Trap on Chandra's Emberling in prod logs). Wait for
+            // something worth it, less picky as the game goes on.
+            CardCollection oppTargets = CardLists.filterControlledBy(targets, ai.getOpponents());
+            final Card best = ComputerUtilCard.getBestRemovalTargetAI(ai, oppTargets.isEmpty() ? targets : oppTargets);
+            final int minCmc = game.getPhaseHandler().getTurn() <= 8 ? 3 : 2;
+            if (best != null && !best.isPlaneswalker() && best.getCMC() < minCmc
+                    && !(best.isCreature() && ComputerUtilCard.evaluateCreature(best) >= 180)) {
+                return new AiAbilityDecision(0, AiPlayDecision.AnotherTime);
             }
         }
         return decision;

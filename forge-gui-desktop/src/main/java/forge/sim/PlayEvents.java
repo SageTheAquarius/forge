@@ -222,7 +222,13 @@ public final class PlayEvents {
     @SuppressWarnings("unused")
     public void onTurnEnded(GameEventTurnEnded ev) {
         try {
-            Player p = game.getPhaseHandler().getPlayerTurn();
+            // PhaseHandler fires TurnEnded from CLEANUP *after*
+            // setPlayerTurn(handleNextTurn()), so getPlayerTurn() is already
+            // the NEXT player: every turn_end named the wrong seat and carried
+            // that seat's hand and spare mana (2026-10-17). The player whose
+            // turn just ended is getPreviousPlayerTurn().
+            Player p = game.getPhaseHandler().getPreviousPlayerTurn();
+            if (p == null) p = game.getPhaseHandler().getPlayerTurn();
             if (p == null) return;
             Json j = new Json().s("e", "turn_end").n("turn", game.getPhaseHandler().getTurn())
                     .s("seat", p.getName()).n("spare", spareMana(p))

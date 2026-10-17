@@ -48,6 +48,10 @@ public enum AiProps {
     TRY_TO_AVOID_ATTACKING_INTO_CERTAIN_BLOCK ("true"),
     TRY_TO_HOLD_COMBAT_TRICKS_UNTIL_BLOCK ("false"),
     CHANCE_TO_HOLD_COMBAT_TRICKS_UNTIL_BLOCK ("30"),
+    // EconomyDraft 2026-10-17: per priority window on its own turn before
+    // attackers, the chance an instant-speed answer is held for the
+    // opponent's turn (ComputerUtilCard.useRemovalNow).
+    HOLD_REMOVAL_FOR_OPP_TURN_CHANCE ("100"),
     ENABLE_RANDOM_FAVORABLE_TRADES_ON_BLOCK ("true"),
     RANDOMLY_TRADE_EVEN_WHEN_HAVE_LESS_CREATS ("false"),
     MAX_DIFF_IN_CREATURE_COUNT_TO_TRADE ("1"),

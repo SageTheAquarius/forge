@@ -26,6 +26,16 @@ import java.util.Map;
 
 public class SacrificeAi extends SpellAbilityAi {
 
+    /** The card a player asked to sacrifice from `list` will give up: their
+     *  worst creature, else their cheapest permanent. */
+    private static Card worstFor(final List<Card> list) {
+        final List<Card> creatures = CardLists.filter(list, CardPredicates.CREATURES);
+        if (!creatures.isEmpty()) {
+            return ComputerUtilCard.getWorstCreatureAI(creatures);
+        }
+        return ComputerUtilCard.getCheapestPermanentAI(list, null, false);
+    }
+
     @Override
     protected AiAbilityDecision canPlay(Player ai, SpellAbility sa) {
         return sacrificeTgtAI(ai, sa, false);
@@ -95,6 +105,17 @@ public class SacrificeAi extends SpellAbilityAi {
 
             if (list.isEmpty()) {
                 return new AiAbilityDecision(0, AiPlayDecision.CantPlayAi);
+            }
+
+            // EconomyDraft 2026-10-17: an edict is removal of the WORST card
+            // the opponent can offer. Time and value it like removal (Break
+            // Under Pressure went off in the AI's own upkeep against a lone
+            // 2-drop in prod logs) instead of "they have a creature".
+            if (sa.isSpell() && !mandatory) {
+                final Card worst = worstFor(list);
+                if (worst != null && !ComputerUtilCard.useRemovalNow(sa, worst, 0, ZoneType.Graveyard)) {
+                    return new AiAbilityDecision(0, AiPlayDecision.AnotherTime);
+                }
             }
 
             if (num.equals("X") && sa.getSVar(num).equals("Count$xPaid")) {

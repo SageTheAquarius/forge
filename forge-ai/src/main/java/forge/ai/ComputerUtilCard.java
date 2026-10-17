@@ -1435,8 +1435,27 @@ public class ComputerUtilCard {
             if (ph.isPlayerTurn(ai) && phaseType.isAfter(PhaseType.COMBAT_DECLARE_BLOCKERS)) {
                 threat *= 0.1f;
             }
+            // EconomyDraft 2026-10-17: an instant has no business going off in
+            // its caster's own upkeep, draw step or main 1 -- that is where the
+            // AI spent Unsummon, Your Fate Ends Here and Extended Absence on
+            // whatever was untapped (5 of 8, 5 of 9 and 6 of 9 casts in prod
+            // logs), before the opponent had committed anything. Hold it for
+            // the opponent's combat or end step, which the branches below leave
+            // undamped; interrupt 1 above still fires when removing a blocker
+            // makes a bigger attack.
+            final boolean ownAttackDeclared = phaseType == PhaseType.COMBAT_DECLARE_ATTACKERS
+                    && game.getCombat() != null && !game.getCombat().getAttackers().isEmpty();
+            if (ph.isPlayerTurn(ai) && phaseType.isBefore(PhaseType.COMBAT_DECLARE_BLOCKERS)
+                    && !ownAttackDeclared
+                    && !SpellAbilityAi.isSorcerySpeed(sa, ai)
+                    && holdRemovalThisTurn(ai, sa.getHostCard(), ph.getTurn())) {
+                threat *= 0.1f;
+            }
             if (!ph.isPlayerTurn(ai) &&
-                    (phaseType.isBefore(PhaseType.COMBAT_BEGIN) || phaseType.isAfter(PhaseType.COMBAT_DECLARE_BLOCKERS))) {
+                    (phaseType.isBefore(PhaseType.COMBAT_BEGIN)
+                            || (phaseType.isAfter(PhaseType.COMBAT_DECLARE_BLOCKERS)
+                                    && phaseType != PhaseType.END_OF_TURN))) {
+                // (the opponent's end step is where a held answer gets used)
                 threat *= 0.1f;
             }
         } else if (c.isPlaneswalker()) {
@@ -1503,12 +1522,41 @@ public class ComputerUtilCard {
             threat += 0.5f * costTarget / opp.getLandsInPlay().size();   //set back opponent's mana
         }
 
+        // EconomyDraft 2026-10-17: a 3+ mana answer on a token or a 2-drop is
+        // card and tempo disadvantage unless the thing is a real threat
+        // (Extended Absence on Cadet and Beast tokens in prod logs). The
+        // interrupts above already returned for the tactical cases.
+        if (c.isCreature() && costRemoval >= 3 && costTarget < costRemoval - 1
+                && evaluateCreature(c) < 200 && threat < 1.0f) {
+            return false;
+        }
+
         final float valueNow = Math.max(valueTempo, threat);
         if (valueNow < 0.2) { //hard floor to reduce ridiculous odds for instants over time
             return false;
         }
         final float chance = MyRandom.getRandom().nextFloat();
         return chance < valueNow;
+    }
+
+    /**
+     * Whether this answer is held for the opponent's turn: the profile's
+     * HOLD_REMOVAL_FOR_OPP_TURN_CHANCE, rolled ONCE per card and turn. A fresh
+     * roll at each of the four or five priority windows before combat would
+     * turn an 85% knob into a coin flip, so the roll is a hash of the card and
+     * the turn rather than MyRandom.
+     */
+    private static boolean holdRemovalThisTurn(final Player ai, final Card host, final int turn) {
+        final int chance = AiProfileUtil.getIntProperty(ai, AiProps.HOLD_REMOVAL_FOR_OPP_TURN_CHANCE);
+        if (chance >= 100) {
+            return true;
+        }
+        if (chance <= 0) {
+            return false;
+        }
+        final long mix = (long) host.getId() * 1103515245L + (long) turn * 12345L
+                + (long) ai.getName().hashCode() * 2654435761L;
+        return Math.floorMod((int) (mix >>> 16), 100) < chance;
     }
 
     private static boolean landGrantingRemoval(final SpellAbility sa) {

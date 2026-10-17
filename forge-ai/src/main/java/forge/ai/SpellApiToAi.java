@@ -90,6 +90,12 @@ public enum SpellApiToAi {
             .put(ApiType.EachDamage, DamageEachAi.class)
             .put(ApiType.Earthbend, EarthbendAi.class)
             .put(ApiType.Effect, EffectAi.class)
+            // EconomyDraft 2026-10-17: Empower (Reality Fracture) had no entry, so
+            // get() fell back to CannotPlayAi and every spell with "Empower Jace"
+            // in its chain was uncastable for the AI (0 casts of No Admittance,
+            // Rewrite Regrets, Protege's Awakening... in 299 prod games). It
+            // only ever helps its caster.
+            .put(ApiType.Empower, AlwaysPlayAi.class)
             .put(ApiType.Encode, EncodeAi.class)
             .put(ApiType.Endure, EndureAi.class)
             .put(ApiType.EndCombatPhase, EndTurnAi.class)

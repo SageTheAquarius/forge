@@ -30,6 +30,8 @@ TRY_TO_HOLD_COMBAT_TRICKS_UNTIL_BLOCK=true
 # Chance to hold combat tricks until blockers are declared. If -1 is specified, this chance is not used, and the standard
 # evaluation for offensive pump buff is used instead.
 CHANCE_TO_HOLD_COMBAT_TRICKS_UNTIL_BLOCK=65
+# EconomyDraft 2026-10-17: chance per own pre-combat priority window to hold an instant-speed answer for the opponent's turn
+HOLD_REMOVAL_FOR_OPP_TURN_CHANCE=50
 
 # Trade blocking preferences (enabling these will make the AI trade more aggressively when considering blocks,
 # but only with creatures that are worse in abilities and have lower or the same power as the attacker). Note
