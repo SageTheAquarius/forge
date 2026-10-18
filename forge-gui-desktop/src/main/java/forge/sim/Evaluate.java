@@ -74,6 +74,7 @@ public final class Evaluate {
     private boolean done = false;
     private List<String> labels = new ArrayList<>();
     private String chosen = "";
+    private int pickIndex = 0;
 
     private Evaluate(Map<String, String> kv, String deckDir) {
         this.seat = Integer.parseInt(kv.getOrDefault("seat", "0").trim());
@@ -124,6 +125,32 @@ public final class Evaluate {
             for (SpellAbility sa : cands) labels.add(label(sa));
             if ("list".equals(mode)) {
                 finish("list");
+                g.setGameOver(GameEndReason.Draw);
+                return;
+            }
+            if ("pick".equals(mode)) {
+                // EconomyDraft 2026-10-17: what would this seat's own AI play
+                // here? Asked of the seat's AiController as configured for the
+                // run (profile and simulation mode from _eval_profiles.txt), so
+                // the same snapshot can be asked under two settings. Reported
+                // as the matching candidate index (0 = pass).
+                chosen = "pass";
+                pickIndex = 0;
+                if (me.getController() instanceof forge.ai.PlayerControllerAi) {
+                    List<SpellAbility> pick = ((forge.ai.PlayerControllerAi) me.getController())
+                            .getAi().chooseSpellAbilityToPlay();
+                    SpellAbility sa = pick == null || pick.isEmpty() ? null : pick.get(0);
+                    if (sa != null) {
+                        String l = label(sa);
+                        chosen = l;
+                        int idx = cands.indexOf(sa);
+                        if (idx < 0) {
+                            idx = labels.indexOf(l) - 1;
+                        }
+                        pickIndex = idx >= 0 ? idx + 1 : -1;
+                    }
+                }
+                finish("pick");
                 g.setGameOver(GameEndReason.Draw);
                 return;
             }
@@ -299,7 +326,7 @@ public final class Evaluate {
             for (String l : labels) ls.add(PlayEvents.Json.q(l));
             j.raw("candidates", "[" + String.join(",", ls) + "]");
             if (!"list".equals(mode)) {
-                j.s("chosen", chosen).n("candidate", candidate).n("seed", seed);
+                j.s("chosen", chosen).n("candidate", "pick".equals(mode) ? pickIndex : candidate).n("seed", seed);
                 j.b("won", me.hasWon()).b("lost", !me.isInGame() && !me.hasWon());
                 j.n("score", score(game, me));
                 List<String> life = new ArrayList<>();
