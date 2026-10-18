@@ -69,6 +69,25 @@ public class GameCopier {
         return makeCopy(null, null);
     }
     public Game makeCopy(PhaseType advanceToPhase, Player aiPlayer) {
+        final long t0 = System.nanoTime();
+        final long b0 = forge.ai.AiPerf.threadAllocatedBytes();
+        try {
+            Game g = makeCopyImpl(advanceToPhase, aiPlayer);
+            if (COPY_CHECK && advanceToPhase == null && !origGame.EXPERIMENTAL_RESTORE_SNAPSHOT) {
+                try {
+                    checkCopy(g);
+                } catch (RuntimeException e) {
+                    System.out.println("[COPYCHECK] check failed: " + e);
+                }
+            }
+            return g;
+        } finally {
+            final long b1 = b0 < 0 ? -1 : forge.ai.AiPerf.threadAllocatedBytes();
+            forge.ai.AiPerf.copied(System.nanoTime() - t0, b0 < 0 || b1 < 0 ? -1 : b1 - b0);
+        }
+    }
+
+    private Game makeCopyImpl(PhaseType advanceToPhase, Player aiPlayer) {
         if (origGame.EXPERIMENTAL_RESTORE_SNAPSHOT) {
             // How do we advance to phase when using restores?
             return snapshot.makeCopy();
@@ -314,6 +333,44 @@ public class GameCopier {
     private static PaperCard hidden_info_card = new PaperCard(CardRules.fromScript(Lists.newArrayList("Name:hidden", "Types:Artifact", "Oracle:")), "", CardRarity.Common);
     private static final boolean PRUNE_HIDDEN_INFO = false;
     private static final boolean USE_FROM_PAPER_CARD = true;
+    private static final boolean FAST_COPY = !"false".equals(System.getProperty("bridge.fastcopy"));
+    private static final boolean COPY_CHECK = "1".equals(System.getProperty("bridge.copycheck"));
+    private static final java.util.concurrent.atomic.AtomicLong checkCards = new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong checkBad = new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong checkCopies = new java.util.concurrent.atomic.AtomicLong();
+
+    /** -Dbridge.copycheck=1: compare every card of the copy with its original
+     *  (name, P/T, tapped, counters, keywords, abilities, triggers, statics) and
+     *  print running totals and the first differences as "[COPYCHECK]". */
+    private void checkCopy(Game newGame) {
+        long copies = checkCopies.incrementAndGet();
+        for (Card o : origGame.getCardsInGame()) {
+            Card n = cardMap.get(o);
+            if (n == null) {
+                continue;
+            }
+            checkCards.incrementAndGet();
+            String diff = null;
+            if (!o.getName().equals(n.getName())) diff = "name";
+            else if (o.isInPlay() && o.isCreature() && (o.getNetPower() != n.getNetPower() || o.getNetToughness() != n.getNetToughness())) diff = "P/T " + o.getNetPower() + "/" + o.getNetToughness() + " vs " + n.getNetPower() + "/" + n.getNetToughness();
+            else if (o.isTapped() != n.isTapped()) diff = "tapped";
+            else if (!o.getCounters().equals(n.getCounters())) diff = "counters";
+            else if (o.getKeywords().size() != n.getKeywords().size()) diff = "keywords " + o.getKeywords().size() + " vs " + n.getKeywords().size();
+            else if (o.getSpellAbilities().size() != n.getSpellAbilities().size()) diff = "abilities " + o.getSpellAbilities().size() + " vs " + n.getSpellAbilities().size();
+            else if (o.getTriggers().size() != n.getTriggers().size()) diff = "triggers " + o.getTriggers().size() + " vs " + n.getTriggers().size();
+            else if (o.getStaticAbilities().size() != n.getStaticAbilities().size()) diff = "statics " + o.getStaticAbilities().size() + " vs " + n.getStaticAbilities().size();
+            if (diff != null) {
+                long bad = checkBad.incrementAndGet();
+                if (bad <= 40) {
+                    System.out.println("[COPYCHECK] diff " + o + " in " + o.getZone() + ": " + diff);
+                }
+            }
+        }
+        if (copies % 200 == 0) {
+            System.out.println("[COPYCHECK] " + copies + " copies, " + checkCards.get() + " cards, "
+                    + checkBad.get() + " differing (fastcopy=" + FAST_COPY + ")");
+        }
+    }
     private Card createCardCopy(Game newGame, Player newOwner, Card c, Player aiPlayer) {
         if (c.isToken() && !c.isImmutable()) {
             // The token's own SVars go on first: a keyword that names one
@@ -322,6 +379,28 @@ public class GameCopier {
             Card result = new TokenInfo(c).makeOneToken(newOwner, c.getId(), c);
             new CardCopyService(c).copyCopiableCharacteristics(result, null, null);
             return result;
+        }
+        if (FAST_COPY && !c.isImmutable() && c.getPaperCard() != null && !(c instanceof DetachedCardEffect)) {
+            // EconomyDraft 2026-10-17: copy the printed states from the live card
+            // (ability objects copied) instead of parsing the card's script again
+            // (CardFactory.getCard), which was nearly all of a copy's 5.3 ms and
+            // 4.1 MB. Built in the new game from the start, so nothing registers
+            // with the original game's tracker. -Dbridge.fastcopy=false: old path.
+            Card newCard = new Card(c.getId(), c.getPaperCard(), newGame);
+            newCard.setOwner(newOwner);
+            CardCopyService.copyStatesInto(c, newCard);
+            newCard.setSetCode(c.getSetCode());
+            newCard.setGamePieceType(c.getGamePieceType());
+            newCard.setCommander(c.isCommander());
+            // Copied abilities still name the original game's players.
+            for (SpellAbility sa : newCard.getAllSpellAbilities()) {
+                Player ap = sa.getActivatingPlayer();
+                if (ap != null && ap.getGame() != newGame) {
+                    Player mapped = playerMap.get(ap);
+                    sa.setActivatingPlayer(mapped != null ? mapped : newOwner);
+                }
+            }
+            return newCard;
         }
         if (USE_FROM_PAPER_CARD && !c.isImmutable() && c.getPaperCard() != null) {
             Card newCard;

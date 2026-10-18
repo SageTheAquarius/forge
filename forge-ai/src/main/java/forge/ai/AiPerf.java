@@ -84,6 +84,52 @@ public final class AiPerf {
     public static final LongAdder declBlockMs = new LongAdder();
     /** Full block assignments (AiBlockController.assignBlockers). */
     public static final LongAdder blockSims = new LongAdder();
+
+    // EconomyDraft 2026-10-17: what a simulation game copy costs (GameCopier),
+    // printed as a running "[COPY]" line every COPY_REPORT_EVERY copies.
+    public static final LongAdder copies = new LongAdder();
+    public static final LongAdder copyNanos = new LongAdder();
+    public static final LongAdder copyBytes = new LongAdder();
+    private static final int COPY_REPORT_EVERY = Integer.getInteger("bridge.copyreport", 1000);
+    private static java.lang.reflect.Method allocMethod;
+    private static Object threadBean;
+    private static boolean allocTried;
+
+    /** Bytes allocated by the current thread so far, or -1 where the JVM
+     *  cannot say (no com.sun.management, e.g. the iOS engine build). */
+    public static long threadAllocatedBytes() {
+        try {
+            if (!allocTried) {
+                allocTried = true;
+                Class<?> mf = Class.forName("java.lang.management.ManagementFactory");
+                threadBean = mf.getMethod("getThreadMXBean").invoke(null);
+                Class<?> sun = Class.forName("com.sun.management.ThreadMXBean");
+                if (sun.isInstance(threadBean)) {
+                    allocMethod = sun.getMethod("getThreadAllocatedBytes", long.class);
+                }
+            }
+            if (allocMethod == null) {
+                return -1;
+            }
+            return (Long) allocMethod.invoke(threadBean, Thread.currentThread().getId());
+        } catch (Throwable t) {
+            allocMethod = null;
+            return -1;
+        }
+    }
+
+    public static void copied(long nanos, long bytes) {
+        copies.increment();
+        copyNanos.add(nanos);
+        if (bytes > 0) {
+            copyBytes.add(bytes);
+        }
+        long n = copies.sum();
+        if (COPY_REPORT_EVERY > 0 && n % COPY_REPORT_EVERY == 0) {
+            System.out.println(String.format("[COPY] %d copies, %.1f ms and %.2f MB allocated per copy",
+                    n, copyNanos.sum() / 1e6 / n, copyBytes.sum() / 1048576.0 / n));
+        }
+    }
     /** Combat predictions asked, answered from the decision cache, and answered by the bound. */
     public static final LongAdder predicts = new LongAdder();
     public static final LongAdder predictHits = new LongAdder();

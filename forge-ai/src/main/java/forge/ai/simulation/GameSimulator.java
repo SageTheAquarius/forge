@@ -52,7 +52,7 @@ public class GameSimulator {
         debugLines = origLines;
 
         debugPrint = false;
-        origScore = eval.getScoreForGameState(origGame, origAiPlayer);
+        origScore = cachedOrigScore(origGame, origAiPlayer);
 
         if (advanceToPhase == null && CHECK_GAME_COPY_SCORE) {
             ensureGameCopyScoreMatches(origGame, origAiPlayer);
@@ -72,6 +72,68 @@ public class GameSimulator {
 
         debugPrint = false;
         debugLines = null;
+    }
+
+    // EconomyDraft 2026-10-17: the score of the ORIGINAL position is the same
+    // for every candidate play the AI tries in one decision, but each
+    // GameSimulator recomputed it -- including a whole game copy for the
+    // upcoming-combat lookahead -- so a third of all copies were repeats.
+    // Cached per game object and full board fingerprint (weak keys: a
+    // simulated copy's entry goes with it). -Dbridge.scorecache=false: off.
+    private static final boolean SCORE_CACHE = !"false".equals(System.getProperty("bridge.scorecache"));
+    private static final java.util.Map<Game, Object[]> ORIG_SCORES =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
+    private static final java.util.concurrent.atomic.AtomicLong CACHE_HITS = new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong CACHE_MISSES = new java.util.concurrent.atomic.AtomicLong();
+
+    private static String diffAt(String a, String b) {
+        int i = 0;
+        while (i < a.length() && i < b.length() && a.charAt(i) == b.charAt(i)) i++;
+        return a.substring(Math.max(0, i - 10), Math.min(a.length(), i + 30));
+    }
+
+    private Score cachedOrigScore(Game origGame, Player origAiPlayer) {
+        if (!SCORE_CACHE) {
+            return eval.getScoreForGameState(origGame, origAiPlayer);
+        }
+        String fp = boardFingerprint(origGame, origAiPlayer);
+        Object[] hit = ORIG_SCORES.get(origGame);
+        if (hit != null && fp.equals(hit[0])) {
+            CACHE_HITS.incrementAndGet();
+            return (Score) hit[1];
+        }
+        long miss = CACHE_MISSES.incrementAndGet();
+        if (miss % 1000 == 0) {
+            System.out.println("[SCORECACHE] hits " + CACHE_HITS.get() + " misses " + miss
+                    + (hit == null ? " (new game)" : " (changed: " + diffAt(fp, (String) hit[0]) + ")"));
+        }
+        Score sc = eval.getScoreForGameState(origGame, origAiPlayer);
+        ORIG_SCORES.put(origGame, new Object[] {fp, sc});
+        return sc;
+    }
+
+    /** Everything the evaluator and its combat lookahead read, as one string. */
+    static String boardFingerprint(Game g, Player ai) {
+        StringBuilder b = new StringBuilder(512);
+        // (not the game's timestamp: scoring itself advances it on the real
+        // game, so every lookup missed)
+        b.append(ai.getId()).append('|')
+         .append(g.getPhaseHandler().getTurn()).append(g.getPhaseHandler().getPhase())
+         .append(g.getPhaseHandler().getPlayerTurn() == null ? -1 : g.getPhaseHandler().getPlayerTurn().getId())
+         .append('|').append(g.getStack().size()).append('|');
+        for (Player p : g.getPlayers()) {
+            b.append(p.getId()).append(':').append(p.getLife()).append(',').append(p.getPoisonCounters())
+             .append(',').append(p.getCardsIn(forge.game.zone.ZoneType.Hand).size())
+             .append(',').append(p.getCardsIn(forge.game.zone.ZoneType.Library).size())
+             .append(',').append(p.getManaPool().totalMana()).append(';');
+        }
+        for (Card c : g.getCardsIn(forge.game.zone.ZoneType.Battlefield)) {
+            b.append(c.getId()).append(c.isTapped() ? 't' : 'u').append(c.getDamage())
+             .append('/').append(c.getNetPower()).append('/').append(c.getNetToughness())
+             .append(c.getCounters().hashCode()).append(c.getController().getId()).append(',');
+        }
+        return b.toString();
     }
 
     private void ensureGameCopyScoreMatches(Game origGame, Player origAiPlayer) {

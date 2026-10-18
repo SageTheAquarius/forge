@@ -112,6 +112,20 @@ public class CardCopyService {
         toCharacteristics.copyFrom(fromCharacteristics, false);
     }
 
+    /**
+     * EconomyDraft 2026-10-17: copy every printed state of `from` into `to`
+     * (a card already built in another game), ability objects copied rather
+     * than parsed from the script again. The AI's GameCopier uses it so a
+     * simulation copy no longer re-reads every card's rules text.
+     */
+    public static void copyStatesInto(final Card from, final Card to) {
+        for (final CardStateName state : from.getStates()) {
+            copyState(from, state, to, state, false);
+        }
+        to.setState(from.getCurrentStateName(), false);
+        to.setBackSide(from.isBackSide());
+    }
+
     public static Card copyStats(final Card in, final Player newOwner, boolean assignNewId) {
         int id = in.getId();
         if (assignNewId) {
