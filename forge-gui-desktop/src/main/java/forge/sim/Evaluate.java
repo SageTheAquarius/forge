@@ -252,6 +252,9 @@ public final class Evaluate {
                 sa.setActivatingPlayer(me);
                 if (!sa.canPlay()) continue;
                 if (!sa.isLandAbility() && !ComputerUtilMana.canPayManaCost(sa, me, 0, false)) continue;
+                // A spell with no legal target is not a candidate (it was listed,
+                // and its forced play then failed -- see fail()).
+                if (!sa.isLandAbility() && !ComputerUtilAbility.isFullyTargetable(sa)) continue;
                 String l = label(sa);
                 if (seen.contains(l)) continue;      // two copies of one card in hand
                 seen.add(l);
@@ -310,6 +313,13 @@ public final class Evaluate {
     // ── output ───────────────────────────────────────────────────────────────
 
     private void fail(String why) {
+        // EconomyDraft 2026-10-19: a failure is final. The caller ends the game
+        // as a draw right after, which fires onOutcome -> finish("outcome"),
+        // and that used to overwrite this error with won=true: every forced
+        // candidate the engine could NOT play (no legal target) scored as a
+        // certain win, so "cast Compel Brutality with no creature in play" was
+        // the best play in 12 bank positions and ~20 prod regret rows.
+        done = true;
         System.out.println("[eval] FAIL " + why);
         System.out.flush();
         write(new PlayEvents.Json().s("mode", mode).n("seat", seat).s("error", why));
