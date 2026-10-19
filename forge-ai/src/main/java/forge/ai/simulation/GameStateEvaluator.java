@@ -277,6 +277,15 @@ public class GameStateEvaluator {
             // TODO: Should provide value in whatever it's enchanting?
             // Else the computer would think that casting a Lifelink enchantment
             // on something that already has lifelink is a net win.
+            // EconomyDraft 2026-10-19: an attached equipment keeps its own
+            // value -- it stays on the table when the creature dies and can
+            // move. Valued at 0 once attached, equipping cost the AI the
+            // equipment's 110 for the creature's +85 and the one-play
+            // simulation rejected every Equip (Medic's Kitesail: 13 bank
+            // positions, 7 of them vetoed by the simulation alone).
+            if (c.isEquipment() || c.isFortification()) {
+                return 50 + 30 * c.getCMC();
+            }
             return 0;
         }
         // TODO treat cards like Captive Audience negative

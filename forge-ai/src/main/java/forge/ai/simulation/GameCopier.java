@@ -265,6 +265,7 @@ public class GameCopier {
         newGame.EXPERIMENTAL_RESTORE_SNAPSHOT = origGame.EXPERIMENTAL_RESTORE_SNAPSHOT;
         newGame.AI_TIMEOUT = origGame.AI_TIMEOUT;
         newGame.AI_CAN_USE_TIMEOUT = origGame.AI_CAN_USE_TIMEOUT;
+        newGame.SIMULATION_COPY = true;
         newGame.setAge(origGame.getAge());
 
         // TODO countersAddedThisTurn

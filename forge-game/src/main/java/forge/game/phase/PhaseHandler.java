@@ -87,6 +87,13 @@ public class PhaseHandler implements java.io.Serializable, IHasForgeLog {
     // from |Blocking:<attacker id> card params. Null = normal play.
     private transient Map<Card, Card> devForcedBlocks = null;
 
+    // Simulation (forge.ai.CombatSim): an attack declaration (attacker ->
+    // defender) that stands in for the attacking controller's declareAttackers
+    // once. Null = normal play. A declaration the rules reject as a whole
+    // attacks with nothing and devForcedAttacksRejected() says so.
+    private transient Map<Card, GameEntity> devForcedAttacks = null;
+    private transient boolean devForcedAttacksRejected = false;
+
     // priority player
 
     private transient Player pPlayerPriority = null;
@@ -545,7 +552,11 @@ public class PhaseHandler implements java.io.Serializable, IHasForgeLog {
                     return;
                 }
 
-                whoDeclares.getController().declareAttackers(playerTurn, combat);
+                if (devForcedAttacks != null) {
+                    devDeclareForcedAttacks();
+                } else {
+                    whoDeclares.getController().declareAttackers(playerTurn, combat);
+                }
                 combat.removeAbsentCombatants();
 
                 success = CombatUtil.validateAttackers(combat);
@@ -655,6 +666,34 @@ public class PhaseHandler implements java.io.Serializable, IHasForgeLog {
         game.getTriggerHandler().resetActiveTriggers();
         game.updateCombatForView();
         game.fireEvent(new GameEventCombatChanged());
+    }
+
+    public final void devSetForcedAttacks(Map<Card, GameEntity> attackerToDefender) {
+        devForcedAttacks = attackerToDefender;
+        devForcedAttacksRejected = false;
+    }
+
+    public final boolean devForcedAttacksRejected() {
+        return devForcedAttacksRejected;
+    }
+
+    /** The forced declaration in place of the controller's choice, once. Only
+     *  legal pairs are placed; a declaration the rules reject as a whole (a
+     *  must-attack unmet, say) falls back to attacking with nothing. */
+    private void devDeclareForcedAttacks() {
+        Map<Card, GameEntity> forced = devForcedAttacks;
+        devForcedAttacks = null;
+        for (Map.Entry<Card, GameEntity> e : forced.entrySet()) {
+            Card attacker = e.getKey();
+            GameEntity defender = e.getValue();
+            if (attacker == null || defender == null) continue;
+            if (attacker.getController() != playerTurn || !CombatUtil.canAttack(attacker, defender)) continue;
+            combat.addAttacker(attacker, defender);
+        }
+        if (!CombatUtil.validateAttackers(combat)) {
+            devForcedAttacksRejected = true;
+            combat.clearAttackers();
+        }
     }
 
     public final void devSetForcedBlocks(Map<Card, Card> blockerToAttacker) {

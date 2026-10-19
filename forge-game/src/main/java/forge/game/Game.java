@@ -100,6 +100,10 @@ public class Game {
     public boolean AI_CAN_USE_TIMEOUT = true;
 
     public boolean EXPERIMENTAL_RESTORE_SNAPSHOT = false;
+    // EconomyDraft 2026-10-19: true on a game the AI's simulation copied
+    // (forge.ai.simulation.GameCopier), so a decision taken inside a copy
+    // never starts a simulation of its own (forge.ai.CombatSim).
+    public boolean SIMULATION_COPY = false;
     // While this is false here, its really set by the Match/Preferences
 
     // If this merges with LKI In the future, it will need to change forms

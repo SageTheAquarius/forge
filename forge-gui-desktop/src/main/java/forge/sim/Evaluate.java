@@ -75,6 +75,7 @@ public final class Evaluate {
     private List<String> labels = new ArrayList<>();
     private String chosen = "";
     private int pickIndex = 0;
+    private String reasonsJson = null;   // pick mode: {candidate label: the AI's verdict}
 
     private Evaluate(Map<String, String> kv, String deckDir) {
         this.seat = Integer.parseInt(kv.getOrDefault("seat", "0").trim());
@@ -129,6 +130,9 @@ public final class Evaluate {
                 return;
             }
             if ("pick".equals(mode)) {
+                // -Dbridge.simdebug=true: the simulation prints how it scores
+                // each state (which card is worth what), for a rejected play.
+                forge.ai.simulation.GameSimulator.debugPrint = Boolean.getBoolean("bridge.simdebug");
                 // EconomyDraft 2026-10-17: what would this seat's own AI play
                 // here? Asked of the seat's AiController as configured for the
                 // run (profile and simulation mode from _eval_profiles.txt), so
@@ -136,9 +140,70 @@ public final class Evaluate {
                 // as the matching candidate index (0 = pass).
                 chosen = "pass";
                 pickIndex = 0;
+                final forge.game.phase.PhaseType phase = g.getPhaseHandler().getPhase();
+                final boolean myTurn = g.getPhaseHandler().isPlayerTurn(me);
+                if (phase == forge.game.phase.PhaseType.COMBAT_BEGIN && myTurn) {
+                    // An attack window: what would the AI declare? Labelled the
+                    // way the evaluator labels attack candidates ("attack: A; B",
+                    // names sorted, or "attack: none").
+                    forge.game.combat.Combat combat = new forge.game.combat.Combat(me);
+                    if (me.getController() instanceof forge.ai.PlayerControllerAi) {
+                        // through the controller, so CombatSim's refinement counts
+                        ((forge.ai.PlayerControllerAi) me.getController()).getAi().declareAttackers(me, combat);
+                    } else {
+                        new forge.ai.AiAttackController(me).declareAttackers(combat);
+                    }
+                    List<String> names = new ArrayList<>();
+                    for (Card c : combat.getAttackers()) names.add(c.getName());
+                    java.util.Collections.sort(names);
+                    chosen = names.isEmpty() ? "attack: none" : "attack: " + String.join("; ", names);
+                    pickIndex = -1;
+                    finish("pick");
+                    g.setGameOver(GameEndReason.Draw);
+                    return;
+                }
+                if (phase == forge.game.phase.PhaseType.COMBAT_DECLARE_ATTACKERS && !myTurn
+                        && g.getCombat() != null) {
+                    // A block window (the snapshot's |Attacking marks rebuilt the
+                    // combat): what would the AI assign? "block: Blocker>Attacker; ..."
+                    forge.game.combat.Combat combat = g.getCombat();
+                    if (me.getController() instanceof forge.ai.PlayerControllerAi) {
+                        ((forge.ai.PlayerControllerAi) me.getController()).getAi().declareBlockersFor(me, combat);
+                    } else {
+                        new forge.ai.AiBlockController(me, false).assignBlockersForCombat(combat);
+                    }
+                    List<String> pairs = new ArrayList<>();
+                    for (Card b : combat.getAllBlockers()) {
+                        if (!b.getController().equals(me)) continue;
+                        for (Card a : combat.getAttackersBlockedBy(b)) pairs.add(b.getName() + ">" + a.getName());
+                    }
+                    java.util.Collections.sort(pairs);
+                    chosen = pairs.isEmpty() ? "block: none" : "block: " + String.join("; ", pairs);
+                    pickIndex = -1;
+                    finish("pick");
+                    g.setGameOver(GameEndReason.Draw);
+                    return;
+                }
                 if (me.getController() instanceof forge.ai.PlayerControllerAi) {
-                    List<SpellAbility> pick = ((forge.ai.PlayerControllerAi) me.getController())
-                            .getAi().chooseSpellAbilityToPlay();
+                    // The "why" trace: the AI's verdict on every candidate it
+                    // considered, reported as "reasons" {label: verdict}.
+                    forge.ai.AiController.traceOn(me);
+                    List<SpellAbility> pick;
+                    Map<SpellAbility, String> trace;
+                    try {
+                        pick = ((forge.ai.PlayerControllerAi) me.getController())
+                                .getAi().chooseSpellAbilityToPlay();
+                    } finally {
+                        trace = forge.ai.AiController.traceOff(me);
+                    }
+                    if (trace != null) {
+                        List<String> rs = new ArrayList<>();
+                        for (Map.Entry<SpellAbility, String> e : trace.entrySet()) {
+                            rs.add(PlayEvents.Json.q(label(e.getKey())) + ":" + PlayEvents.Json.q(e.getValue()));
+                        }
+                        java.util.Collections.sort(rs);
+                        reasonsJson = "{" + String.join(",", rs) + "}";
+                    }
                     SpellAbility sa = pick == null || pick.isEmpty() ? null : pick.get(0);
                     if (sa != null) {
                         String l = label(sa);
@@ -167,6 +232,12 @@ public final class Evaluate {
                     ok = me.playLand(sa.getHostCard(), sa) != null;
                 } else {
                     sa.setActivatingPlayer(me);
+                    // a free non-mana X (a walker's -X) at its middle value, as a
+                    // non-comparing seat would choose it
+                    final Integer x = forge.ai.AiController.freeNonManaXOptions(sa.getRootAbility(), me, false).get(0);
+                    if (x != null && sa.getRootAbility().getXManaCostPaid() == null) {
+                        sa.getRootAbility().setXManaCostPaid(x);
+                    }
                     ok = ComputerUtil.handlePlayingSpellAbility(me, sa, null);
                 }
                 if (!ok) {
@@ -337,6 +408,7 @@ public final class Evaluate {
             j.raw("candidates", "[" + String.join(",", ls) + "]");
             if (!"list".equals(mode)) {
                 j.s("chosen", chosen).n("candidate", "pick".equals(mode) ? pickIndex : candidate).n("seed", seed);
+                if (reasonsJson != null) j.raw("reasons", reasonsJson);
                 j.b("won", me.hasWon()).b("lost", !me.isInGame() && !me.hasWon());
                 j.n("score", score(game, me));
                 List<String> life = new ArrayList<>();

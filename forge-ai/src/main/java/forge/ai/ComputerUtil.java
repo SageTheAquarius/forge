@@ -1136,6 +1136,40 @@ public class ComputerUtil {
                 && !sa.hasParam("ActivationPhases");
     }
 
+    /** The card has a self enters-the-battlefield trigger whose effect chain can change this turn's combat. */
+    public static boolean etbAffectsCombat(final Card card) {
+        for (final Trigger tr : card.getTriggers()) {
+            if (tr.getMode() != TriggerType.ChangesZone
+                    || !ZoneType.Battlefield.toString().equals(tr.getParam("Destination"))) {
+                continue;
+            }
+            if (tr.hasParam("ValidCard") && !tr.getParam("ValidCard").contains("Self")) {
+                continue;
+            }
+            for (SpellAbility s = tr.ensureAbility(); s != null; s = s.getSubAbility()) {
+                final ApiType api = s.getApi();
+                if (api == null) {
+                    continue;
+                }
+                switch (api) {
+                    case PutCounter: case PutCounterAll: case Pump: case PumpAll: case Tap: case TapAll:
+                    case DealDamage: case DamageAll: case Destroy: case DestroyAll: case Fight: case Animate:
+                    case Charm:
+                        return true;
+                    case ChangeZone:
+                    case ChangeZoneAll:
+                        if ("Battlefield".equals(s.getParam("Origin"))) {
+                            return true;   // bounce or exile
+                        }
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+        return false;
+    }
+
     public static boolean castPermanentInMain1(final Player ai, final SpellAbility sa) {
         final Card card = sa.getHostCard();
         final CardState cardState = card.isFaceDown() ? card.getState(CardStateName.Original) : card.getCurrentState();
@@ -1150,6 +1184,21 @@ public class ComputerUtil {
                 }
             } else if (!card.getController().getCreaturesInPlay().isEmpty()) {
                 return true;
+            }
+        }
+
+        // EconomyDraft 2026-10-19: an enters-the-battlefield effect that shapes
+        // this turn's combat -- a counter or pump on a creature, a tap, damage
+        // or removal, a mode choice among those -- is worth more before
+        // attackers than after. The deep replay of recorded games found the
+        // main-1 cast better in 64 positions the AI had held for main 2
+        // (Fateshaper Aspirant's counter and indestructible, Craftwork
+        // Crusher's 4 damage). Cast in main 1 when a creature could attack.
+        if (card.isCreature() && etbAffectsCombat(card)) {
+            for (Card c : ai.getCreaturesInPlay()) {
+                if (CombatUtil.canAttack(c)) {
+                    return true;
+                }
             }
         }
 

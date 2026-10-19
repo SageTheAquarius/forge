@@ -74,6 +74,24 @@ public enum AiProps {
     // per line, and the time per decision after which it plays its best line.
     SEARCH_DEPTH ("2"),
     SEARCH_BUDGET_MS ("2500"),
+    // EconomyDraft 2026-10-19: combat by simulation (forge.ai.CombatSim). A
+    // hybrid-sim seat plays its rule-based attack declaration and up to this
+    // many alternatives (none, everything, one more, one fewer) through the
+    // combat on a game copy -- the defender blocking as the AI would, and
+    // not blocking at all; the worse of the two counts -- and declares the
+    // one with the best board after combat. The same for blocks. 0 = off.
+    SIM_ATTACK_CANDIDATES ("6"),
+    SIM_BLOCK_CANDIDATES ("6"),
+    SIM_COMBAT_BUDGET_MS ("800"),
+    // The board score after combat values a life point at 2 and a creature at
+    // ~150-250, so it never blocks to protect a low life total or attacks for
+    // the clock. This adds W * (ln(own life) - ln(opponent life)): a point of
+    // life is worth more the fewer are left. 0 = off. Calibrated 2026-10-19 on
+    // the position bank's 55 attack + 11 block positions (deep-replay truth):
+    // regret per attack decision 0.109 rule-based, 0.069 at 0, 0.057 at 300,
+    // 0.049 at 600, 0.041 at 1500, 0.038 at 2500 (plateau); blocks 0.244 ->
+    // 0.213 -> 0.164 -> 0.045 -> 0.022 -> 0.022.
+    SIM_COMBAT_LIFE_WEIGHT ("1500"),
     ENABLE_RANDOM_FAVORABLE_TRADES_ON_BLOCK ("true"),
     RANDOMLY_TRADE_EVEN_WHEN_HAVE_LESS_CREATS ("false"),
     MAX_DIFF_IN_CREATURE_COUNT_TO_TRADE ("1"),

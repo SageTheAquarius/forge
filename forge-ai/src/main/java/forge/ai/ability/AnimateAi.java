@@ -110,6 +110,14 @@ public class AnimateAi extends SpellAbilityAi {
                 }
             }
         }
+        // EconomyDraft 2026-10-19: a curse that strips a creature and has a
+        // damage or destroy rider down its chain is removal, not a combat
+        // trick (Flourishing Grapple: "loses all abilities; your creature
+        // deals damage equal to its power to it"). Its timing is removal
+        // timing, decided with the target in animateTgtAI.
+        if (sa.isCurse() && sa.usesTargeting() && curseRemovalDamage(sa, ai) != null) {
+            return true;
+        }
         // Don't use instant speed animate abilities before AI's COMBAT_BEGIN
         if (!ph.is(PhaseType.COMBAT_BEGIN) && ph.isPlayerTurn(ai) && !isSorcerySpeed(sa, ai)
                 && !sa.hasParam("ActivationPhases") && !"Permanent".equals(sa.getParam("Duration"))) {
@@ -278,6 +286,37 @@ public class AnimateAi extends SpellAbilityAi {
         return player.getGame().getPhaseHandler().getPhase().isBefore(PhaseType.MAIN2);
     }
 
+    /**
+     * The damage a curse animate's chain deals to the animated target (null
+     * when the chain has no such rider): a DealDamage sub on the parent's
+     * target, with "damage equal to the power of the creature you choose"
+     * (ParentTargeted$CardPower, the bite shape) read as the AI's best power;
+     * Integer.MAX_VALUE for a Destroy sub.
+     */
+    static Integer curseRemovalDamage(final SpellAbility sa, final Player ai) {
+        for (SpellAbility s = sa.getSubAbility(); s != null; s = s.getSubAbility()) {
+            final String defined = s.getParamOrDefault("Defined", "");
+            final boolean onParentTarget = defined.contains("Remembered") || defined.contains("ParentTarget")
+                    || defined.contains("Targeted");
+            if (s.getApi() == ApiType.Destroy && onParentTarget) {
+                return Integer.MAX_VALUE;
+            }
+            if (s.getApi() == ApiType.DealDamage && onParentTarget) {
+                final String num = s.getParamOrDefault("NumDmg", "0");
+                final String svar = s.getSVar(num);
+                if (svar != null && svar.startsWith("ParentTargeted$CardPower")) {
+                    int best = 0;
+                    for (final Card c : ai.getCreaturesInPlay()) {
+                        best = Math.max(best, c.getNetPower());
+                    }
+                    return best;
+                }
+                return AbilityUtils.calculateAmount(s.getHostCard(), num, s);
+            }
+        }
+        return null;
+    }
+
     private AiAbilityDecision animateTgtAI(final SpellAbility sa) {
         if (sa.getMaxTargets() == 0) {
             // this happens if an optional cost is skipped, e.g. Brave the Wilds
@@ -303,6 +342,47 @@ public class AnimateAi extends SpellAbilityAi {
         // list is empty, no possible targets
         if (list.isEmpty() && !alwaysActivatePWAbility) {
             return new AiAbilityDecision(0, AiPlayDecision.CantPlayAi);
+        }
+
+        // EconomyDraft 2026-10-19: a curse with a damage / destroy rider: pick
+        // the best opposing creature or walker the rider kills, at removal
+        // timing (ComputerUtilCard.useRemovalNow), like any removal spell.
+        if (sa.isCurse()) {
+            final Integer dmg = curseRemovalDamage(sa, ai);
+            if (dmg != null) {
+                Card best = null;
+                int bestValue = 0;
+                for (final Card c : list) {
+                    if (!c.getController().isOpponentOf(ai)) {
+                        continue;
+                    }
+                    final boolean kills;
+                    final int value;
+                    if (c.isCreature()) {
+                        kills = dmg == Integer.MAX_VALUE
+                                || ComputerUtilCombat.getEnoughDamageToKill(c, dmg, sa.getHostCard(), false) <= dmg;
+                        value = ComputerUtilCard.evaluateCreature(c);
+                    } else if (c.isPlaneswalker()) {
+                        kills = dmg == Integer.MAX_VALUE || c.getCurrentLoyalty() <= dmg;
+                        value = 150 + 10 * c.getCurrentLoyalty();
+                    } else {
+                        continue;
+                    }
+                    if (kills && value > bestValue) {
+                        bestValue = value;
+                        best = c;
+                    }
+                }
+                if (best == null) {
+                    return new AiAbilityDecision(0, AiPlayDecision.TargetingFailed);
+                }
+                if (!ComputerUtilCard.useRemovalNow(sa, best, dmg == Integer.MAX_VALUE ? 0 : dmg, ZoneType.Graveyard)) {
+                    return new AiAbilityDecision(0, AiPlayDecision.AnotherTime);
+                }
+                rememberAnimatedThisTurn(ai, best);
+                sa.getTargets().add(best);
+                return new AiAbilityDecision(100, AiPlayDecision.WillPlay);
+            }
         }
 
         // something is used for animate into creature

@@ -51,7 +51,7 @@ public class GameSimulator {
         origLines = new ArrayList<>();
         debugLines = origLines;
 
-        debugPrint = false;
+        debugPrint = SIM_DEBUG;
         origScore = cachedOrigScore(origGame, origAiPlayer);
 
         if (advanceToPhase == null && CHECK_GAME_COPY_SCORE) {
@@ -70,9 +70,12 @@ public class GameSimulator {
             origScore = eval.getScoreForGameState(copyOrigGame, copyOrigAiPlayer);
         }
 
-        debugPrint = false;
+        debugPrint = SIM_DEBUG;
         debugLines = null;
     }
+
+    /** -Dbridge.simdebug=true: print how every simulated state is scored (card by card). */
+    private static final boolean SIM_DEBUG = Boolean.getBoolean("bridge.simdebug");
 
     // EconomyDraft 2026-10-17: the score of the ORIGINAL position is the same
     // for every candidate play the AI tries in one decision, but each

@@ -45,7 +45,17 @@ public class CopyPermanentAi extends SpellAbilityAi {
                 return new AiAbilityDecision(0, AiPlayDecision.WaitForEndOfTurn);
             }
         } else if ("DuplicatePerms".equals(aiLogic)) {
-            final List<Card> valid = AbilityUtils.getDefinedCards(source, sa.getParam("Defined"), sa);
+            List<Card> valid;
+            if (sa.usesTargeting() && sa.getTargetRestrictions().canTgtPlayer()
+                    && sa.getParamOrDefault("Defined", "").contains("TargetedPlayer")) {
+                // EconomyDraft 2026-10-19: "creatures target player controls" is
+                // empty before the target is chosen (below: own side unless a
+                // curse), so Face Yourself never passed this. Count that side.
+                valid = sa.isCurse() ? new CardCollection(aiPlayer.getOpponents().getCreaturesInPlay())
+                        : aiPlayer.getCreaturesInPlay();
+            } else {
+                valid = AbilityUtils.getDefinedCards(source, sa.getParam("Defined"), sa);
+            }
             if (valid.size() < 2) {
                 return new AiAbilityDecision(0, AiPlayDecision.MissingNeededCards);
             }
