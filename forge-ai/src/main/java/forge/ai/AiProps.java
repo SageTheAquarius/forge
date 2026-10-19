@@ -54,9 +54,12 @@ public enum AiProps {
     HOLD_REMOVAL_FOR_OPP_TURN_CHANCE ("100"),
     // EconomyDraft 2026-10-17: how many acceptable main-phase plays a
     // hybrid-sim seat scores by one-play simulation before choosing (1 = the
-    // first acceptable one, Forge's own behaviour). 1 by default: two A/B runs
-    // of 256 AI-vs-AI games at 3 came out 48.0% and 48.8%, no gain for the CPU.
-    SIM_COMPARE_CANDIDATES ("1"),
+    // first acceptable one, Forge's own behaviour). 3 since 2026-10-19: neutral
+    // AI-vs-AI (48.0% / 48.8% over 256 games each), but on 2,220 recorded
+    // decisions from games against a human (quality/compare_picks.py) it
+    // changed 4.2% of plays for a mean gain of +0.027 per changed decision,
+    // mostly by holding a spell instead of casting it (+0.079 over 24).
+    SIM_COMPARE_CANDIDATES ("3"),
     // EconomyDraft 2026-10-17: chance an attacker is judged as if the
     // defender's two-plus open mana and card in hand were a +2/+2 trick.
     RESPECT_OPEN_MANA_TRICK_CHANCE ("0"),
