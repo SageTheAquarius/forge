@@ -265,6 +265,15 @@ public class GameStateEvaluator {
         return value;
     }
 
+    /**
+     * -Dbridge.equipvalue=on: an attached equipment keeps its own value. Off
+     * by default (2026-10-19): with it on, the one-play simulation equipped
+     * wherever it could, and on the bank's main-phase positions that cost
+     * more than it won (hold 46.6% -> 39.8% pass; nine positions worse, one
+     * better). Upstream's 0 is a crude stand-in for the tempo an Equip costs.
+     */
+    private static final boolean EQUIP_VALUE = "on".equals(System.getProperty("bridge.equipvalue"));
+
     public int evalCard(Game game, Player aiPlayer, Card c) {
         // TODO: These should be based on other considerations - e.g. in relation to opponents state.
         if (c.isCreature()) {
@@ -283,7 +292,7 @@ public class GameStateEvaluator {
             // equipment's 110 for the creature's +85 and the one-play
             // simulation rejected every Equip (Medic's Kitesail: 13 bank
             // positions, 7 of them vetoed by the simulation alone).
-            if (c.isEquipment() || c.isFortification()) {
+            if (EQUIP_VALUE && (c.isEquipment() || c.isFortification())) {
                 return 50 + 30 * c.getCMC();
             }
             return 0;

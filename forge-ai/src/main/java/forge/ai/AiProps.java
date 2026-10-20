@@ -90,8 +90,11 @@ public enum AiProps {
     // the position bank's 55 attack + 11 block positions (deep-replay truth):
     // regret per attack decision 0.109 rule-based, 0.069 at 0, 0.057 at 300,
     // 0.049 at 600, 0.041 at 1500, 0.038 at 2500 (plateau); blocks 0.244 ->
-    // 0.213 -> 0.164 -> 0.045 -> 0.022 -> 0.022.
-    SIM_COMBAT_LIFE_WEIGHT ("1500"),
+    // 0.213 -> 0.164 -> 0.045 -> 0.022 -> 0.022. The bank leans "the AI was
+    // too passive", so the A/B ladder (ab.py --sprt 3, FRA drafts, both
+    // orientations) chose: against CombatSim off, weight 1500 went 88-103
+    // (46%), 0 went 96-96, 600 went 98-70 (58%, SPRT call at 90-62).
+    SIM_COMBAT_LIFE_WEIGHT ("600"),
     ENABLE_RANDOM_FAVORABLE_TRADES_ON_BLOCK ("true"),
     RANDOMLY_TRADE_EVEN_WHEN_HAVE_LESS_CREATS ("false"),
     MAX_DIFF_IN_CREATURE_COUNT_TO_TRADE ("1"),
