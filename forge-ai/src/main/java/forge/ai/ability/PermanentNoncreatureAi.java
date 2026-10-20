@@ -2,6 +2,7 @@ package forge.ai.ability;
 
 import forge.ai.AiAbilityDecision;
 import forge.ai.AiPlayDecision;
+import forge.ai.ComputerUtil;
 import forge.ai.ComputerUtilAbility;
 import forge.ai.ComputerUtilCard;
 import forge.game.Game;
@@ -49,6 +50,17 @@ public class PermanentNoncreatureAi extends PermanentAi {
             if (targets.isEmpty()) {
                 return new AiAbilityDecision(0, AiPlayDecision.TargetingFailed);
             }
+            // EconomyDraft 2026-10-20: the exile trigger targets after the
+            // permanent is paid for, so a Ward on the only targets has to come
+            // out of what is left. Memory Trap with four lands open took a
+            // Wrecking Gecko (Ward {2}) in prod and exiled nothing. Hold the
+            // permanent until a target the AI can afford is there.
+            final int left = ComputerUtil.manaLeftAfter(ai, sa);
+            final CardCollection affordable = CardLists.filter(targets, c -> ComputerUtil.wardPayable(ai, c, left));
+            if (affordable.isEmpty()) {
+                return new AiAbilityDecision(0, AiPlayDecision.AnotherTime);
+            }
+            targets = affordable;
             // EconomyDraft 2026-10-17: an "exile until this leaves" permanent
             // is one-shot removal; do not spend it on a 2-drop on turn 3
             // (Memory Trap on Chandra's Emberling in prod logs). Wait for

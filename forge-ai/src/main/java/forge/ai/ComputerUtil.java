@@ -3173,10 +3173,75 @@ public class ComputerUtil {
         return numInHand > 0 || numInDeck >= 3;
     }
 
+    /**
+     * EconomyDraft 2026-10-20: mana the AI would still have once this ability's
+     * own cost is paid -- the budget for a Ward tax on its targets. A trigger
+     * or a sub-ability of something already on the stack has nothing left to
+     * pay, so the whole estimate is free; a spell or activated ability being
+     * weighed still has its own mana cost ahead of it.
+     */
+    public static int manaLeftAfter(final Player ai, final SpellAbility sa) {
+        int available = ComputerUtilMana.getAvailableManaEstimate(ai, true);
+        final SpellAbility root = sa == null ? null : sa.getRootAbility();
+        if (root != null && !root.isTrigger() && root.getPayCosts() != null
+                && root.getPayCosts().hasManaCost()
+                && !(root.getHostCard() != null && root.getHostCard().isInZone(ZoneType.Stack))) {
+            available -= root.getPayCosts().getTotalMana().getCMC();
+        }
+        return available;
+    }
+
+    /**
+     * EconomyDraft 2026-10-20: drop opposing targets whose Ward the AI could
+     * not pay. Ward it cannot pay counters the ability outright, so such a
+     * target is worth less than any other legal one -- in prod a Memory Trap
+     * trigger took a Wrecking Gecko (Ward {2}) with one land open while a
+     * wardless creature stood next to it, and the Trap exiled nothing.
+     * Forge's own Ward accounting (ComputerUtilCost.canPayCost) runs after the
+     * targets are chosen, spells only, and just refuses the cast -- it never
+     * steers the choice, and a trigger never reaches it.
+     *
+     * Only Ward with a mana cost is judged here; "pay life" / "discard" wards
+     * stay for the payment-time decision. Nothing is dropped when the ability
+     * cannot be countered. Returns the list unchanged when every candidate
+     * would be dropped: a mandatory trigger must still target something, and
+     * the caller's own "no targets" handling stays as it was.
+     */
+    public static CardCollection dropUnpayableWard(final Player ai, final SpellAbility sa, final CardCollection targetables, final int manaBudget) {
+        if (ai == null || sa == null || targetables == null || targetables.isEmpty()) {
+            return targetables;
+        }
+        if (!sa.isCounterableBy(null)) {
+            return targetables;
+        }
+        final CardCollection kept = CardLists.filter(targetables, c -> wardPayable(ai, c, manaBudget));
+        if (kept.isEmpty()) {
+            return targetables;
+        }
+        return kept;
+    }
+
+    /** True unless c carries a Ward with a mana cost, against ai, above manaBudget. */
+    public static boolean wardPayable(final Player ai, final Card c, final int manaBudget) {
+        if (c == null || !c.hasKeyword(Keyword.WARD) || !c.isInPlay() || c.getController() == null
+                || !c.getController().isOpponentOf(ai)) {
+            return true;
+        }
+        final Cost ward = ComputerUtilCard.getTotalWardCost(c);
+        return ward == null || !ward.hasManaCost() || ward.getTotalMana().getCMC() <= manaBudget;
+    }
+
+    public static CardCollection dropUnpayableWard(final Player ai, final SpellAbility sa, final CardCollection targetables) {
+        return dropUnpayableWard(ai, sa, targetables, manaLeftAfter(ai, sa));
+    }
+
     // this function should be called by most API to give scripters the option of helping AI
     public static CardCollection filterAITgts(SpellAbility sa, Player ai, CardCollection targetables, boolean alwaysStrict) {
         // TODO support players
         final Card source = sa.getHostCard();
+        // EconomyDraft 2026-10-20: every API's candidate list passes through
+        // here, so a Ward the AI cannot pay is weighed once, for all of them.
+        targetables = dropUnpayableWard(ai, sa, targetables);
         if (source == null || !sa.hasParam("AITgts")) {
             return targetables;
         }
