@@ -95,6 +95,18 @@ public enum AiProps {
     // orientations) chose: against CombatSim off, weight 1500 went 88-103
     // (46%), 0 went 96-96, 600 went 98-70 (58%, SPRT call at 90-62).
     SIM_COMBAT_LIFE_WEIGHT ("600"),
+    // EconomyDraft 2026-10-20 (prod: Samut chumped a 5/5 while an equipped
+    // Oculus with a spent ETB stayed home; Perfected Theory "1/1 until end
+    // of turn" cast on a creature that could not block). Which creature to
+    // lose (chump block, sacrifice) is scored WITHOUT its attached equipment
+    // -- the equipment stays and can move; a static ability that reaches
+    // past the creature (an anthem, "your instants have split second") is
+    // worth +20; a P/T change that ends this turn goes only on a creature
+    // that is in, or about to be in, this turn's combat. NoChumpCurse.ai is
+    // the A/B control with all three off.
+    CHUMP_LOSS_VALUE ("true"),
+    STATIC_ABILITY_VALUE ("true"),
+    TEMP_PT_NEEDS_COMBAT ("true"),
     ENABLE_RANDOM_FAVORABLE_TRADES_ON_BLOCK ("true"),
     RANDOMLY_TRADE_EVEN_WHEN_HAVE_LESS_CREATS ("false"),
     MAX_DIFF_IN_CREATURE_COUNT_TO_TRADE ("1"),

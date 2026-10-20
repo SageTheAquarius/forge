@@ -12,6 +12,8 @@ import forge.game.ability.AbilityUtils;
 import forge.game.ability.ApiType;
 import forge.game.ability.effects.AnimateEffectBase;
 import forge.game.card.*;
+import forge.game.combat.Combat;
+import forge.game.combat.CombatUtil;
 import forge.game.cost.Cost;
 import forge.game.cost.CostPutCounter;
 import forge.game.keyword.Keyword;
@@ -317,6 +319,49 @@ public class AnimateAi extends SpellAbilityAi {
         return null;
     }
 
+    private static final boolean TEMP_PT_COMBAT = !"off".equals(System.getProperty("bridge.tempptcombat"));
+
+    /**
+     * EconomyDraft 2026-10-20: a P/T change that ends this turn only does
+     * anything through this turn's combat. The AI cast Perfected Theory
+     * ("base 1/1 until end of turn") on the human's Wrecking Gecko at its own
+     * beginning of combat, paying ward {2}: the Gecko could not block its
+     * only attacker (a flier) and was a 5/5 again on the human's turn. Worth
+     * it on a creature that is attacking or blocking now, or, before the
+     * AI's attackers are declared, on its own would-be attacker or an
+     * opposing creature that could block one of them. Kill switch:
+     * -Dbridge.tempptcombat=off.
+     */
+    private static boolean mattersThisTurn(final Player ai, final Card c, final SpellAbility sa) {
+        if (!AiProfileUtil.getBoolProperty(ai, AiProps.TEMP_PT_NEEDS_COMBAT)) {
+            return true;   // the A/B control profile
+        }
+        final String duration = sa.getParamOrDefault("Duration", "");
+        if ("Permanent".equals(duration) || "UntilHostLeavesPlay".equals(duration)
+                || "UntilYourNextTurn".equals(duration)) {
+            return true;
+        }
+        final Game game = ai.getGame();
+        final PhaseHandler ph = game.getPhaseHandler();
+        final Combat combat = game.getCombat();
+        if (combat != null && (combat.isAttacking(c) || combat.isBlocking(c))) {
+            return true;
+        }
+        if (!ph.isPlayerTurn(ai) || ph.getPhase().isAfter(PhaseType.COMBAT_BEGIN)) {
+            return false;
+        }
+        final boolean mine = c.getController() == ai;
+        for (final Card attacker : ai.getCreaturesInPlay()) {
+            if (!CombatUtil.canAttack(attacker)) {
+                continue;
+            }
+            if (mine ? attacker == c : CombatUtil.canBlock(attacker, c)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private AiAbilityDecision animateTgtAI(final SpellAbility sa) {
         if (sa.getMaxTargets() == 0) {
             // this happens if an optional cost is skipped, e.g. Brave the Wilds
@@ -490,6 +535,9 @@ public class AnimateAi extends SpellAbilityAi {
             int bestGain = 0;
             for (final Card c : list) {
                 if (!c.isCreature()) {
+                    continue;
+                }
+                if (TEMP_PT_COMBAT && !mattersThisTurn(ai, c, sa)) {
                     continue;
                 }
                 final Card animatedCopy = becomeAnimated(c, sa);

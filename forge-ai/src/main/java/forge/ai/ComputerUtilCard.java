@@ -671,7 +671,13 @@ public class ComputerUtilCard {
         if (Iterables.size(list) == 1) {
             return Iterables.get(list, 0);
         }
-        return Aggregates.itemWithMin(IterableUtil.filter(list, CardPredicates.CREATURES), ComputerUtilCard.creatureEvaluator);
+        // EconomyDraft 2026-10-20: "worst" = least lost when it leaves play,
+        // so attached equipment (which stays) does not count for the creature.
+        return Aggregates.itemWithMin(IterableUtil.filter(list, CardPredicates.CREATURES), ComputerUtilCard::evaluateCreatureAsLoss);
+    }
+
+    public static int evaluateCreatureAsLoss(final Card c) {
+        return creatureEvaluator.evaluateCreatureAsLoss(c);
     }
 
     // For ability of Oracle en-Vec, return the first card that are going to attack next turn

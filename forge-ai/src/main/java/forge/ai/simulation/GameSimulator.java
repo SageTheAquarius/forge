@@ -9,6 +9,7 @@ import forge.game.Game;
 import forge.game.card.Card;
 import forge.game.phase.PhaseType;
 import forge.game.player.Player;
+import forge.game.spellability.AbilitySub;
 import forge.game.spellability.SpellAbility;
 import forge.game.spellability.TargetChoices;
 import forge.util.collect.FCollectionView;
@@ -201,10 +202,36 @@ public class GameSimulator {
         }
     }
 
+    // EconomyDraft 2026-10-20: the mode of a modal spell, weighed on its own
+    // (CharmAi hands each "Choices" entry to canPlaySa). Its description is
+    // not on the host card, so the lookup below failed, the score was
+    // MIN_VALUE and the safety check let every mode through unsimulated
+    // ("Simulation: SA not found!" once per mode of Perfected Theory). Now
+    // the parent spell is simulated with that one mode chosen; the mode's
+    // targets go onto its chained clone (see simulateSpellAbility).
+    private SpellAbility modeSource;
+
     private SpellAbility findSaInSimGame(final SpellAbility sa) {
+        modeSource = null;
         // is already an ability from sim game
         if (sa.getHostCard().getGame().equals(this.simGame)) {
             return sa;
+        }
+        final SpellAbility parent = sa.getParent();
+        if (sa instanceof AbilitySub && parent != null && isChoiceOf(sa, parent)) {
+            final SpellAbility simParent = findSaInSimGame(parent);
+            if (simParent == null) {
+                return null;
+            }
+            final String mode = sa.getParam("SpellDescription");
+            for (AbilitySub choice : simParent.getAdditionalAbilityList("Choices")) {
+                if (Objects.equals(choice.getParam("SpellDescription"), mode)) {
+                    simParent.setChosenList(new ArrayList<>(Collections.singletonList(choice)));
+                    modeSource = sa;
+                    return simParent;
+                }
+            }
+            return null;
         }
         Card origHostCard = sa.getHostCard();
         Card hostCard = copier.find(origHostCard);
@@ -223,6 +250,15 @@ public class GameSimulator {
         }
 
         return result;
+    }
+
+    private static boolean isChoiceOf(final SpellAbility sa, final SpellAbility parent) {
+        for (AbilitySub choice : parent.getAdditionalAbilityList("Choices")) {
+            if (choice == sa) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private SpellAbility saMatcher(Iterable<SpellAbility> candidates, String desc) {
@@ -273,6 +309,9 @@ public class GameSimulator {
                 if (interceptor != null) {
                     interceptor.announceX(playingSa);
                     interceptor.chooseTargets(playingSa, GameSimulator.this);
+                } else if (modeSource != null) {
+                    // makeChoices has chained the chosen mode's clone under the parent by now
+                    SpellAbilityChoiceCopier.copyTargets(modeSource, playingSa.getSubAbility(), copier::find);
                 } else {
                     SpellAbilityChoiceCopier.copyTargets(origSa, playingSa, copier::find);
                 }
