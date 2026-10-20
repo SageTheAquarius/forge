@@ -121,6 +121,7 @@ public class CardCopyService {
     public static void copyStatesInto(final Card from, final Card to) {
         for (final CardStateName state : from.getStates()) {
             copyState(from, state, to, state, false);
+            to.getState(state).clearCopiedChoices();
         }
         to.setState(from.getCurrentStateName(), false);
         to.setBackSide(from.isBackSide());
