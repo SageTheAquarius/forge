@@ -1432,7 +1432,11 @@ public class ComputerUtilCard {
                 threat += 1.0f * ComputerUtilCombat.damageIfUnblocked(c, ai, combat, true) / ai.getLife();
                 //TODO:add threat from triggers and other abilities (ie. Master of Cruelties)
             }
-            if (ph.isPlayerTurn(ai) && phaseType.isAfter(PhaseType.COMBAT_DECLARE_BLOCKERS)) {
+            // (post-combat damp: an instant can wait for the opponent's turn; a
+            // sorcery's next window is its own main 1 AFTER the creature has
+            // attacked, so its threat stays whole -- see the sorcery rule below)
+            if (ph.isPlayerTurn(ai) && phaseType.isAfter(PhaseType.COMBAT_DECLARE_BLOCKERS)
+                    && !SpellAbilityAi.isSorcerySpeed(sa, ai)) {
                 threat *= 0.1f;
             }
             // EconomyDraft 2026-10-17: an instant has no business going off in
@@ -1534,6 +1538,19 @@ public class ComputerUtilCard {
         final float valueNow = Math.max(valueTempo, threat);
         if (valueNow < 0.2) { //hard floor to reduce ridiculous odds for instants over time
             return false;
+        }
+        // EconomyDraft 2026-10-20: a sorcery-speed answer is decided, not
+        // rolled. The roll below is sized for an instant, which gets a window
+        // every phase of both turns; a sorcery has two a turn, and the handler
+        // is consulted two or three times per window (the candidate loop, the
+        // comparison's re-decision of the chosen play, handlePlayingSpellAbility),
+        // each with a fresh roll -- so a 44% "use it" became "WillPlay" and then
+        // no cast, and No Admittance sat in hand for four turns with a Grizzly
+        // Bears across (ticket T-20261020-003, 1 run in 3). Main 1 is for the
+        // early returns above (a bigger attack, prowess, a sure kill); otherwise
+        // it waits for main 2 and is cast there whenever it clears the floor.
+        if (SpellAbilityAi.isSorcerySpeed(sa, ai)) {
+            return phaseType == PhaseType.MAIN2;
         }
         final float chance = MyRandom.getRandom().nextFloat();
         return chance < valueNow;
