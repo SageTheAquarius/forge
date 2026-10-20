@@ -297,7 +297,10 @@ public class CreatureEvaluator implements Function<Card, Integer> {
         if (STATIC_VALUE && profileOn(c, AiProps.STATIC_ABILITY_VALUE)) {
             for (final StaticAbility st : c.getStaticAbilities()) {
                 if (st.isIntrinsic() && reachesPastSelf(st)) {
-                    value += addValue(20, "static: " + st);
+                    // A constant label: StaticAbility.toString() translates
+                    // the description on every call, and this runs for every
+                    // creature on every evaluation.
+                    value += addValue(20, "static reaching past self");
                 }
             }
         }
