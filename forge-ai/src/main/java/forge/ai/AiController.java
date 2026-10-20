@@ -1003,6 +1003,9 @@ public class AiController {
         DECISION_TRACE.put(p, new java.util.concurrent.ConcurrentHashMap<>());
     }
 
+    /** -Dbridge.aitrace=true: print the trace of every main-loop decision as [AI-WHY] lines (diagnosis only). */
+    private static final boolean AITRACE = Boolean.getBoolean("bridge.aitrace");
+
     private static final List<Integer> NO_FREE_X = Collections.singletonList(null);
 
     /**
@@ -1966,6 +1969,10 @@ public class AiController {
             // forge.game.card.CardTraitMemo. Thread-local: nothing else sees it.
             CardTraitMemo.begin();
             AiPerf.scopeBegin(player);
+            final boolean autoTrace = AITRACE && !DECISION_TRACE.containsKey(player);
+            if (autoTrace) {
+                traceOn(player);
+            }
             try {
             //avoid ComputerUtil.aiLifeInDanger in loops as it slows down a lot.. call this outside loops will generally be fast...
             boolean isLifeInDanger = useLivingEnd && ComputerUtil.aiLifeInDanger(player, true, 0);
@@ -2129,6 +2136,23 @@ public class AiController {
                 String memo = CardTraitMemo.end();
                 if (Boolean.getBoolean("bridge.traitmemo.log")) {
                     System.out.println("[TRAIT-MEMO] hits/misses=" + memo);
+                }
+                if (autoTrace) {
+                    final Map<SpellAbility, String> t = traceOff(player);
+                    final forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+                    final StringBuilder sb = new StringBuilder("[AI-WHY] ").append(player.getName())
+                            .append(" turn ").append(ph.getTurn()).append(' ').append(ph.getPhase())
+                            .append(ph.isPlayerTurn(player) ? " (own)" : " (opp)")
+                            .append(" stack=").append(game.getStack().size()).append(" life=").append(player.getLife());
+                    if (t != null) {
+                        for (Map.Entry<SpellAbility, String> e : t.entrySet()) {
+                            sb.append("\n    ").append(e.getKey().getHostCard().getName()).append(" : ")
+                                    .append(e.getKey().getDescription().replace('\n', ' '), 0,
+                                            Math.min(40, e.getKey().getDescription().length()))
+                                    .append(" -> ").append(e.getValue());
+                        }
+                    }
+                    System.out.println(sb);
                 }
             }
         });

@@ -141,7 +141,13 @@ public enum AiProps {
     STRIPMINE_MIN_LANDS_OTB_FOR_NO_TEMPO_CHECK ("6"),
     STRIPMINE_MAX_LANDS_TO_ATTEMPT_MANALOCKING ("3"),
     STRIPMINE_HIGH_PRIORITY_ON_SKIPPED_LANDDROP ("false"),
-    TOKEN_GENERATION_ABILITY_CHANCE ("80"),
+    // EconomyDraft 2026-10-20: 100, was 80. The roll made the AI refuse a
+    // castable token spell one time in five for no reason (and the candidate
+    // comparison re-decides the chosen play, so the roll fired twice): the
+    // Germinate Recruits scenario flaked 3 times in 24, and Recursive
+    // Recruitment was cast in 41% of the AI's games against the human's 82%.
+    // The simulation and the handler's own rules decide; a coin does not.
+    TOKEN_GENERATION_ABILITY_CHANCE ("100"),
     TOKEN_GENERATION_ALWAYS_IF_FROM_PLANESWALKER ("true"),
     TOKEN_GENERATION_ALWAYS_IF_OPP_ATTACKS ("true"),
     SCRY_NUM_LANDS_TO_STILL_NEED_MORE ("4"),
