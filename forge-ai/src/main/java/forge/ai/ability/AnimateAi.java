@@ -337,8 +337,10 @@ public class AnimateAi extends SpellAbilityAi {
             return true;   // the A/B control profile
         }
         final String duration = sa.getParamOrDefault("Duration", "");
+        // Every AnimateEffectBase duration that outlives this turn.
         if ("Permanent".equals(duration) || "UntilHostLeavesPlay".equals(duration)
-                || "UntilYourNextTurn".equals(duration)) {
+                || "UntilYourNextTurn".equals(duration) || "UntilYourNextUpkeep".equals(duration)
+                || "UntilAnimatedFaceup".equals(duration)) {
             return true;
         }
         final Game game = ai.getGame();
