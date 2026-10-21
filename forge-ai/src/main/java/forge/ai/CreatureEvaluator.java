@@ -8,7 +8,9 @@ import forge.game.card.CounterEnumType;
 import forge.game.cost.CostPayEnergy;
 import forge.game.keyword.Keyword;
 import forge.game.spellability.SpellAbility;
+import forge.game.staticability.StaticAbility;
 import forge.game.staticability.StaticAbilityAssignCombatDamageAsUnblocked;
+import forge.game.staticability.StaticAbilityMode;
 import forge.game.staticability.StaticAbilityCantAttackBlock;
 import forge.game.staticability.StaticAbilityMustAttack;
 import forge.game.trigger.Trigger;
@@ -285,12 +287,111 @@ public class CreatureEvaluator implements Function<Card, Integer> {
             }
         }
 
+        // EconomyDraft 2026-10-20: a static that reaches past the creature
+        // itself (an anthem, a cost reducer, "your instants have split
+        // second") is worth something while it stays in play. Upstream gave
+        // it nothing, so Samut, Tyrant of Naktamun scored as a bare 2/1 and
+        // the AI chump-blocked with it instead of a creature whose only
+        // ability was a spent ETB. Self-only statics are already in the P/T
+        // and keywords above. Kill switch: -Dbridge.staticvalue=off.
+        if (STATIC_VALUE && profileOn(c, AiProps.STATIC_ABILITY_VALUE)) {
+            for (final StaticAbility st : c.getStaticAbilities()) {
+                if (st.isIntrinsic() && reachesPastSelf(st)) {
+                    // A constant label: StaticAbility.toString() translates
+                    // the description on every call, and this runs for every
+                    // creature on every evaluation.
+                    value += addValue(20, "static reaching past self");
+                }
+            }
+        }
+
         // card-specific evaluation modifier
         if (c.hasSVar("AIEvaluationModifier")) {
             value += AbilityUtils.calculateAmount(c, c.getSVar("AIEvaluationModifier"), null);
         }
 
         return value;
+    }
+
+    private static final boolean STATIC_VALUE = !"off".equals(System.getProperty("bridge.staticvalue"));
+    private static final boolean LOSS_VALUE = !"off".equals(System.getProperty("bridge.lossvalue"));
+
+    /** The lever as the creature's controller's AI profile has it (A/B arms);
+     *  a human's creature, or one with no controller yet, gets the default. */
+    private static boolean profileOn(final Card c, final AiProps prop) {
+        return c.getController() == null || AiProfileUtil.getBoolProperty(c.getController(), prop);
+    }
+
+    private static boolean reachesPastSelf(final StaticAbility st) {
+        for (final String key : new String[] {"Affected", "ValidCard", "ValidPlayer", "Activator", "ValidSpell"}) {
+            final String v = st.getParam(key);
+            if (v != null && !v.isEmpty() && !v.startsWith("Card.Self") && !v.startsWith("Creature.Self")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * What the AI loses when this creature leaves play: its value minus what
+     * attached equipment adds to it, because the equipment stays on the
+     * battlefield and can move (EconomyDraft 2026-10-20). Chump blocks and
+     * sacrifices pick the creature with the least of this. Medic's Kitesail
+     * made Mindseeker Oculus a 3/1 flier, the AI kept it and chumped with
+     * Samut -- and the Kitesail could have gone onto Samut for {2}.
+     * Kill switch: -Dbridge.lossvalue=off.
+     */
+    public int evaluateCreatureAsLoss(final Card c) {
+        int value = evaluateCreature(c);
+        if (!LOSS_VALUE || c == null || !profileOn(c, AiProps.CHUMP_LOSS_VALUE)) {
+            return value;
+        }
+        for (final Card eq : c.getEquippedBy()) {
+            value -= equipmentBoost(eq, c);
+        }
+        return value;
+    }
+
+    /** Roughly what {@code eq}'s statics add to {@code host}, in this class's terms. */
+    static int equipmentBoost(final Card eq, final Card host) {
+        int boost = 0;
+        final int power = Math.max(0, host.getNetCombatDamage());
+        final int toughness = host.getNetToughness();
+        for (final StaticAbility st : eq.getStaticAbilities()) {
+            final String affected = st.getParamOrDefault("Affected", "");
+            if (!st.getMode().contains(StaticAbilityMode.Continuous)
+                    || !(affected.contains("EquippedBy") || affected.contains("AttachedBy"))) {
+                continue;
+            }
+            if (st.hasParam("AddPower")) {
+                boost += 15 * AbilityUtils.calculateAmount(eq, st.getParam("AddPower"), st);
+            }
+            if (st.hasParam("AddToughness")) {
+                boost += 10 * AbilityUtils.calculateAmount(eq, st.getParam("AddToughness"), st);
+            }
+            if (st.hasParam("AddKeyword")) {
+                for (final String kw : st.getParam("AddKeyword").split(" & ")) {
+                    final String name = kw.split(":")[0].trim();
+                    switch (name) {
+                        case "Flying": boost += power * 10; break;
+                        case "Lifelink": boost += power * 10; break;
+                        case "Trample": boost += Math.max(0, power - 1) * 5; break;
+                        case "Vigilance": boost += power * 5 + toughness * 5; break;
+                        case "Deathtouch": boost += 25; break;
+                        case "First Strike": boost += 10 + power * 5; break;
+                        case "Double Strike": boost += 10 + power * 15; break;
+                        case "Menace": boost += power * 4; break;
+                        case "Hexproof": boost += 35; break;
+                        case "Indestructible": boost += 70; break;
+                        default: boost += 10; break;
+                    }
+                }
+            }
+            if (st.hasParam("AddAbility")) {
+                boost += 10 * st.getParam("AddAbility").split(" & ").length;
+            }
+        }
+        return Math.max(0, boost);
     }
 
     private int evaluateSpellAbility(SpellAbility sa) {

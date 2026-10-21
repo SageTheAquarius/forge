@@ -671,7 +671,13 @@ public class ComputerUtilCard {
         if (Iterables.size(list) == 1) {
             return Iterables.get(list, 0);
         }
-        return Aggregates.itemWithMin(IterableUtil.filter(list, CardPredicates.CREATURES), ComputerUtilCard.creatureEvaluator);
+        // EconomyDraft 2026-10-20: "worst" = least lost when it leaves play,
+        // so attached equipment (which stays) does not count for the creature.
+        return Aggregates.itemWithMin(IterableUtil.filter(list, CardPredicates.CREATURES), ComputerUtilCard::evaluateCreatureAsLoss);
+    }
+
+    public static int evaluateCreatureAsLoss(final Card c) {
+        return creatureEvaluator.evaluateCreatureAsLoss(c);
     }
 
     // For ability of Oracle en-Vec, return the first card that are going to attack next turn
@@ -1432,11 +1438,34 @@ public class ComputerUtilCard {
                 threat += 1.0f * ComputerUtilCombat.damageIfUnblocked(c, ai, combat, true) / ai.getLife();
                 //TODO:add threat from triggers and other abilities (ie. Master of Cruelties)
             }
-            if (ph.isPlayerTurn(ai) && phaseType.isAfter(PhaseType.COMBAT_DECLARE_BLOCKERS)) {
+            // (post-combat damp: an instant can wait for the opponent's turn; a
+            // sorcery's next window is its own main 1 AFTER the creature has
+            // attacked, so its threat stays whole -- see the sorcery rule below)
+            if (ph.isPlayerTurn(ai) && phaseType.isAfter(PhaseType.COMBAT_DECLARE_BLOCKERS)
+                    && !SpellAbilityAi.isSorcerySpeed(sa, ai)) {
+                threat *= 0.1f;
+            }
+            // EconomyDraft 2026-10-17: an instant has no business going off in
+            // its caster's own upkeep, draw step or main 1 -- that is where the
+            // AI spent Unsummon, Your Fate Ends Here and Extended Absence on
+            // whatever was untapped (5 of 8, 5 of 9 and 6 of 9 casts in prod
+            // logs), before the opponent had committed anything. Hold it for
+            // the opponent's combat or end step, which the branches below leave
+            // undamped; interrupt 1 above still fires when removing a blocker
+            // makes a bigger attack.
+            final boolean ownAttackDeclared = phaseType == PhaseType.COMBAT_DECLARE_ATTACKERS
+                    && game.getCombat() != null && !game.getCombat().getAttackers().isEmpty();
+            if (ph.isPlayerTurn(ai) && phaseType.isBefore(PhaseType.COMBAT_DECLARE_BLOCKERS)
+                    && !ownAttackDeclared
+                    && !SpellAbilityAi.isSorcerySpeed(sa, ai)
+                    && holdRemovalThisTurn(ai, sa.getHostCard(), ph.getTurn())) {
                 threat *= 0.1f;
             }
             if (!ph.isPlayerTurn(ai) &&
-                    (phaseType.isBefore(PhaseType.COMBAT_BEGIN) || phaseType.isAfter(PhaseType.COMBAT_DECLARE_BLOCKERS))) {
+                    (phaseType.isBefore(PhaseType.COMBAT_BEGIN)
+                            || (phaseType.isAfter(PhaseType.COMBAT_DECLARE_BLOCKERS)
+                                    && phaseType != PhaseType.END_OF_TURN))) {
+                // (the opponent's end step is where a held answer gets used)
                 threat *= 0.1f;
             }
         } else if (c.isPlaneswalker()) {
@@ -1503,12 +1532,54 @@ public class ComputerUtilCard {
             threat += 0.5f * costTarget / opp.getLandsInPlay().size();   //set back opponent's mana
         }
 
+        // EconomyDraft 2026-10-17: a 3+ mana answer on a token or a 2-drop is
+        // card and tempo disadvantage unless the thing is a real threat
+        // (Extended Absence on Cadet and Beast tokens in prod logs). The
+        // interrupts above already returned for the tactical cases.
+        if (c.isCreature() && costRemoval >= 3 && costTarget < costRemoval - 1
+                && evaluateCreature(c) < 200 && threat < 1.0f) {
+            return false;
+        }
+
         final float valueNow = Math.max(valueTempo, threat);
         if (valueNow < 0.2) { //hard floor to reduce ridiculous odds for instants over time
             return false;
         }
+        // EconomyDraft 2026-10-20: a sorcery-speed answer is decided, not
+        // rolled. The roll below is sized for an instant, which gets a window
+        // every phase of both turns; a sorcery has two a turn, and the handler
+        // is consulted two or three times per window (the candidate loop, the
+        // comparison's re-decision of the chosen play, handlePlayingSpellAbility),
+        // each with a fresh roll -- so a 44% "use it" became "WillPlay" and then
+        // no cast, and No Admittance sat in hand for four turns with a Grizzly
+        // Bears across (ticket T-20261020-003, 1 run in 3). Main 1 is for the
+        // early returns above (a bigger attack, prowess, a sure kill); otherwise
+        // it waits for main 2 and is cast there whenever it clears the floor.
+        if (SpellAbilityAi.isSorcerySpeed(sa, ai)) {
+            return phaseType == PhaseType.MAIN2;
+        }
         final float chance = MyRandom.getRandom().nextFloat();
         return chance < valueNow;
+    }
+
+    /**
+     * Whether this answer is held for the opponent's turn: the profile's
+     * HOLD_REMOVAL_FOR_OPP_TURN_CHANCE, rolled ONCE per card and turn. A fresh
+     * roll at each of the four or five priority windows before combat would
+     * turn an 85% knob into a coin flip, so the roll is a hash of the card and
+     * the turn rather than MyRandom.
+     */
+    private static boolean holdRemovalThisTurn(final Player ai, final Card host, final int turn) {
+        final int chance = AiProfileUtil.getIntProperty(ai, AiProps.HOLD_REMOVAL_FOR_OPP_TURN_CHANCE);
+        if (chance >= 100) {
+            return true;
+        }
+        if (chance <= 0) {
+            return false;
+        }
+        final long mix = (long) host.getId() * 1103515245L + (long) turn * 12345L
+                + (long) ai.getName().hashCode() * 2654435761L;
+        return Math.floorMod((int) (mix >>> 16), 100) < chance;
     }
 
     private static boolean landGrantingRemoval(final SpellAbility sa) {

@@ -49,10 +49,25 @@ public class GameStateEvaluator {
             return null;
         }
 
+        // EconomyDraft 2026-10-17: a decision taken while a spell is resolving
+        // (OnePlaySafetyChecker scores those on purpose) copies a half-resolved
+        // parent ability that resolveStack cannot finish, and advancing the
+        // copy threw "Phase.nextPhase() is called, but Stack isn't empty" --
+        // the AI lost the decision (4 times in 256 ladder games). There is no
+        // upcoming combat to read from the middle of a resolution: score the
+        // board as it is.
+        if (!evalGame.getStack().isEmpty()) {
+            return null;
+        }
+
         GameCopier copier = new GameCopier(evalGame);
         Game gameCopy = copier.makeCopy(null, aiPlayer);
 
-        gameCopy.getPhaseHandler().devAdvanceToPhase(PhaseType.COMBAT_DAMAGE, () -> GameSimulator.resolveStack(gameCopy, aiPlayer.getWeakestOpponent()));
+        try {
+            gameCopy.getPhaseHandler().devAdvanceToPhase(PhaseType.COMBAT_DAMAGE, () -> GameSimulator.resolveStack(gameCopy, aiPlayer.getWeakestOpponent()));
+        } catch (IllegalStateException e) {
+            return null;   // a stack the simulation could not empty: no lookahead
+        }
         CombatSimResult result = new CombatSimResult();
         result.copier = copier;
         return result;
@@ -250,6 +265,15 @@ public class GameStateEvaluator {
         return value;
     }
 
+    /**
+     * -Dbridge.equipvalue=on: an attached equipment keeps its own value. Off
+     * by default (2026-10-19): with it on, the one-play simulation equipped
+     * wherever it could, and on the bank's main-phase positions that cost
+     * more than it won (hold 46.6% -> 39.8% pass; nine positions worse, one
+     * better). Upstream's 0 is a crude stand-in for the tempo an Equip costs.
+     */
+    private static final boolean EQUIP_VALUE = "on".equals(System.getProperty("bridge.equipvalue"));
+
     public int evalCard(Game game, Player aiPlayer, Card c) {
         // TODO: These should be based on other considerations - e.g. in relation to opponents state.
         if (c.isCreature()) {
@@ -262,10 +286,27 @@ public class GameStateEvaluator {
             // TODO: Should provide value in whatever it's enchanting?
             // Else the computer would think that casting a Lifelink enchantment
             // on something that already has lifelink is a net win.
+            // EconomyDraft 2026-10-19: an attached equipment keeps its own
+            // value -- it stays on the table when the creature dies and can
+            // move. Valued at 0 once attached, equipping cost the AI the
+            // equipment's 110 for the creature's +85 and the one-play
+            // simulation rejected every Equip (Medic's Kitesail: 13 bank
+            // positions, 7 of them vetoed by the simulation alone).
+            if (EQUIP_VALUE && (c.isEquipment() || c.isFortification())) {
+                return 50 + 30 * c.getCMC();
+            }
             return 0;
         }
         // TODO treat cards like Captive Audience negative
         // e.g. a 5 CMC permanent results in 200, whereas a 5/5 creature is ~225
+        if (c.isPlaneswalker() && c.isToken()) {
+            // EconomyDraft 2026-10-17: a planeswalker token (an Empower Jace
+            // token) is worth what its loyalty buys, a point a counter. At 50 +
+            // 2 a counter, "-3: Draw a card" scored 6 lost against a card's 5
+            // and the simulation vetoed it every time: the AI's tokens never
+            // drew in prod, the human's drew 21 times.
+            return c.getCounters(CounterEnumType.LOYALTY);
+        }
         int value = 50 + 30 * c.getCMC();
         if (c.isPlaneswalker()) {
             value += 2 * c.getCounters(CounterEnumType.LOYALTY);

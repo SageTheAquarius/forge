@@ -84,6 +84,52 @@ public final class AiPerf {
     public static final LongAdder declBlockMs = new LongAdder();
     /** Full block assignments (AiBlockController.assignBlockers). */
     public static final LongAdder blockSims = new LongAdder();
+
+    // EconomyDraft 2026-10-17: what a simulation game copy costs (GameCopier),
+    // printed as a running "[COPY]" line every COPY_REPORT_EVERY copies.
+    public static final LongAdder copies = new LongAdder();
+    public static final LongAdder copyNanos = new LongAdder();
+    public static final LongAdder copyBytes = new LongAdder();
+    private static final int COPY_REPORT_EVERY = Integer.getInteger("bridge.copyreport", 1000);
+    private static java.lang.reflect.Method allocMethod;
+    private static Object threadBean;
+    private static boolean allocTried;
+
+    /** Bytes allocated by the current thread so far, or -1 where the JVM
+     *  cannot say (no com.sun.management, e.g. the iOS engine build). */
+    public static long threadAllocatedBytes() {
+        try {
+            if (!allocTried) {
+                allocTried = true;
+                Class<?> mf = Class.forName("java.lang.management.ManagementFactory");
+                threadBean = mf.getMethod("getThreadMXBean").invoke(null);
+                Class<?> sun = Class.forName("com.sun.management.ThreadMXBean");
+                if (sun.isInstance(threadBean)) {
+                    allocMethod = sun.getMethod("getThreadAllocatedBytes", long.class);
+                }
+            }
+            if (allocMethod == null) {
+                return -1;
+            }
+            return (Long) allocMethod.invoke(threadBean, Thread.currentThread().getId());
+        } catch (Throwable t) {
+            allocMethod = null;
+            return -1;
+        }
+    }
+
+    public static void copied(long nanos, long bytes) {
+        copies.increment();
+        copyNanos.add(nanos);
+        if (bytes > 0) {
+            copyBytes.add(bytes);
+        }
+        long n = copies.sum();
+        if (COPY_REPORT_EVERY > 0 && n % COPY_REPORT_EVERY == 0) {
+            System.out.println(String.format("[COPY] %d copies, %.1f ms and %.2f MB allocated per copy",
+                    n, copyNanos.sum() / 1e6 / n, copyBytes.sum() / 1048576.0 / n));
+        }
+    }
     /** Combat predictions asked, answered from the decision cache, and answered by the bound. */
     public static final LongAdder predicts = new LongAdder();
     public static final LongAdder predictHits = new LongAdder();
@@ -113,6 +159,32 @@ public final class AiPerf {
     /** Trigger / ordering / prevention decisions on the game thread (AiController.withDecision), and their milliseconds. */
     public static final LongAdder decideN = new LongAdder();
     public static final LongAdder decideMs = new LongAdder();
+    /** Lookahead (forge.ai.Lookahead): decisions it ran on, ms, decisions it changed. */
+    public static final LongAdder lookN = new LongAdder();
+    public static final LongAdder lookMs = new LongAdder();
+    public static final LongAdder lookChanged = new LongAdder();
+    /** Lookaheads that ran out of budget (the one-play answer was kept). */
+    public static final LongAdder lookAborted = new LongAdder();
+
+    /**
+     * Take this thread's decision scope away (and give it back). The scope's
+     * cache assumes a frozen board; a lookahead rollout plays a copied game
+     * forward on this same thread, and its keys (card ids, "combatTriggers")
+     * would answer the copy with the real game's lists.
+     */
+    public static Object detachScope() {
+        Scope s = SCOPE.get();
+        SCOPE.remove();
+        return s;
+    }
+
+    public static void reattachScope(Object s) {
+        if (s == null) {
+            SCOPE.remove();
+        } else {
+            SCOPE.set((Scope) s);
+        }
+    }
 
     private AiPerf() { }
 
@@ -310,7 +382,7 @@ public final class AiPerf {
         for (LongAdder a : new LongAdder[] {evals, evalsSlow, evalMs, timeouts, declAttackN, declAttackMs,
                 declBlockN, declBlockMs, blockSims, predicts, predictHits, predictBounded, pumpChecks,
                 pumpHits, idlePasses, governed, chooseN, chooseMs, buildN, buildMs, exportN, exportMs,
-                humanN, humanMs, combatHits, decideN, decideMs}) {
+                humanN, humanMs, combatHits, decideN, decideMs, lookN, lookMs, lookChanged, lookAborted}) {
             a.reset();
         }
         synchronized (SPENT) {
@@ -335,6 +407,8 @@ public final class AiPerf {
         num(b, "human_n", humanN); num(b, "human_ms", humanMs);
         num(b, "combat_hits", combatHits);
         num(b, "decide_n", decideN); num(b, "decide_ms", decideMs);
+        num(b, "look_n", lookN); num(b, "look_ms", lookMs); num(b, "look_changed", lookChanged);
+        num(b, "look_aborted", lookAborted);
         b.append("\"fast\":[");
         boolean first = true;
         for (String name : fastSeats()) {

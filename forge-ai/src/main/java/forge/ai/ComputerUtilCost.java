@@ -138,6 +138,17 @@ public class ComputerUtilCost {
      *            the source
      * @return true, if successful
      */
+    /** Whether any of the card's spells could be cast by `ai` right now. */
+    private static boolean castableNow(final Player ai, final Card source) {
+        for (final SpellAbility spell : source.getSpells()) {
+            spell.setActivatingPlayer(ai);
+            if (spell.canPlay() && canPayCost(spell, ai, false)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public static boolean checkDiscardCost(final Player ai, final Cost cost, final Card source, SpellAbility sa) {
         if (cost == null) {
             return true;
@@ -162,6 +173,17 @@ public class ComputerUtilCost {
                                 && !ai.isUnlimitedHandSize() && ai.getCardsIn(ZoneType.Hand).size() > ai.getMaxHandSize()) {
                             // Better do something than just discard stuff
                             return true;
+                        }
+                        // EconomyDraft 2026-10-17: an ability activated from hand by
+                        // discarding the card itself (Proft, Sinister Mastermind's
+                        // -3/-1, Sureshot Sower's destroy, Trumpeting Carnosaur...) was
+                        // never used: this returned false whatever the board. It is the
+                        // right play whenever the card cannot be cast right now -- no
+                        // mana, the wrong time, or a restriction like Proft's
+                        // threshold. Whether the ability itself is worth it stays with
+                        // that ability's own AI logic (DestroyAi, PumpAi...).
+                        if (sa != null && source.isInZone(ZoneType.Hand) && !castableNow(ai, source)) {
+                            continue;
                         }
                         return false;
                     }
@@ -573,8 +595,10 @@ public class ComputerUtilCost {
                 }
             }
 
-            // Try not to lose Planeswalker if not threatened
-            if (sa.isPwAbility()) {
+            // Try not to lose Planeswalker if not threatened -- unless it is a
+            // token made to be cashed in (EconomyDraft 2026-10-17: an Empower
+            // Jace token at exactly 3 loyalty never took its "-3: Draw a card").
+            if (sa.isPwAbility() && !sa.getHostCard().isToken()) {
                 for (final CostPart part : cost.getCostParts()) {
                     if (part instanceof CostRemoveCounter) {
                         if (part.convertAmount() != null && part.convertAmount() == sa.getHostCard().getCurrentLoyalty()) {

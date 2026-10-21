@@ -90,6 +90,17 @@ public enum SpellApiToAi {
             .put(ApiType.EachDamage, DamageEachAi.class)
             .put(ApiType.Earthbend, EarthbendAi.class)
             .put(ApiType.Effect, EffectAi.class)
+            // EconomyDraft 2026-10-17: Empower (Reality Fracture) had no entry, so
+            // get() fell back to CannotPlayAi and every spell with "Empower Jace"
+            // in its chain was uncastable for the AI (0 casts of No Admittance,
+            // Rewrite Regrets, Protege's Awakening... in 299 prod games). It
+            // only ever helps its caster.
+            .put(ApiType.Empower, AlwaysPlayAi.class)
+            // Same hole for The Hobbit's Recruit (draw, discard, a 1/1 if the
+            // discard was a nonland): Sound the Trumpets was uncastable and ten
+            // creatures' Recruit triggers were declined. Found by
+            // forge_bridge/quality/ai_api_audit.py.
+            .put(ApiType.Recruit, AlwaysPlayAi.class)
             .put(ApiType.Encode, EncodeAi.class)
             .put(ApiType.Endure, EndureAi.class)
             .put(ApiType.EndCombatPhase, EndTurnAi.class)

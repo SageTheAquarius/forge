@@ -77,6 +77,15 @@ public class SpellAbilityPicker {
             writeIndex++;
         }
         candidateSAs.subList(writeIndex, candidateSAs.size()).clear();
+        // EconomyDraft 2026-10-17: the plays the heuristic AI rates best first,
+        // so a search cut short by its time budget has looked at the likeliest
+        // plays. Deterministic, so a plan's saved candidate index still points
+        // at the same play when the plan is carried out.
+        try {
+            candidateSAs.sort(ComputerUtilAbility.saEvaluator);
+        } catch (IllegalArgumentException ignore) {
+            // a non-transitive comparison: keep the engine's order
+        }
         return candidateSAs;
     }
 
@@ -101,17 +110,41 @@ public class SpellAbilityPicker {
         if (sa != null) {
             return sa;
         }
-        createNewPlan(origGameScore, candidateSAs);
+        SimulationController.startBudget(AiProfileUtil.getIntProperty(player, AiProps.SEARCH_BUDGET_MS));
+        try {
+            createNewPlan(origGameScore, candidateSAs);
+        } finally {
+            SimulationController.clearBudget();
+        }
         return getPlannedSpellAbility(origGameScore, candidateSAs);
     }
 
     private Plan formulatePlanWithPhase(Score origGameScore, List<SpellAbility> candidateSAs, PhaseType phase) {
-        SimulationController controller = new SimulationController(origGameScore);
-        SpellAbility sa = chooseSpellAbilityToPlayImpl(controller, candidateSAs, origGameScore, phase);
-        if (sa != null) {
-            return controller.getBestPlan();
+        // EconomyDraft 2026-10-17: iterative deepening. Search every candidate
+        // one level deep, then deeper while the decision's time budget lasts.
+        // A level the clock cut short replaces a finished shallower plan only
+        // if it found a better line, so running out of time never makes the
+        // choice worse than the last complete level's.
+        final int maxDepth = Math.max(1, AiProfileUtil.getIntProperty(player, AiProps.SEARCH_DEPTH));
+        Plan best = null;
+        for (int depth = 1; depth <= maxDepth; depth++) {
+            if (depth > 1 && SimulationController.overBudget()) {
+                break;
+            }
+            SimulationController controller = new SimulationController(origGameScore, depth);
+            SpellAbility sa = chooseSpellAbilityToPlayImpl(controller, candidateSAs, origGameScore, phase);
+            Plan p = sa != null ? controller.getBestPlan() : null;
+            boolean complete = !SimulationController.overBudget();
+            if (complete || depth == 1) {
+                best = p;   // a finished level (or the first) is the answer so far
+            } else if (p != null && (best == null || p.getFinalScore().value > best.getFinalScore().value)) {
+                best = p;   // a cut-short level counts only if it found a better line
+            }
+            if (!complete) {
+                break;
+            }
         }
-        return null;
+        return best;
     }
 
     private void printPlan(Plan plan, String intro) {
@@ -169,6 +202,9 @@ public class SpellAbilityPicker {
         Score bestSaValue = origGameScore;
         print("Evaluating... (orig score = " + origGameScore +  ")");
         for (int i = 0; i < candidateSAs.size(); i++) {
+            if (i > 0 && SimulationController.overBudget()) {
+                break;   // out of time: the best of what was searched
+            }
             Score value = evaluateSa(controller, phase, candidateSAs, i);
             if (value.value > bestSaValue.value) {
                 bestSaValue = value;
@@ -362,6 +398,10 @@ public class SpellAbilityPicker {
             numSimulations++;
             if (lastScore.value > bestScore.value) {
                 bestScore = lastScore;
+            }
+            if (SimulationController.overBudget()) {
+                choicesIterator.stop(lastScore);   // out of time: unwind, keep the best so far
+                break;
             }
         } while (choicesIterator.advance(lastScore));
         controller.doneEvaluating(bestScore);

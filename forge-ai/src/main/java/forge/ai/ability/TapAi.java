@@ -29,6 +29,10 @@ public class TapAi extends TapAiBase {
         } else if (turn.equals(ai)) {
             if (isSorcerySpeed(sa, ai) && phase.getPhase().isBefore(PhaseType.COMBAT_BEGIN)) {
                 // Cast it if it's a sorcery.
+            } else if (tapLasts(sa)) {
+                // EconomyDraft 2026-10-19: a tap that holds through the target's
+                // next untap (stun counters, "doesn't untap") is removal for a
+                // turn or more, not a combat trick: fine after combat too.
             } else if (phase.getPhase().isBefore(PhaseType.COMBAT_DECLARE_BLOCKERS)) {
                 // Aggro Brains are willing to use TapEffects aggressively instead of defensively
                 if (!AiProfileUtil.getBoolProperty(ai, AiProps.PLAY_AGGRO)) {
@@ -83,6 +87,21 @@ public class TapAi extends TapAiBase {
             }
             return new AiAbilityDecision(0, AiPlayDecision.CantPlayAi);
         }
+    }
+
+    /** The tap outlasts the turn: a stun counter or a "doesn't untap" rider in the chain. */
+    static boolean tapLasts(final SpellAbility sa) {
+        for (SpellAbility s = sa.getSubAbility(); s != null; s = s.getSubAbility()) {
+            if (s.getApi() == forge.game.ability.ApiType.PutCounter
+                    && "Stun".equalsIgnoreCase(s.getParamOrDefault("CounterType", ""))) {
+                return true;
+            }
+            if (s.getApi() == forge.game.ability.ApiType.Pump
+                    && s.getParamOrDefault("KW", "").toLowerCase().contains("doesn't untap")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override

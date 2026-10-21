@@ -1136,6 +1136,40 @@ public class ComputerUtil {
                 && !sa.hasParam("ActivationPhases");
     }
 
+    /** The card has a self enters-the-battlefield trigger whose effect chain can change this turn's combat. */
+    public static boolean etbAffectsCombat(final Card card) {
+        for (final Trigger tr : card.getTriggers()) {
+            if (tr.getMode() != TriggerType.ChangesZone
+                    || !ZoneType.Battlefield.toString().equals(tr.getParam("Destination"))) {
+                continue;
+            }
+            if (tr.hasParam("ValidCard") && !tr.getParam("ValidCard").contains("Self")) {
+                continue;
+            }
+            for (SpellAbility s = tr.ensureAbility(); s != null; s = s.getSubAbility()) {
+                final ApiType api = s.getApi();
+                if (api == null) {
+                    continue;
+                }
+                switch (api) {
+                    case PutCounter: case PutCounterAll: case Pump: case PumpAll: case Tap: case TapAll:
+                    case DealDamage: case DamageAll: case Destroy: case DestroyAll: case Fight: case Animate:
+                    case Charm:
+                        return true;
+                    case ChangeZone:
+                    case ChangeZoneAll:
+                        if ("Battlefield".equals(s.getParam("Origin"))) {
+                            return true;   // bounce or exile
+                        }
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+        return false;
+    }
+
     public static boolean castPermanentInMain1(final Player ai, final SpellAbility sa) {
         final Card card = sa.getHostCard();
         final CardState cardState = card.isFaceDown() ? card.getState(CardStateName.Original) : card.getCurrentState();
@@ -1150,6 +1184,21 @@ public class ComputerUtil {
                 }
             } else if (!card.getController().getCreaturesInPlay().isEmpty()) {
                 return true;
+            }
+        }
+
+        // EconomyDraft 2026-10-19: an enters-the-battlefield effect that shapes
+        // this turn's combat -- a counter or pump on a creature, a tap, damage
+        // or removal, a mode choice among those -- is worth more before
+        // attackers than after. The deep replay of recorded games found the
+        // main-1 cast better in 64 positions the AI had held for main 2
+        // (Fateshaper Aspirant's counter and indestructible, Craftwork
+        // Crusher's 4 damage). Cast in main 1 when a creature could attack.
+        if (card.isCreature() && etbAffectsCombat(card)) {
+            for (Card c : ai.getCreaturesInPlay()) {
+                if (CombatUtil.canAttack(c)) {
+                    return true;
+                }
             }
         }
 
@@ -3124,10 +3173,218 @@ public class ComputerUtil {
         return numInHand > 0 || numInDeck >= 3;
     }
 
+    /**
+     * EconomyDraft 2026-10-20: mana the AI would still have once this ability's
+     * own cost is paid -- the budget for a Ward tax on its targets. A trigger
+     * or a sub-ability of something already on the stack has nothing left to
+     * pay, so the whole estimate is free; a spell or activated ability being
+     * weighed still has its own mana cost ahead of it.
+     */
+    public static int manaLeftAfter(final Player ai, final SpellAbility sa) {
+        int available = ComputerUtilMana.getAvailableManaEstimate(ai, true);
+        final SpellAbility root = sa == null ? null : sa.getRootAbility();
+        if (root != null && !root.isTrigger() && root.getPayCosts() != null
+                && root.getPayCosts().hasManaCost()
+                && !(root.getHostCard() != null && root.getHostCard().isInZone(ZoneType.Stack))) {
+            available -= root.getPayCosts().getTotalMana().getCMC();
+        }
+        return available;
+    }
+
+    /**
+     * EconomyDraft 2026-10-20: drop opposing targets whose Ward the AI could
+     * not pay. Ward it cannot pay counters the ability outright, so such a
+     * target is worth less than any other legal one -- in prod a Memory Trap
+     * trigger took a Wrecking Gecko (Ward {2}) with one land open while a
+     * wardless creature stood next to it, and the Trap exiled nothing.
+     * Forge's own Ward accounting (ComputerUtilCost.canPayCost) runs after the
+     * targets are chosen, spells only, and just refuses the cast -- it never
+     * steers the choice, and a trigger never reaches it.
+     *
+     * Only Ward with a mana cost is judged here; "pay life" / "discard" wards
+     * stay for the payment-time decision. Nothing is dropped when the ability
+     * cannot be countered. Returns the list unchanged when every candidate
+     * would be dropped: a mandatory trigger must still target something, and
+     * the caller's own "no targets" handling stays as it was.
+     */
+    public static CardCollection dropUnpayableWard(final Player ai, final SpellAbility sa, final CardCollection targetables, final int manaBudget) {
+        if (ai == null || sa == null || targetables == null || targetables.isEmpty()) {
+            return targetables;
+        }
+        if (!sa.isCounterableBy(null)) {
+            return targetables;
+        }
+        final CardCollection kept = CardLists.filter(targetables, c -> wardPayable(ai, c, manaBudget));
+        if (kept.isEmpty()) {
+            return targetables;
+        }
+        return kept;
+    }
+
+    /** True unless c carries a Ward with a mana cost, against ai, above manaBudget. */
+    public static boolean wardPayable(final Player ai, final Card c, final int manaBudget) {
+        if (c == null || !c.hasKeyword(Keyword.WARD) || !c.isInPlay() || c.getController() == null
+                || !c.getController().isOpponentOf(ai)) {
+            return true;
+        }
+        final Cost ward = ComputerUtilCard.getTotalWardCost(c);
+        return ward == null || !ward.hasManaCost() || ward.getTotalMana().getCMC() <= manaBudget;
+    }
+
+    public static CardCollection dropUnpayableWard(final Player ai, final SpellAbility sa, final CardCollection targetables) {
+        return dropUnpayableWard(ai, sa, targetables, manaLeftAfter(ai, sa));
+    }
+
+    // ── EconomyDraft 2026-10-21: enters effects the AI cannot use yet ────────
+
+    private static final boolean ETB_HOLD = !"off".equals(System.getProperty("bridge.etbhold"));
+
+    /** The permanent's triggers that fire on itself entering the battlefield. */
+    private static List<Trigger> selfEtbTriggers(final Card host) {
+        final List<Trigger> out = new ArrayList<>();
+        for (final Trigger t : host.getTriggers()) {
+            if (t.getMode() != TriggerType.ChangesZone) {
+                continue;
+            }
+            if (!ZoneType.Battlefield.toString().equals(t.getParam("Destination"))) {
+                continue;
+            }
+            final String valid = t.getParam("ValidCard");
+            if (valid == null || !valid.contains("Self")) {
+                continue;
+            }
+            out.add(t);
+        }
+        return out;
+    }
+
+    private static boolean isRemovalApi(final ApiType api) {
+        return api == ApiType.Destroy || api == ApiType.DealDamage || api == ApiType.ChangeZone
+                || api == ApiType.Sacrifice || api == ApiType.Tap;
+    }
+
+    /**
+     * Why casting {@code sa} now would waste its permanent's enters effect,
+     * or null when it would not. Read off the card's own triggers, so it
+     * covers every card of the shape: an enters trigger that asks for more
+     * mana ("you may pay {2}. When you do, ...") the AI would not have left
+     * after paying for the permanent, or a removal effect that targets and
+     * has nothing of the opponent's to aim at (Ward the AI could not pay
+     * counts as nothing; "any target" never counts as nothing). Lich's Relic
+     * on turn 2 with one land: {2} more than the 0 left. Forge's own
+     * checkETBEffects skips an ImmediateTrigger (it is not an AbilitySub) and
+     * is not consulted by a hybrid-sim seat at all.
+     */
+    public static String etbUnusable(final Player ai, final SpellAbility sa) {
+        if (ai == null || sa == null || !sa.isSpell()) {
+            return null;
+        }
+        final Card host = sa.getHostCard();
+        if (host == null || !host.isPermanent()) {
+            return null;
+        }
+        final int left = manaLeftAfter(ai, sa);
+        for (final Trigger t : selfEtbTriggers(host)) {
+            final SpellAbility ab = t.ensureAbility();
+            if (ab == null) {
+                continue;
+            }
+            SpellAbility effect = ab;
+            int budget = left;
+            if (ab.getApi() == ApiType.ImmediateTrigger) {
+                final Cost extra = ab.getPayCosts();
+                if (extra != null && extra.hasManaCost()) {
+                    final int need = extra.getTotalMana().getCMC();
+                    if (need > left) {
+                        return "enters effect needs {" + need + "} more, " + left + " left";
+                    }
+                    budget = left - need;
+                }
+                effect = ab.getAdditionalAbility("Execute");
+                if (effect == null) {
+                    continue;
+                }
+            }
+            if (!effect.usesTargeting() || !isRemovalApi(effect.getApi())) {
+                continue;
+            }
+            final TargetRestrictions tgt = effect.getTargetRestrictions();
+            if (tgt != null && tgt.canTgtPlayer()) {
+                continue;
+            }
+            effect.setActivatingPlayer(ai);
+            CardCollection targets = CardLists.getTargetableCards(ai.getGame().getCardsIn(ZoneType.Battlefield), effect);
+            targets = CardLists.filterControlledBy(targets, ai.getOpponents());
+            final int wardBudget = budget;
+            targets = CardLists.filter(targets, c -> wardPayable(ai, c, wardBudget));
+            if (targets.isEmpty()) {
+                return "nothing of the opponent's for the enters effect to target";
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Hold {@code sa} (a permanent spell) for a later turn because its
+     * enters effect would be wasted now: the reason, or null to cast. Only a
+     * noncreature permanent is held -- a creature's body is worth the cast on
+     * its own, and the lookahead can weigh the rest -- and never when the
+     * hand would discard at end of turn, or late in a game with a nearly
+     * empty hand, where the card's body is all it will ever be. Kill switch
+     * -Dbridge.etbhold=off.
+     */
+    public static String holdForEtb(final Player ai, final SpellAbility sa) {
+        if (!ETB_HOLD) {
+            return null;
+        }
+        final Card host = sa.getHostCard();
+        if (host == null || host.isCreature() || host.isPlaneswalker() || host.isLand()) {
+            return null;
+        }
+        final String why = etbUnusable(ai, sa);
+        if (why == null) {
+            return null;
+        }
+        final int hand = ai.getCardsIn(ZoneType.Hand).size();
+        if (!ai.isUnlimitedHandSize() && hand > ai.getMaxHandSize()) {
+            return null;
+        }
+        if (ai.getGame().getPhaseHandler().getTurn() >= 12 && hand <= 2) {
+            return null;
+        }
+        return why;
+    }
+
+    /**
+     * For the lookahead's gate: could this play do more on a later turn than
+     * it does now? An enters effect it cannot use yet, an unpaid kicker, an
+     * X it pays short. The reason, or null.
+     */
+    public static String doesMoreLater(final Player ai, final SpellAbility sa) {
+        if (sa == null || !sa.isSpell()) {
+            return null;
+        }
+        final String etb = etbUnusable(ai, sa);
+        if (etb != null) {
+            return etb;
+        }
+        final Card host = sa.getHostCard();
+        if (host != null && host.hasKeyword(Keyword.KICKER) && !sa.isKicked()) {
+            return "kicker unpaid";
+        }
+        if (sa.getPayCosts() != null && sa.getPayCosts().getTotalMana().countX() > 0) {
+            return "X spell";
+        }
+        return null;
+    }
+
     // this function should be called by most API to give scripters the option of helping AI
     public static CardCollection filterAITgts(SpellAbility sa, Player ai, CardCollection targetables, boolean alwaysStrict) {
         // TODO support players
         final Card source = sa.getHostCard();
+        // EconomyDraft 2026-10-20: every API's candidate list passes through
+        // here, so a Ward the AI cannot pay is weighed once, for all of them.
+        targetables = dropUnpayableWard(ai, sa, targetables);
         if (source == null || !sa.hasParam("AITgts")) {
             return targetables;
         }

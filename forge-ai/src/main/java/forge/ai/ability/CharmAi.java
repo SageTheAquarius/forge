@@ -4,6 +4,7 @@ import com.google.common.collect.Lists;
 import forge.ai.*;
 import forge.game.GameActionUtil;
 import forge.game.ability.AbilityUtils;
+import forge.game.ability.ApiType;
 import forge.game.ability.effects.CharmEffect;
 import forge.game.card.Card;
 import forge.game.keyword.Keyword;
@@ -17,6 +18,7 @@ import forge.util.MyRandom;
 import forge.util.collect.FCollection;
 
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -104,6 +106,26 @@ public class CharmAi extends SpellAbilityAi {
         return super.checkApiLogic(ai, sa);
     }
 
+    /** How much a mode that passed canPlayAi is worth: removal, counters and
+     *  curses over cards, life and pumps for the caster. */
+    private static int modeValue(final AbilitySub sub) {
+        final ApiType api = sub.getApi();
+        if (api == null) {
+            return 0;
+        }
+        switch (api) {
+            case Destroy: case DestroyAll: case Sacrifice: case SacrificeAll: case Counter:
+            case Fight: case DealDamage: case DamageAll: case Tap: case TapAll:
+                return 3;
+            case ChangeZone: case ChangeZoneAll:
+                return "Battlefield".equals(sub.getParamOrDefault("Origin", "")) ? 3 : 1;
+            case Pump: case PumpAll:
+                return sub.hasParam("IsCurse") ? 3 : 1;
+            default:
+                return 1;
+        }
+    }
+
     private List<AbilitySub> chooseOptionsAi(SpellAbility sa, List<AbilitySub> choices, final Player ai, boolean isTrigger, int num, int min) {
         List<AbilitySub> chosen = Lists.newArrayList();
         AiController aic = ((PlayerControllerAi) ai.getController()).getAi();
@@ -115,6 +137,14 @@ public class CharmAi extends SpellAbilityAi {
             Collections.reverse(choices);
         }
         int pawprintAmount = 0;
+
+        // EconomyDraft 2026-10-17: with one mode to pick, score every mode
+        // that passes instead of taking the first after the shuffle --
+        // Surgical Precision drew a card in main 2 with a 4-toughness creature
+        // across the table (2 of 3 casts in prod logs). Interaction with the
+        // opponent's board outranks value for the caster.
+        final boolean scoreModes = num == 1 && !isTrigger && pawprintLimit == 0;
+        List<AbilitySub> passing = Lists.newArrayList();
 
         // First pass using standard canPlayAi() for good choices
         for (AbilitySub sub : choices) {
@@ -129,12 +159,19 @@ public class CharmAi extends SpellAbilityAi {
                     }
                     pawprintAmount += curPawprintAmount;
                 }
+                if (scoreModes) {
+                    passing.add(sub);
+                    continue;
+                }
                 chosen.add(sub);
                 if (chosen.size() == num) {
                     // maximum choices reached
                     break;
                 }
             }
+        }
+        if (!passing.isEmpty()) {
+            chosen.add(Collections.max(passing, Comparator.comparingInt(CharmAi::modeValue)));
         }
         if (isTrigger && chosen.size() < min) {
             // Second pass using doTrigger(false) to fulfill minimum choice

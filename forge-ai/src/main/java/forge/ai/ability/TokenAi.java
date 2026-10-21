@@ -104,6 +104,18 @@ public class TokenAi extends SpellAbilityAi {
             return true;
         }
 
+        // EconomyDraft 2026-10-17: a token count that only exists THIS turn
+        // ("X 2/2s, where X is the life you gained this turn" -- Germinate
+        // Recruits) is worth casting the moment it is positive, on the AI's own
+        // turn included. The rules below keep instant-speed token makers for the
+        // opponent's combat or end step, when X is almost always 0, so the card
+        // was never cast (0 of 10 games in the AI's deck, the human 43%). Cast at
+        // X >= 2, or in main 2 / the end step once anything was gained.
+        if (tokenHasX && sa.getSVar(tokenAmount).contains("ThisTurn")) {
+            int x = AbilityUtils.calculateAmount(source, tokenAmount, sa);
+            return x >= 2 || (x > 0 && (ph.is(PhaseType.MAIN2) || ph.is(PhaseType.END_OF_TURN)));
+        }
+
         boolean haste = actualToken.hasKeyword(Keyword.HASTE);
         boolean oneShot = sa.getSubAbility() != null
                 && sa.getSubAbility().getApi() == ApiType.DelayedTrigger;

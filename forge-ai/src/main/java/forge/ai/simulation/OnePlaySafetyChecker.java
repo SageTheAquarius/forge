@@ -9,7 +9,21 @@ import forge.game.zone.ZoneType;
 public final class OnePlaySafetyChecker {
     private static final ThreadLocal<Boolean> CHECKING = ThreadLocal.withInitial(() -> false);
 
+    /** EconomyDraft 2026-10-17: the simulated score of the last play this
+     *  thread checked (null when it was not simulated), so the controller can
+     *  compare candidates instead of taking the first acceptable one. */
+    private static final ThreadLocal<Integer> LAST_SCORE = new ThreadLocal<>();
+
+    public static Integer lastScore() {
+        return LAST_SCORE.get();
+    }
+
+    public static void clearLastScore() {
+        LAST_SCORE.remove();
+    }
+
     public static boolean isAcceptable(Player player, SpellAbility sa) {
+        LAST_SCORE.remove();
         // Forge keeps the parent ability on the stack while it resolves. Score actions offered
         // during that resolution incrementally; priority responses need two full stack-resolution
         // branches and are not supported yet.
@@ -24,6 +38,7 @@ public final class OnePlaySafetyChecker {
             GameSimulator simulator = new GameSimulator(controller, player.getGame(), player, null);
             Score originalScore = simulator.getScoreForOrigGame();
             Score resultScore = simulator.simulateSpellAbility(sa);
+            LAST_SCORE.set(resultScore.value);
 
             // desperate plays are ok if next combat was already likely to kill AI
             return resultScore.value == Integer.MIN_VALUE

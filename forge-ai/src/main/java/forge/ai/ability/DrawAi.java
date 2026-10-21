@@ -166,8 +166,13 @@ public class DrawAi extends SpellAbilityAi {
             isSacCost = true;
         }
 
-        // Don't use draw abilities before main 2 if possible
+        // Don't use draw abilities before main 2 if possible -- except a loyalty
+        // ability (EconomyDraft 2026-10-17): one per planeswalker per turn, so
+        // waiting for main 2 let a cheaper one take the turn's activation. The
+        // AI's Empower Jace tokens used "-1: Surveil 1" 16 times and "-3: Draw a
+        // card" never in prod logs; the human drew with it 21 times.
         if (ph.getPhase().isBefore(PhaseType.MAIN2) && !sa.hasParam("ActivationPhases")
+                && !sa.isPwAbility()
                 && !ComputerUtil.castSpellInMain1(ai, sa) && !isSacCost) {
             return false;
         }

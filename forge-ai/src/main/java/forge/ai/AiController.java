@@ -119,11 +119,15 @@ public class AiController {
         return mood;
     }
 
+    // EconomyDraft 2026-10-21: inside a lookahead rollout (Game.ROLLOUT) both
+    // seats are the plain rule-based AI: no one-play simulation, no
+    // comparison, no search. A copy's controllers are fresh AiControllers
+    // with the lobby's options, so this is where the mode is taken away.
     public boolean usesHybridSimulation() {
-        return simMode == AIOption.USE_HYBRID_SIMULATION;
+        return simMode == AIOption.USE_HYBRID_SIMULATION && !game.ROLLOUT;
     }
     public boolean usesFullSimulation() {
-        return simMode == AIOption.USE_FULL_SIMULATION;
+        return simMode == AIOption.USE_FULL_SIMULATION && !game.ROLLOUT;
     }
     public void setUseSimulation(AIOption mode) {
         simMode = mode;
@@ -924,13 +928,15 @@ public class AiController {
             Sentry.setExtra("Card", card.getName());
             Sentry.setExtra("SA", sa.toString());
 
-            boolean canPlay = SpellApiToAi.Converter.get(sa).canPlayWithSubs(player, sa).willingToPlay();
+            AiAbilityDecision apiDecision = SpellApiToAi.Converter.get(sa).canPlayWithSubs(player, sa);
+            boolean canPlay = apiDecision.willingToPlay();
 
             // remove added extra
             Sentry.removeExtra("Card");
             Sentry.removeExtra("SA");
 
             if (!canPlay) {
+                LAST_API_REASON.set(apiDecision.decision());   // for the "why" trace
                 return AiPlayDecision.CantPlayAi;
             }
         } else {
@@ -986,6 +992,58 @@ public class AiController {
     // The play canPlayAndPayForFace is deciding on (per thread: a timed-out
     // evaluation can still be running while the next one starts).
     private static final ThreadLocal<SpellAbility> AFFORD_BEFORE_SIM = new ThreadLocal<>();
+
+    // EconomyDraft 2026-10-19: the "why" trace. While a player is registered
+    // here, chooseSpellAbilityToPlayFromList records its verdict on every
+    // candidate it considered: the handler's reason when the API logic
+    // declined, the one-play simulation score when the play was scored. Read
+    // by forge.sim.Evaluate (mode=pick) so the exam and the dead-card checks
+    // can say why a card was passed over instead of guessing. Off unless a
+    // player is registered; nothing is recorded in a live game.
+    private static final Map<Player, Map<SpellAbility, String>> DECISION_TRACE = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final ThreadLocal<AiPlayDecision> LAST_API_REASON = new ThreadLocal<>();
+
+    public static void traceOn(Player p) {
+        DECISION_TRACE.put(p, new java.util.concurrent.ConcurrentHashMap<>());
+    }
+
+    /** -Dbridge.aitrace=true: print the trace of every main-loop decision as [AI-WHY] lines (diagnosis only). */
+    private static final boolean AITRACE = Boolean.getBoolean("bridge.aitrace");
+
+    private static final List<Integer> NO_FREE_X = Collections.singletonList(null);
+
+    /**
+     * EconomyDraft 2026-10-19: the X values worth trying for an ability whose
+     * cost has a free X that is not mana (SubCounter&lt;X/LOYALTY&gt;,
+     * "Sacrifice X", ...; SVar X = Count$xPaid). [null] when there is none.
+     * {@code several}: 1, 2, the middle and the maximum, for a seat that
+     * compares plays by simulation; otherwise the middle value alone.
+     */
+    public static List<Integer> freeNonManaXOptions(final SpellAbility root, final Player ai, final boolean several) {
+        final Cost cost = root.getPayCosts();
+        if (cost == null || !cost.hasXInAnyCostPart() || root.costHasManaX()
+                || !"Count$xPaid".equals(root.getSVar("X"))) {
+            return NO_FREE_X;
+        }
+        final Integer max = cost.getMaxForNonManaX(root, ai, false);
+        if (max == null || max < 1) {
+            return NO_FREE_X;
+        }
+        final int mid = Math.max(1, (max + 1) / 2);
+        if (!several) {
+            return Collections.singletonList(mid);
+        }
+        final LinkedHashSet<Integer> xs = new LinkedHashSet<>();
+        xs.add(1);
+        xs.add(Math.min(2, max));
+        xs.add(mid);
+        xs.add(max);
+        return new ArrayList<>(xs);
+    }
+
+    public static Map<SpellAbility, String> traceOff(Player p) {
+        return DECISION_TRACE.remove(p);
+    }
 
     private AiPlayDecision saSideEffects(final Card card, final SpellAbility sa) {
         if (usesHybridSimulation()) {
@@ -1337,6 +1395,11 @@ public class AiController {
             AiBlockController block = new AiBlockController(defender, defender != player);
             // When player != defender, AI should declare blockers for its benefit.
             block.assignBlockersForCombat(combat);
+            // EconomyDraft 2026-10-19: play this assignment and a few
+            // alternatives through the damage on a copy; keep the best.
+            if (defender == player) {
+                CombatSim.refineBlocks(defender, combat);
+            }
         });
     }
 
@@ -1527,6 +1590,10 @@ public class AiController {
         // is made at declaration time. Remove attackers the AI can't pay for.
         removeUnpayableAttackers(combat);
 
+        // EconomyDraft 2026-10-19: a hybrid-sim seat plays this declaration and
+        // a few alternatives through the combat on a copy and keeps the best.
+        CombatSim.refineAttack(attacker, combat);
+
         // if invalid: just try an attack declaration that we know to be legal
         if (!CombatUtil.validateAttackers(combat)) {
             combat.clearAttackers();
@@ -1571,6 +1638,10 @@ public class AiController {
         // If nothing this answer depends on has changed since this seat last
         // answered "nothing", answer "nothing" again without evaluating. Only
         // a null answer is remembered - a play is never replayed from memory.
+        if (game.ROLLOUT) {
+            // a lookahead line: no idle memo, no budget, no counters
+            return withChooseMemo();
+        }
         String fp = null;
         if (AiPerf.IDLE_PASS && !usesFullSimulation()) {
             fp = AiPerf.fingerprint(game, player);
@@ -1906,9 +1977,30 @@ public class AiController {
             // forge.game.card.CardTraitMemo. Thread-local: nothing else sees it.
             CardTraitMemo.begin();
             AiPerf.scopeBegin(player);
+            final boolean autoTrace = AITRACE && !game.ROLLOUT && !DECISION_TRACE.containsKey(player);
+            if (autoTrace) {
+                traceOn(player);
+            }
             try {
             //avoid ComputerUtil.aiLifeInDanger in loops as it slows down a lot.. call this outside loops will generally be fast...
             boolean isLifeInDanger = useLivingEnd && ComputerUtil.aiLifeInDanger(player, true, 0);
+            // EconomyDraft 2026-10-17: in its own main phase with an empty stack,
+            // a hybrid-sim seat compares up to SIM_COMPARE_CANDIDATES acceptable
+            // plays by their one-play simulated score and takes the best, where
+            // it used to take the first in a cost-sorted list. Off over budget.
+            final forge.game.phase.PhaseHandler cph = game.getPhaseHandler();
+            final int compareK = usesHybridSimulation() && !AiPerf.fast(player)
+                    && cph.isPlayerTurn(player) && cph.getPhase() != null && cph.getPhase().isMain()
+                    && game.getStack().isEmpty()
+                    ? Math.max(1, getIntProperty(AiProps.SIM_COMPARE_CANDIDATES)) : 1;
+            SpellAbility bestSa = null;
+            int bestScore = Integer.MIN_VALUE;
+            SpellAbility lastEvaluated = null;
+            Integer lastEvaluatedX = null;
+            Integer bestX = null;
+            int accepted = 0;
+            // EconomyDraft 2026-10-21: every accepted, scored candidate, for the lookahead
+            final List<Lookahead.Cand> scored = new ArrayList<>();
             for (final SpellAbility sa : ComputerUtilAbility.getOriginalAndAltCostAbilities(all, player)) {
                 // Don't add Counterspells to the "normal" playcard lookups
                 if (skipCounter && sa.getApi() == ApiType.Counter) {
@@ -1968,12 +2060,38 @@ public class AiController {
                 sa.setActivatingPlayer(player);
                 SpellAbility root = sa.getRootAbility();
 
+                // EconomyDraft 2026-10-19: a cost with a free X that is not mana
+                // (a planeswalker's -X, "remove X counters", "sacrifice X") had
+                // X = 0 unless its handler chose one, so Chandra's "-X: tap, put
+                // X stun counters" was always activated for nothing. A comparing
+                // seat scores a few X values by simulation like any other
+                // candidate; the others take the middle one.
+                final List<Integer> xs = freeNonManaXOptions(root, player, compareK > 1);
+                boolean stop = false;
+                for (final Integer x : xs) {
+                if (x != null) {
+                    root.setXManaCostPaid(x);
+                }
                 if (root.isSpell() || root.isTrigger() || root.isReplacementAbility()) {
                     sa.setLastStateBattlefield(game.getLastStateBattlefield());
                     sa.setLastStateGraveyard(game.getLastStateGraveyard());
                 }
                 //override decision for living end player
+                OnePlaySafetyChecker.clearLastScore();
+                LAST_API_REASON.remove();
                 AiPlayDecision opinion = useLivingEnd && AiPlayDecision.WillPlay.equals(aiPlayDecision) ? aiPlayDecision : canPlayAndPayFor(sa);
+                final Integer simScore = OnePlaySafetyChecker.lastScore();
+                lastEvaluated = sa;
+                lastEvaluatedX = x;
+                final Map<SpellAbility, String> trace = DECISION_TRACE.get(player);
+                if (trace != null) {
+                    final AiPlayDecision why = LAST_API_REASON.get();
+                    final String verdict = (x != null ? "X=" + x + ": " : "") + opinion
+                            + (opinion == AiPlayDecision.CantPlayAi && why != null ? "/" + why : "")
+                            + (simScore != null ? " sim=" + simScore : "");
+                    final String before = trace.get(sa);
+                    trace.put(sa, before == null ? verdict : before + " | " + verdict);
+                }
 
                 // reset LastStateBattlefield
                 sa.clearLastState();
@@ -1984,23 +2102,92 @@ public class AiController {
                     continue;
                 }
 
-                // TODO could continue to try find another with higher rating (weighted by priority ordering)
-                return sa;
+                if (compareK <= 1 || simScore == null) {
+                    // not comparing, or a play the simulation never scored (an
+                    // ability, a desperate line): the first acceptable one, as before
+                    if (bestSa == null) {
+                        return sa;
+                    }
+                    stop = true;
+                    break;
+                }
+                scored.add(new Lookahead.Cand(sa, x, simScore));
+                if (bestSa == null || simScore > bestScore) {
+                    bestSa = sa;
+                    bestScore = simScore;
+                    bestX = x;
+                }
+                }   // x
+                if (stop) {
+                    break;
+                }
+                if (bestSa == sa) {
+                    accepted++;
+                }
+                if (accepted >= compareK) {
+                    break;
+                }
             }
 
-            return null;
+            // EconomyDraft 2026-10-21: when the one-play scorer is likely to be
+            // wrong, play "pass" and the best lines a few turns ahead and let
+            // the end board decide (forge.ai.Lookahead). Null keeps the answer.
+            if (bestSa != null && compareK > 1 && !scored.isEmpty()) {
+                scored.sort((a, b) -> Integer.compare(b.score, a.score));   // stable: the chosen stays first among equals
+                final Lookahead.Result look = Lookahead.refine(this, player, scored);
+                if (look != null) {
+                    if (look.cand == null) {
+                        return null;   // hold everything this window
+                    }
+                    bestSa = look.cand.sa;
+                    bestX = look.cand.x;
+                }
+            }
+
+            if (bestSa != null && (bestSa != lastEvaluated || !Objects.equals(bestX, lastEvaluatedX))) {
+                // Evaluating later candidates can reset choices made on this one
+                // (targets, X, charm modes); decide it again so it is cast as judged.
+                bestSa.setActivatingPlayer(player);
+                if (bestX != null) {
+                    bestSa.getRootAbility().setXManaCostPaid(bestX);
+                }
+                if (canPlayAndPayFor(bestSa) != AiPlayDecision.WillPlay) {
+                    return null;
+                }
+                bestSa.clearLastState();
+            }
+            return bestSa;
             } finally {
                 AiPerf.scopeEnd();
                 String memo = CardTraitMemo.end();
                 if (Boolean.getBoolean("bridge.traitmemo.log")) {
                     System.out.println("[TRAIT-MEMO] hits/misses=" + memo);
                 }
+                if (autoTrace) {
+                    final Map<SpellAbility, String> t = traceOff(player);
+                    final forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+                    final StringBuilder sb = new StringBuilder("[AI-WHY] ").append(player.getName())
+                            .append(" turn ").append(ph.getTurn()).append(' ').append(ph.getPhase())
+                            .append(ph.isPlayerTurn(player) ? " (own)" : " (opp)")
+                            .append(" stack=").append(game.getStack().size()).append(" life=").append(player.getLife());
+                    if (t != null) {
+                        for (Map.Entry<SpellAbility, String> e : t.entrySet()) {
+                            sb.append("\n    ").append(e.getKey().getHostCard().getName()).append(" : ")
+                                    .append(e.getKey().getDescription().replace('\n', ' '), 0,
+                                            Math.min(40, e.getKey().getDescription().length()))
+                                    .append(" -> ").append(e.getValue());
+                        }
+                    }
+                    System.out.println(sb);
+                }
             }
         });
 
         Thread t = new Thread(future, "Game AI Eval");
         final long evalT0 = System.currentTimeMillis();
-        AiPerf.evals.increment();
+        if (!game.ROLLOUT) {
+            AiPerf.evals.increment();
+        }
         t.start();
         try {
             return future.get(game.getAITimeout(), TimeUnit.SECONDS);

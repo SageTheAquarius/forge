@@ -247,6 +247,37 @@ public final class ForgeServer {
                 seatProfiles.clear();   // unreadable: stock behaviour
             }
         }
+        // All-AI evaluation runs only (the ladder): one profile per SEAT, human
+        // seats first. See the human-seat loop below. A line may carry the
+        // seat's simulation mode after a bar ("Default|full", "Default|off"),
+        // so the search modes can be A/B tested against each other.
+        List<String> evalSeatProfiles = new ArrayList<>();
+        evalSeatSims.clear();
+        File evalProfileFlag = new File(deckDir + "_eval_profiles.txt");
+        if (Evaluate.present(deckDir) && evalProfileFlag.exists()) {
+            try {
+                List<String> known = forge.ai.AiProfileUtil.getAvailableProfiles();
+                for (String raw : new String(java.nio.file.Files.readAllBytes(
+                        evalProfileFlag.toPath()), "UTF-8").split("\n")) {
+                    String p = raw.trim();
+                    String sim = "";
+                    int bar = p.indexOf('|');
+                    if (bar >= 0) {
+                        sim = p.substring(bar + 1).trim().toLowerCase();
+                        p = p.substring(0, bar).trim();
+                    }
+                    if (!p.isEmpty() && !known.contains(p)) {
+                        System.out.println("[AI-PROFILE] unknown profile " + p + " (have " + known + "); using default");
+                        p = "";
+                    }
+                    evalSeatProfiles.add(p);
+                    evalSeatSims.add(sim);
+                }
+            } catch (Exception e) {
+                evalSeatProfiles.clear();
+                evalSeatSims.clear();
+            }
+        }
 
         // _commander.txt is the AI seat count and _humans.txt the human one, so
         // the table is simply the sum - no arithmetic between them. A 4-seat pod
@@ -302,7 +333,29 @@ public final class ForgeServer {
             if (i < seatNames.size() && !seatNames.get(i).isEmpty()) {
                 humanName = seatNames.get(i);
             }
-            LobbyPlayer lpHuman = GamePlayerUtil.createAiPlayer(humanName, i, "");
+            // EconomyDraft 2026-10-17: in an evaluation run (all-AI: the
+            // evaluator and the ladder) this seat is played by the AI it is
+            // registered with, so give it a real profile and the same
+            // simulation mode as the other seat. Before, seat 0 was always
+            // Forge's bare default with no simulation, and _ai_profile.txt's
+            // first line went to seat 1: every ladder A/B measured "default
+            // vs the B profile", whatever --a-profile said. In an eval run
+            // the profiles come from _eval_profiles.txt, one line per seat,
+            // human seats first (the ladder writes it); without that file a
+            // replayed bundle's _ai_profile.txt keeps its meaning (AI seats).
+            LobbyPlayer lpHuman;
+            if (Evaluate.present(deckDir)) {
+                String evProfile = i < evalSeatProfiles.size() ? evalSeatProfiles.get(i) : "";
+                java.util.Set<forge.ai.AIOption> evSim = commander ? null : simOptionsFor(evalSeatSim(i, DUEL_SIM));
+                lpHuman = evSim == null
+                        ? GamePlayerUtil.createAiPlayer(humanName, i, evProfile)
+                        : GamePlayerUtil.createAiPlayer(humanName, i, 0, evSim, evProfile);
+                System.out.println("[AI-PROFILE] " + humanName + " (eval seat " + i + "): "
+                        + (evProfile.isEmpty() ? "default" : evProfile)
+                        + (evSim == null ? "" : " sim=" + evSim.iterator().next()));
+            } else {
+                lpHuman = GamePlayerUtil.createAiPlayer(humanName, i, "");
+            }
             rHuman.setPlayer(lpHuman);
             humanLobby.add(lpHuman);
             pp.add(rHuman);
@@ -327,6 +380,10 @@ public final class ForgeServer {
             // seat a player is looking at reads unambiguously.
             String seatName = (aiSeats == 1 && humanSeats == 1) ? "Computer" : "AI " + (i + 1);
             String profile = i < seatProfiles.size() ? seatProfiles.get(i) : "";
+            if (!evalSeatProfiles.isEmpty()) {
+                profile = humanSeats + i < evalSeatProfiles.size() ? evalSeatProfiles.get(humanSeats + i) : "";
+            }
+            final String seatSimMode = evalSeatSims.isEmpty() ? null : evalSeatSim(humanSeats + i, null);
             // Forge's simulation-based spell picker (SpellAbilityPicker /
             // GameSimulator), off in every game until 2026-09-23. It is a
             // per-decision cost with no timeout of its own, so it is opt-in
@@ -338,7 +395,8 @@ public final class ForgeServer {
             // on any Commander game (a Lightning duel included), which ended
             // test_lightning_no_deckout on turn 2 with the AI seat gone.
             java.util.Set<forge.ai.AIOption> simOptions = commander ? null : simOptionsFor(
-                    aiSeats == 1 && humanSeats == 1 ? DUEL_SIM
+                    seatSimMode != null ? seatSimMode
+                    : aiSeats == 1 && humanSeats == 1 ? DUEL_SIM
                             : "full".equals(POD_SIM) ? "hybrid" : POD_SIM);
             if (commander && i == 0 && (simOptionsFor(DUEL_SIM) != null || simOptionsFor(POD_SIM) != null)) {
                 System.out.println("[AI-PROFILE] simulation AI skipped: Commander table (GameCopier cannot map the Commander Effect)");
@@ -383,7 +441,18 @@ public final class ForgeServer {
         // EconomyDraft house rule: the first mulligan is free (London mulligan
         // with no card put on the bottom). Applies to both seats, so the AI gets
         // it too. Second and later mulligans tuck as normal (1, 2, 3, ...).
-        rules.setFirstMulliganFree(true);
+        // -Dbridge.freemulligan=off: MTG Arena rules, every mulligan tucks
+        // (the Arena practice box, MTG_ARENA_RULES).
+        rules.setFirstMulliganFree(!"off".equals(System.getProperty("bridge.freemulligan")));
+        // -Dbridge.handsmoother=on: MTG Arena's Best-of-One opening hand --
+        // two hands are drawn and the one whose land count is nearer the
+        // deck's land ratio is kept (GameAction.drawStartingHand, Forge's
+        // own "filtered hands"; Arena: "draws an opening hand from each of
+        // two separately randomized copies of the deck" and "leans towards"
+        // the better mix). Every seat, the first seven only -- mulligans
+        // are a plain draw, as on Arena. Off: the stock single draw.
+        forge.StaticData.instance().setFilteredHandsEnabled(
+                "on".equals(System.getProperty("bridge.handsmoother")));
 
         Match mc = new Match(rules, pp, "Forge");
         Game g = mc.createGame();
@@ -456,6 +525,10 @@ public final class ForgeServer {
             System.out.println("[MOOD] level " + moodLevel + " on "
                     + Math.max(0, g.getPlayers().size() - humanSeats) + " AI seat(s)");
         }
+        // What each player shows about combat tricks this game (TrickModel), read
+        // by the AI's attack logic when a profile sets TRICK_MODEL_THRESHOLD.
+        // Attached to the real game only; simulated copies read it by name.
+        forge.ai.TrickModel.attach(g);
         Player p0 = g.getPlayers().get(0);
 
         // A human seat that has lost is never asked for priority again, so the
@@ -927,6 +1000,14 @@ public final class ForgeServer {
      */
     static final String DUEL_SIM = System.getProperty("bridge.duelsim", "hybrid").trim().toLowerCase();
     static final String POD_SIM = System.getProperty("bridge.podsim", "off").trim().toLowerCase();
+
+    /** Per-seat simulation modes from _eval_profiles.txt ("" = the default). */
+    static final List<String> evalSeatSims = new ArrayList<>();
+
+    static String evalSeatSim(int seat, String fallback) {
+        String s = seat < evalSeatSims.size() ? evalSeatSims.get(seat) : "";
+        return s == null || s.isEmpty() ? fallback : s;
+    }
 
     static java.util.Set<forge.ai.AIOption> simOptionsFor(String mode) {
         if ("full".equals(mode)) {

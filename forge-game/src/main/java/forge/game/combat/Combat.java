@@ -79,18 +79,67 @@ public class Combat {
         initConstraints();
     }
 
+    /**
+     * EconomyDraft 2026-10-17: the copy of an entity, or null when it no longer
+     * exists in the game being copied. Combat keeps whatever was attackable or
+     * attacking when combat began; a planeswalker token that died to the attack
+     * or was cashed in for its last loyalty (an Empower Jace token), or a
+     * creature removed mid-combat, is still listed here but was never copied,
+     * and GameCopier threw "Couldn't map Jace Token" -- the AI then lost the
+     * whole decision, many times a game once its Jace tokens worked.
+     */
+    private static Card mapOrNull(IEntityMap map, Card c) {
+        try {
+            return c == null ? null : map.map(c);
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    private static GameEntity mapOrNull(IEntityMap map, GameEntity e) {
+        try {
+            return e == null ? null : map.map(e);
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    private static CardCollection mapCollectionLive(IEntityMap map, CardCollectionView cards) {
+        final CardCollection out = new CardCollection();
+        for (final Card c : cards) {
+            final Card m = mapOrNull(map, c);
+            if (m != null) {
+                out.add(m);
+            }
+        }
+        return out;
+    }
+
     public Combat(Combat combat, IEntityMap map) {
         playerWhoAttacks = map.map(combat.playerWhoAttacks);
         for (GameEntity entry : combat.attackableEntries.get()) {
-            attackableEntries.get().add(map.map(entry));
+            GameEntity m = mapOrNull(map, entry);
+            if (m != null) {
+                attackableEntries.get().add(m);
+            }
         }
 
         HashMap<AttackingBand, AttackingBand> bandsMap = new HashMap<>();
         for (Entry<GameEntity, AttackingBand> entry : combat.attackedByBands.get().entries()) {
+            GameEntity defender = mapOrNull(map, entry.getKey());
+            if (defender == null) {
+                continue;   // the defender left the game: these attackers hit nothing
+            }
             AttackingBand origBand = entry.getValue();
             ArrayList<Card> attackers = new ArrayList<>();
             for (Card c : origBand.getAttackers()) {
-                attackers.add(map.map(c));
+                Card m = mapOrNull(map, c);
+                if (m != null) {
+                    attackers.add(m);
+                }
+            }
+            if (attackers.isEmpty()) {
+                continue;
             }
             AttackingBand newBand = new AttackingBand(attackers);
             Boolean blocked = entry.getValue().isBlocked();
@@ -98,21 +147,35 @@ public class Combat {
                 newBand.setBlocked(blocked);
             }
             bandsMap.put(origBand, newBand);
-            attackedByBands.get().put(map.map(entry.getKey()), newBand);
+            attackedByBands.get().put(defender, newBand);
         }
         for (Entry<AttackingBand, Card> entry : combat.blockedBands.get().entries()) {
-            blockedBands.get().put(bandsMap.get(entry.getKey()), map.map(entry.getValue()));
+            AttackingBand band = bandsMap.get(entry.getKey());
+            Card blocker = mapOrNull(map, entry.getValue());
+            if (band != null && blocker != null) {
+                blockedBands.get().put(band, blocker);
+            }
         }
 
         for (Entry<Card, CardCollection> entry : combat.attackersOrderedForDamageAssignment.get().entrySet()) {
-            attackersOrderedForDamageAssignment.get().put(map.map(entry.getKey()), map.mapCollection(entry.getValue()));
+            Card k = mapOrNull(map, entry.getKey());
+            if (k != null) {
+                attackersOrderedForDamageAssignment.get().put(k, mapCollectionLive(map, entry.getValue()));
+            }
         }
         for (Entry<Card, CardCollection> entry : combat.blockersOrderedForDamageAssignment.get().entrySet()) {
-            blockersOrderedForDamageAssignment.get().put(map.map(entry.getKey()), map.mapCollection(entry.getValue()));
+            Card k = mapOrNull(map, entry.getKey());
+            if (k != null) {
+                blockersOrderedForDamageAssignment.get().put(k, mapCollectionLive(map, entry.getValue()));
+            }
         }
         // Note: Doesn't currently set up lkiCache, since it's just a cache and not strictly needed...
         for (Table.Cell<Card, GameEntity, Integer> entry : combat.damageMap.get().cellSet()) {
-            damageMap.get().put(map.map(entry.getRowKey()), map.map(entry.getColumnKey()), entry.getValue());
+            Card r = mapOrNull(map, entry.getRowKey());
+            GameEntity col = mapOrNull(map, entry.getColumnKey());
+            if (r != null && col != null) {
+                damageMap.get().put(r, col, entry.getValue());
+            }
         }
 
         attackConstraints = new AttackConstraints(this);

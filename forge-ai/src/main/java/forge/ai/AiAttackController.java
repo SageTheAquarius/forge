@@ -1542,6 +1542,35 @@ public class AiAttackController {
         return aiAggression;
     }
 
+    private static final int TRICK_BONUS = 2;
+
+    /** Whether to assume the defender holds a +2/+2 trick for this attacker
+     *  this turn: two or more mana up, a card in hand, and the profile's
+     *  RESPECT_OPEN_MANA_TRICK_CHANCE (rolled once per attacker and turn). */
+    private boolean trickThreat(final Card attacker) {
+        if (defendingOpponent == null || !ai.getController().isAI()) {
+            return false;
+        }
+        final AiController aic = ((PlayerControllerAi) ai.getController()).getAi();
+        // The trick model: assume a trick when this defender's odds, from what
+        // they have shown this game, reach the profile's threshold (percent).
+        final int threshold = aic.getIntProperty(AiProps.TRICK_MODEL_THRESHOLD);
+        if (threshold > 0 && threshold <= 100) {
+            return TrickModel.probability(defendingOpponent) * 100.0 >= threshold;
+        }
+        final int chance = aic.getIntProperty(AiProps.RESPECT_OPEN_MANA_TRICK_CHANCE);
+        if (chance <= 0 || defendingOpponent.getCardsIn(ZoneType.Hand).isEmpty()
+                || ComputerUtilMana.getAvailableManaEstimate(defendingOpponent) < 2) {
+            return false;
+        }
+        if (chance >= 100) {
+            return true;
+        }
+        final long mix = (long) attacker.getId() * 2654435761L
+                + (long) ai.getGame().getPhaseHandler().getTurn() * 40503L;
+        return Math.floorMod((int) (mix >>> 13), 100) < chance;
+    }
+
     private class SpellAbilityFactors {
         Card attacker = null;
         boolean canBeKilled = false; // indicates if the attacker can be killed
@@ -1586,6 +1615,12 @@ public class AiAttackController {
             // total power of the defending creatures, used in predicting whether a gang block can kill the attacker
             defPower = CardLists.getTotalPower(validBlockers, null);
 
+            // EconomyDraft 2026-10-17: a defender with two mana up and a card in
+            // hand may have a trick. Judge a block as if the blocker could get
+            // +2/+2 (rolled once per attacker and turn, by profile chance), so
+            // the AI stops walking even trades into a pump or a removal-in-combat.
+            final boolean respectTrick = trickThreat(attacker);
+
             // look at the attacker in relation to the blockers to establish a
             // number of factors about the attacking context that will be relevant
             // to the attackers decision according to the selected strategy
@@ -1593,7 +1628,9 @@ public class AiAttackController {
                 // if both isWorthLessThanAllKillers and canKillAllDangerous are false there's nothing more to check
                 if (isWorthLessThanAllKillers || canKillAllDangerous || numberOfPossibleBlockers < 2) {
                     numberOfPossibleBlockers += 1;
-                    if (isWorthLessThanAllKillers && ComputerUtilCombat.canDestroyAttacker(ai, attacker, blocker, combat, false)
+                    final boolean trickKills = respectTrick && !attacker.hasKeyword(Keyword.INDESTRUCTIBLE)
+                            && blocker.getNetPower() + TRICK_BONUS >= attacker.getNetToughness();
+                    if (isWorthLessThanAllKillers && (ComputerUtilCombat.canDestroyAttacker(ai, attacker, blocker, combat, false) || trickKills)
                             && !(attacker.hasKeyword(Keyword.UNDYING) && attacker.getCounters(CounterEnumType.P1P1) == 0)) {
                         canBeKilledByOne = true; // there is a single creature on the battlefield that can kill the creature
                         // see if the defending creature is of higher or lower
@@ -1605,7 +1642,9 @@ public class AiAttackController {
                     }
                     // see if this attacking creature can destroy this defender, if
                     // not record that it can't kill everything
-                    if (canKillAllDangerous && !ComputerUtilCombat.canDestroyBlocker(ai, blocker, attacker, combat, false)) {
+                    final boolean trickSaves = respectTrick && !attacker.hasKeyword(Keyword.DEATHTOUCH)
+                            && attacker.getNetCombatDamage() < blocker.getNetToughness() + TRICK_BONUS;
+                    if (canKillAllDangerous && (!ComputerUtilCombat.canDestroyBlocker(ai, blocker, attacker, combat, false) || trickSaves)) {
                         canKillAll = false;
 
                         if (blocker.getSVar("HasCombatEffect").equals("TRUE") || blocker.getSVar("HasBlockEffect").equals("TRUE")
