@@ -2086,6 +2086,12 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         ZoneType.Command, ZoneType.Library,
     };
 
+    // Another player's zones a clicked card can be in and still be mine to
+    // play (see findCard). Matches StateExporter.OTHERS_PLAY_FROM_ZONES.
+    private static final ZoneType[] OTHERS_FIND_ZONES = {
+        ZoneType.Exile, ZoneType.Graveyard,
+    };
+
     /** Ask the client to Keep or Mulligan. Reply {"keep":true/false}. */
     @Override
     public boolean mulliganKeepHand(Player firstPlayer, int cardsToReturn) {
@@ -4219,6 +4225,24 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         for (ZoneType zt : FIND_ZONES) {
             for (Card c : me.getCardsIn(zt)) {
                 if (c.getId() == id) return c;
+            }
+        }
+        // Not in any of MY zones: a card I may play out of another player's
+        // exile or graveyard. A card stolen from an opponent's hand is exiled
+        // into THEIR exile (Null Summoner, Gonti, Lord of Luxury, Hostage
+        // Taker), so the client's cast click named an id this loop never
+        // reached and the play was dropped in silence (2026-10-20). Whether
+        // it is actually playable is still Forge's call, through
+        // getAllPossibleAbilities on the card found here.
+        Game g = me.getGame();
+        if (g != null) {
+            for (Player other : g.getPlayers()) {
+                if (other == null || other == me) continue;
+                for (ZoneType zt : OTHERS_FIND_ZONES) {
+                    for (Card c : other.getCardsIn(zt)) {
+                        if (c.getId() == id) return c;
+                    }
+                }
             }
         }
         return null;
