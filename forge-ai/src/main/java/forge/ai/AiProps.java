@@ -74,6 +74,22 @@ public enum AiProps {
     // per line, and the time per decision after which it plays its best line.
     SEARCH_DEPTH ("2"),
     SEARCH_BUDGET_MS ("2500"),
+    // EconomyDraft 2026-10-21: the lookahead (forge.ai.Lookahead). On its own
+    // main phase with an empty stack, when the one-play scorer is likely to be
+    // wrong (a candidate whose enters effect it cannot use yet, a play that
+    // taps out with cards still in hand, a noncreature permanent, two
+    // candidates within the margin), a hybrid-sim seat plays "pass" and its
+    // best LOOKAHEAD_LINES candidates each on a copy of the game -- the
+    // opponent's hand redrawn from their unseen cards, both seats played by
+    // the plain rule-based AI -- through LOOKAHEAD_TURNS turns, and takes the
+    // line with the best board at the end when it beats the one-play answer
+    // by LOOKAHEAD_MARGIN (evaluator points: a card in hand is 5, a 1-mana
+    // artifact 80, a 3/3 about 150). 0 lines = off. The whole lookahead
+    // stops at LOOKAHEAD_BUDGET_MS and keeps the one-play answer.
+    LOOKAHEAD_LINES ("2"),
+    LOOKAHEAD_TURNS ("2"),
+    LOOKAHEAD_BUDGET_MS ("700"),
+    LOOKAHEAD_MARGIN ("30"),
     // EconomyDraft 2026-10-19: combat by simulation (forge.ai.CombatSim). A
     // hybrid-sim seat plays its rule-based attack declaration and up to this
     // many alternatives (none, everything, one more, one fewer) through the

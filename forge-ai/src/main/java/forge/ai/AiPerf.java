@@ -159,6 +159,30 @@ public final class AiPerf {
     /** Trigger / ordering / prevention decisions on the game thread (AiController.withDecision), and their milliseconds. */
     public static final LongAdder decideN = new LongAdder();
     public static final LongAdder decideMs = new LongAdder();
+    /** Lookahead (forge.ai.Lookahead): decisions it ran on, ms, decisions it changed. */
+    public static final LongAdder lookN = new LongAdder();
+    public static final LongAdder lookMs = new LongAdder();
+    public static final LongAdder lookChanged = new LongAdder();
+
+    /**
+     * Take this thread's decision scope away (and give it back). The scope's
+     * cache assumes a frozen board; a lookahead rollout plays a copied game
+     * forward on this same thread, and its keys (card ids, "combatTriggers")
+     * would answer the copy with the real game's lists.
+     */
+    public static Object detachScope() {
+        Scope s = SCOPE.get();
+        SCOPE.remove();
+        return s;
+    }
+
+    public static void reattachScope(Object s) {
+        if (s == null) {
+            SCOPE.remove();
+        } else {
+            SCOPE.set((Scope) s);
+        }
+    }
 
     private AiPerf() { }
 
@@ -356,7 +380,7 @@ public final class AiPerf {
         for (LongAdder a : new LongAdder[] {evals, evalsSlow, evalMs, timeouts, declAttackN, declAttackMs,
                 declBlockN, declBlockMs, blockSims, predicts, predictHits, predictBounded, pumpChecks,
                 pumpHits, idlePasses, governed, chooseN, chooseMs, buildN, buildMs, exportN, exportMs,
-                humanN, humanMs, combatHits, decideN, decideMs}) {
+                humanN, humanMs, combatHits, decideN, decideMs, lookN, lookMs, lookChanged}) {
             a.reset();
         }
         synchronized (SPENT) {
@@ -381,6 +405,7 @@ public final class AiPerf {
         num(b, "human_n", humanN); num(b, "human_ms", humanMs);
         num(b, "combat_hits", combatHits);
         num(b, "decide_n", decideN); num(b, "decide_ms", decideMs);
+        num(b, "look_n", lookN); num(b, "look_ms", lookMs); num(b, "look_changed", lookChanged);
         b.append("\"fast\":[");
         boolean first = true;
         for (String name : fastSeats()) {

@@ -3235,6 +3235,149 @@ public class ComputerUtil {
         return dropUnpayableWard(ai, sa, targetables, manaLeftAfter(ai, sa));
     }
 
+    // ── EconomyDraft 2026-10-21: enters effects the AI cannot use yet ────────
+
+    private static final boolean ETB_HOLD = !"off".equals(System.getProperty("bridge.etbhold"));
+
+    /** The permanent's triggers that fire on itself entering the battlefield. */
+    private static List<Trigger> selfEtbTriggers(final Card host) {
+        final List<Trigger> out = new ArrayList<>();
+        for (final Trigger t : host.getTriggers()) {
+            if (t.getMode() != TriggerType.ChangesZone) {
+                continue;
+            }
+            if (!ZoneType.Battlefield.toString().equals(t.getParam("Destination"))) {
+                continue;
+            }
+            final String valid = t.getParam("ValidCard");
+            if (valid == null || !valid.contains("Self")) {
+                continue;
+            }
+            out.add(t);
+        }
+        return out;
+    }
+
+    private static boolean isRemovalApi(final ApiType api) {
+        return api == ApiType.Destroy || api == ApiType.DealDamage || api == ApiType.ChangeZone
+                || api == ApiType.Sacrifice || api == ApiType.Tap;
+    }
+
+    /**
+     * Why casting {@code sa} now would waste its permanent's enters effect,
+     * or null when it would not. Read off the card's own triggers, so it
+     * covers every card of the shape: an enters trigger that asks for more
+     * mana ("you may pay {2}. When you do, ...") the AI would not have left
+     * after paying for the permanent, or a removal effect that targets and
+     * has nothing of the opponent's to aim at (Ward the AI could not pay
+     * counts as nothing; "any target" never counts as nothing). Lich's Relic
+     * on turn 2 with one land: {2} more than the 0 left. Forge's own
+     * checkETBEffects skips an ImmediateTrigger (it is not an AbilitySub) and
+     * is not consulted by a hybrid-sim seat at all.
+     */
+    public static String etbUnusable(final Player ai, final SpellAbility sa) {
+        if (ai == null || sa == null || !sa.isSpell()) {
+            return null;
+        }
+        final Card host = sa.getHostCard();
+        if (host == null || !host.isPermanent()) {
+            return null;
+        }
+        final int left = manaLeftAfter(ai, sa);
+        for (final Trigger t : selfEtbTriggers(host)) {
+            final SpellAbility ab = t.ensureAbility();
+            if (ab == null) {
+                continue;
+            }
+            SpellAbility effect = ab;
+            int budget = left;
+            if (ab.getApi() == ApiType.ImmediateTrigger) {
+                final Cost extra = ab.getPayCosts();
+                if (extra != null && extra.hasManaCost()) {
+                    final int need = extra.getTotalMana().getCMC();
+                    if (need > left) {
+                        return "enters effect needs {" + need + "} more, " + left + " left";
+                    }
+                    budget = left - need;
+                }
+                effect = ab.getAdditionalAbility("Execute");
+                if (effect == null) {
+                    continue;
+                }
+            }
+            if (!effect.usesTargeting() || !isRemovalApi(effect.getApi())) {
+                continue;
+            }
+            final TargetRestrictions tgt = effect.getTargetRestrictions();
+            if (tgt != null && tgt.canTgtPlayer()) {
+                continue;
+            }
+            effect.setActivatingPlayer(ai);
+            CardCollection targets = CardLists.getTargetableCards(ai.getGame().getCardsIn(ZoneType.Battlefield), effect);
+            targets = CardLists.filterControlledBy(targets, ai.getOpponents());
+            final int wardBudget = budget;
+            targets = CardLists.filter(targets, c -> wardPayable(ai, c, wardBudget));
+            if (targets.isEmpty()) {
+                return "nothing of the opponent's for the enters effect to target";
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Hold {@code sa} (a permanent spell) for a later turn because its
+     * enters effect would be wasted now: the reason, or null to cast. Only a
+     * noncreature permanent is held -- a creature's body is worth the cast on
+     * its own, and the lookahead can weigh the rest -- and never when the
+     * hand would discard at end of turn, or late in a game with a nearly
+     * empty hand, where the card's body is all it will ever be. Kill switch
+     * -Dbridge.etbhold=off.
+     */
+    public static String holdForEtb(final Player ai, final SpellAbility sa) {
+        if (!ETB_HOLD) {
+            return null;
+        }
+        final Card host = sa.getHostCard();
+        if (host == null || host.isCreature() || host.isPlaneswalker() || host.isLand()) {
+            return null;
+        }
+        final String why = etbUnusable(ai, sa);
+        if (why == null) {
+            return null;
+        }
+        final int hand = ai.getCardsIn(ZoneType.Hand).size();
+        if (!ai.isUnlimitedHandSize() && hand > ai.getMaxHandSize()) {
+            return null;
+        }
+        if (ai.getGame().getPhaseHandler().getTurn() >= 12 && hand <= 2) {
+            return null;
+        }
+        return why;
+    }
+
+    /**
+     * For the lookahead's gate: could this play do more on a later turn than
+     * it does now? An enters effect it cannot use yet, an unpaid kicker, an
+     * X it pays short. The reason, or null.
+     */
+    public static String doesMoreLater(final Player ai, final SpellAbility sa) {
+        if (sa == null || !sa.isSpell()) {
+            return null;
+        }
+        final String etb = etbUnusable(ai, sa);
+        if (etb != null) {
+            return etb;
+        }
+        final Card host = sa.getHostCard();
+        if (host != null && host.hasKeyword(Keyword.KICKER) && !sa.isKicked()) {
+            return "kicker unpaid";
+        }
+        if (sa.getPayCosts() != null && sa.getPayCosts().getTotalMana().countX() > 0) {
+            return "X spell";
+        }
+        return null;
+    }
+
     // this function should be called by most API to give scripters the option of helping AI
     public static CardCollection filterAITgts(SpellAbility sa, Player ai, CardCollection targetables, boolean alwaysStrict) {
         // TODO support players

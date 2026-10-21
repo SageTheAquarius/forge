@@ -1274,6 +1274,21 @@ public class PhaseHandler implements java.io.Serializable, IHasForgeLog {
         return true;
     }
 
+    /**
+     * EconomyDraft 2026-10-21: hand priority to {@code p} in the current phase
+     * so {@link #mainLoopStep()} can drive a copied game forward from here
+     * (forge.ai.Lookahead plays a few lines a few turns ahead). A copy made
+     * by GameCopier has no priority flag set, so the loop would end the phase
+     * at once without asking anyone.
+     */
+    public final void devGivePriority(final Player p) {
+        setPriority(p);
+        givePriorityToPlayer = true;
+        for (final Player pl : game.getPlayers()) {
+            pl.setHasPriority(pl == p);
+        }
+    }
+
     // this is a hack for the setup game state mode, do not use outside of devSetupGameState code
     // as it avoids calling any of the phase effects that may be necessary in a less enforced context
     public final void devModeSet(final PhaseType phase0, final Player player0, boolean endCombat, int cturn) {
