@@ -87,12 +87,21 @@ public enum AiProps {
     // artifact 80, a 3/3 about 150). 0 lines = off. The whole lookahead
     // stops at LOOKAHEAD_BUDGET_MS and keeps the one-play answer: three
     // lines took ~340 ms alone on the dev box and ran past 700 under three
-    // concurrent engines (the suite), so 1500 -- a duel's AI_TIMEOUT is 5 s
-    // per decision and the one-play comparison before it is ~3 sims.
+    // concurrent engines (the suite), and 1500 still did under the deploy
+    // gate's three engines plus a jar build -- a duel's AI_TIMEOUT is 5 s
+    // per decision and the one-play comparison before it is ~3 sims, so
+    // 2500 leaves a margin. The pace line's "look N/Ns (M changed, A over
+    // budget)" says what prod actually spends.
     LOOKAHEAD_LINES ("2"),
     LOOKAHEAD_TURNS ("2"),
-    LOOKAHEAD_BUDGET_MS ("1500"),
+    LOOKAHEAD_BUDGET_MS ("2500"),
     LOOKAHEAD_MARGIN ("30"),
+    // The end board's life term, W * (ln own life - ln opponent life), as in
+    // CombatSim but with its own weight: at CombatSim's 600 one extra point
+    // of damage at 17 life was worth 34 points, over the margin, so the AI
+    // held Ajani's Anguish every turn for one more X (test_scenario_ai_x_etb_
+    // damage). At 200 it takes three or more extra damage to move a decision.
+    LOOKAHEAD_LIFE_WEIGHT ("200"),
     // EconomyDraft 2026-10-19: combat by simulation (forge.ai.CombatSim). A
     // hybrid-sim seat plays its rule-based attack declaration and up to this
     // many alternatives (none, everything, one more, one fewer) through the

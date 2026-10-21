@@ -137,10 +137,11 @@ public final class Lookahead {
                 .append(" turn ").append(ph.getTurn()).append(' ').append(ph.getPhase())
                 .append(" (").append(why).append(")") : null;
         try {
-            final Integer passScore = rollout(game, ai, null, targetTurn, deadline, seed);
+            final Line pass = rollout(game, ai, null, targetTurn, deadline, seed);
             if (log != null) {
-                log.append("\n    pass -> ").append(passScore);
+                log.append("\n    pass -> ").append(pass.score).append(pass.end);
             }
+            final Integer passScore = pass.score;
             if (passScore == null) {
                 AiPerf.lookAborted.increment();
                 return null;
@@ -149,9 +150,11 @@ public final class Lookahead {
             Cand best = null;
             int bestScore = Integer.MIN_VALUE;
             for (final Cand c : top) {
-                final Integer s = rollout(game, ai, c, targetTurn, deadline, seed);
+                final Line line = rollout(game, ai, c, targetTurn, deadline, seed);
+                final Integer s = line.score;
                 if (log != null) {
-                    log.append("\n    ").append(c.label()).append(" (one-play ").append(c.score).append(") -> ").append(s);
+                    log.append("\n    ").append(c.label()).append(" (one-play ").append(c.score).append(") -> ").append(s)
+                            .append(line.end);
                 }
                 if (s == null) {
                     AiPerf.lookAborted.increment();
@@ -216,12 +219,25 @@ public final class Lookahead {
         return null;
     }
 
+    /** One played-out line: its end score (null = not finished) and, when logging, the end board. */
+    private static final class Line {
+        final Integer score;
+        final String end;
+
+        Line(final Integer score, final String end) {
+            this.score = score;
+            this.end = end;
+        }
+    }
+
+    private static final Line UNFINISHED = new Line(null, "");
+
     /**
      * Play one line on a copy: the candidate (or nothing), then the game
      * forward to the end of turn {@code targetTurn}. The board's score there,
      * or null when the line could not be played out inside the budget.
      */
-    private static Integer rollout(final Game game, final Player ai, final Cand cand, final int targetTurn,
+    private static Line rollout(final Game game, final Player ai, final Cand cand, final int targetTurn,
             final long deadline, final long seed) {
         final long t0 = System.nanoTime();
         lines.increment();
@@ -231,7 +247,7 @@ public final class Lookahead {
             final Game copy = sim.getSimulatedGameState();
             final Player aiCopy = sim.getGameCopier().find(ai);
             if (aiCopy == null) {
-                return null;
+                return UNFINISHED;
             }
             copy.ROLLOUT = true;
             Determinize.apply(copy, aiCopy, new Random(seed));
@@ -242,7 +258,7 @@ public final class Lookahead {
                 }
                 final Score s = sim.simulateSpellAbility(cand.sa);
                 if (s.value == Integer.MIN_VALUE) {
-                    return null;
+                    return UNFINISHED;
                 }
                 // 117.3c: the player who cast keeps priority
                 cph.devGivePriority(aiCopy);
@@ -256,20 +272,41 @@ public final class Lookahead {
             int steps = 0;
             while (!copy.isGameOver() && !reached(cph, targetTurn)) {
                 if (steps++ >= MAX_STEPS || System.nanoTime() > deadline) {
-                    return null;
+                    return UNFINISHED;
                 }
                 cph.mainLoopStep();
             }
-            return score(copy, aiCopy);
+            return new Line(score(copy, aiCopy), LOG ? describe(copy, aiCopy, cand) : "");
         } catch (final RuntimeException e) {
             if (LOG) {
                 System.out.println("[LOOKAHEAD] line failed: " + e);
             }
-            return null;
+            return UNFINISHED;
         } finally {
             AiPerf.reattachScope(scope);
             lineMs.add((System.nanoTime() - t0) / 1_000_000L);
         }
+    }
+
+    /** The end board of a line, for the log. */
+    private static String describe(final Game copy, final Player aiCopy, final Cand cand) {
+        final StringBuilder b = new StringBuilder(160);
+        final PhaseHandler ph = copy.getPhaseHandler();
+        b.append("  [end t").append(ph.getTurn()).append(' ').append(ph.getPhase());
+        if (cand != null) {
+            b.append(" X=").append(cand.sa.getRootAbility().getXManaCostPaid());
+        }
+        for (final Player p : copy.getPlayers()) {
+            b.append(" | ").append(p == aiCopy ? "ai" : "opp").append(" life ").append(p.getLife())
+             .append(" hand ").append(p.getCardsIn(ZoneType.Hand).size()).append(" bf:");
+            for (final Card c : p.getCardsIn(ZoneType.Battlefield)) {
+                if (!c.isLand()) {
+                    b.append(' ').append(c.getName());
+                }
+            }
+            b.append(" lands ").append(CardLists.filter(p.getCardsIn(ZoneType.Battlefield), CardPredicates.LANDS).size());
+        }
+        return b.append(']').toString();
     }
 
     /** Past the second main phase of the target turn. */
@@ -280,13 +317,13 @@ public final class Lookahead {
         return ph.getTurn() == targetTurn && ph.getPhase() != null && ph.getPhase().isAfter(PhaseType.MAIN2);
     }
 
-    /** The board as the evaluator sees it, plus CombatSim's life term. */
+    /** The board as the evaluator sees it, plus a life term of CombatSim's shape at the lookahead's own weight. */
     private static int score(final Game copy, final Player aiCopy) {
         final int v = new GameStateEvaluator().getScoreForGameState(copy, aiCopy).value;
         if (GameStateEvaluator.isWinning(v) || !aiCopy.isInGame()) {
             return v;
         }
-        final int w = ((PlayerControllerAi) aiCopy.getController()).getAi().getIntProperty(AiProps.SIM_COMBAT_LIFE_WEIGHT);
+        final int w = ((PlayerControllerAi) aiCopy.getController()).getAi().getIntProperty(AiProps.LOOKAHEAD_LIFE_WEIGHT);
         if (w <= 0) {
             return v;
         }
