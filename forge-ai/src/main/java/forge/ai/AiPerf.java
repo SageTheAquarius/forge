@@ -163,6 +163,8 @@ public final class AiPerf {
     public static final LongAdder lookN = new LongAdder();
     public static final LongAdder lookMs = new LongAdder();
     public static final LongAdder lookChanged = new LongAdder();
+    /** Lookaheads that ran out of budget (the one-play answer was kept). */
+    public static final LongAdder lookAborted = new LongAdder();
 
     /**
      * Take this thread's decision scope away (and give it back). The scope's
@@ -380,7 +382,7 @@ public final class AiPerf {
         for (LongAdder a : new LongAdder[] {evals, evalsSlow, evalMs, timeouts, declAttackN, declAttackMs,
                 declBlockN, declBlockMs, blockSims, predicts, predictHits, predictBounded, pumpChecks,
                 pumpHits, idlePasses, governed, chooseN, chooseMs, buildN, buildMs, exportN, exportMs,
-                humanN, humanMs, combatHits, decideN, decideMs, lookN, lookMs, lookChanged}) {
+                humanN, humanMs, combatHits, decideN, decideMs, lookN, lookMs, lookChanged, lookAborted}) {
             a.reset();
         }
         synchronized (SPENT) {
@@ -406,6 +408,7 @@ public final class AiPerf {
         num(b, "combat_hits", combatHits);
         num(b, "decide_n", decideN); num(b, "decide_ms", decideMs);
         num(b, "look_n", lookN); num(b, "look_ms", lookMs); num(b, "look_changed", lookChanged);
+        num(b, "look_aborted", lookAborted);
         b.append("\"fast\":[");
         boolean first = true;
         for (String name : fastSeats()) {

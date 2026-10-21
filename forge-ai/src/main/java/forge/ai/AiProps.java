@@ -85,10 +85,13 @@ public enum AiProps {
     // line with the best board at the end when it beats the one-play answer
     // by LOOKAHEAD_MARGIN (evaluator points: a card in hand is 5, a 1-mana
     // artifact 80, a 3/3 about 150). 0 lines = off. The whole lookahead
-    // stops at LOOKAHEAD_BUDGET_MS and keeps the one-play answer.
+    // stops at LOOKAHEAD_BUDGET_MS and keeps the one-play answer: three
+    // lines took ~340 ms alone on the dev box and ran past 700 under three
+    // concurrent engines (the suite), so 1500 -- a duel's AI_TIMEOUT is 5 s
+    // per decision and the one-play comparison before it is ~3 sims.
     LOOKAHEAD_LINES ("2"),
     LOOKAHEAD_TURNS ("2"),
-    LOOKAHEAD_BUDGET_MS ("700"),
+    LOOKAHEAD_BUDGET_MS ("1500"),
     LOOKAHEAD_MARGIN ("30"),
     // EconomyDraft 2026-10-19: combat by simulation (forge.ai.CombatSim). A
     // hybrid-sim seat plays its rule-based attack declaration and up to this

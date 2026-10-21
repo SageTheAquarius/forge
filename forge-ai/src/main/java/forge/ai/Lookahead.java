@@ -61,7 +61,6 @@ public final class Lookahead {
 
     public static final LongAdder lines = new LongAdder();
     public static final LongAdder lineMs = new LongAdder();
-    public static final LongAdder aborted = new LongAdder();
 
     private Lookahead() { }
 
@@ -143,7 +142,7 @@ public final class Lookahead {
                 log.append("\n    pass -> ").append(passScore);
             }
             if (passScore == null) {
-                aborted.increment();
+                AiPerf.lookAborted.increment();
                 return null;
             }
             Integer first = null;
@@ -155,7 +154,7 @@ public final class Lookahead {
                     log.append("\n    ").append(c.label()).append(" (one-play ").append(c.score).append(") -> ").append(s);
                 }
                 if (s == null) {
-                    aborted.increment();
+                    AiPerf.lookAborted.increment();
                     return null;
                 }
                 if (first == null) {
