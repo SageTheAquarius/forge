@@ -1,0 +1,12 @@
+Name:Type-03 Borg Vessel
+ManaCost:3 W
+Types:Artifact Spacecraft
+PT:5/5
+S:Mode$ ReduceCost | ValidCard$ Artifact | Type$ Spell | Activator$ You | Amount$ 1 | Description$ Artifact spells you cast cost {1} less to cast.
+K:Station:7
+S:Mode$ Continuous | AffectedDefined$ Self | Affected$ Card.counters_GE7_CHARGE | AddType$ Creature | AddKeyword$ Flying | AddTrigger$ TrigCast | Description$ STATION 7+ Flying. Whenever you cast a spell, create a 1/1 colorless Borg artifact creature token.
+SVar:TrigCast:Mode$ SpellCast | ValidCard$ Card | ValidActivatingPlayer$ You | TriggerZones$ Battlefield | Execute$ TrigToken | TriggerDescription$ Whenever you cast a spell, create a 1/1 colorless Borg artifact creature token.
+SVar:TrigToken:DB$ Token | TokenScript$ c_1_1_a_borg | TokenOwner$ You
+DeckHas:Ability$Token|Counters & Type$Borg|Artifact
+DeckHints:Type$Artifact
+Oracle:Artifact spells you cast cost {1} less to cast.\nStation (Tap another creature you control: Put charge counters equal to its power on this Spacecraft. Station only as a sorcery. It's an artifact creature at 7+.)\n7+ | Flying\nWhenever you cast a spell, create a 1/1 colorless Borg artifact creature token.

@@ -1,0 +1,9 @@
+Name:Extraction Integrant
+ManaCost:1 B
+Types:Artifact Creature Borg
+PT:1/1
+S:Mode$ Continuous | Affected$ Creature.Artifact+YouCtrl | AddKeyword$ Menace | AddTrigger$ TrigBlocked | Description$ Artifact creatures you control have menace and "Whenever a creature blocks this creature, that creature gets -1/-1 until end of turn."
+SVar:TrigBlocked:Mode$ AttackerBlockedByCreature | ValidCard$ Card.Self | ValidBlocker$ Creature | Execute$ TrigPump | TriggerZones$ Battlefield | TriggerDescription$ Whenever a creature blocks this creature, that creature gets -1/-1 until end of turn.
+SVar:TrigPump:DB$ Pump | Defined$ TriggeredBlockerLKICopy | NumAtt$ -1 | NumDef$ -1 | IsCurse$ True
+DeckHints:Type$Artifact
+Oracle:Artifact creatures you control have menace and "Whenever a creature blocks this creature, that creature gets -1/-1 until end of turn."

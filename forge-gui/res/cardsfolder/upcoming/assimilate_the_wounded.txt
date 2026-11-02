@@ -1,0 +1,7 @@
+Name:Assimilate the Wounded
+ManaCost:2 B
+Types:Instant
+A:SP$ Assimilate | ValidTgts$ Creature.OppOwn+ThisTurnEnteredFrom_Battlefield | TgtZone$ Graveyard | TgtPrompt$ Choose up to one target creature card in each opponent's graveyard that was put there from the battlefield this turn | TargetMin$ 0 | TargetMax$ OneEach | TargetsForEachPlayer$ True | SpellDescription$ For each opponent, assimilate up to one target creature card from that player's graveyard that was put there from the battlefield this turn. (Put it onto the battlefield under your control with a +1/+1 counter. It's a Borg artifact creature and loses all other creature types.)
+SVar:OneEach:PlayerCountOpponents$Amount
+DeckHas:Ability$Counters|Graveyard
+Oracle:For each opponent, assimilate up to one target creature card from that player's graveyard that was put there from the battlefield this turn. (Put it onto the battlefield under your control with a +1/+1 counter. It's a Borg artifact creature and loses all other creature types.)

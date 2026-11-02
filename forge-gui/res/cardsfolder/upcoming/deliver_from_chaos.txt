@@ -1,0 +1,9 @@
+Name:Deliver from Chaos
+ManaCost:3 W B
+Types:Instant
+A:SP$ ChangeZone | ValidTgts$ Artifact,Creature | TgtPrompt$ Select target artifact or creature | Origin$ Battlefield | Destination$ Exile | RememberLKI$ True | SubAbility$ DBToken | SpellDescription$ Exile target artifact or creature. Create X 1/1 colorless Borg artifact creature tokens, where X is that permanent's mana value.
+SVar:DBToken:DB$ Token | TokenAmount$ X | TokenScript$ c_1_1_a_borg | TokenOwner$ You | SubAbility$ DBCleanup
+SVar:DBCleanup:DB$ Cleanup | ClearRemembered$ True
+SVar:X:RememberedLKI$CardManaCost
+DeckHas:Ability$Token & Type$Artifact|Borg
+Oracle:Exile target artifact or creature. Create X 1/1 colorless Borg artifact creature tokens, where X is that permanent's mana value.

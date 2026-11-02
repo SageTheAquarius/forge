@@ -1,0 +1,9 @@
+Name:Tuvok, Chief Tactical Officer
+ManaCost:2 U
+Types:Legendary Creature Vulcan Officer
+PT:2/3
+K:Flash
+T:Mode$ ChangesZone | Phase$ Declare Attackers | Origin$ Any | Destination$ Battlefield | ValidCard$ Card.Self | Execute$ TrigChangeAttacker | TriggerDescription$ When NICKNAME enters during the declare attackers step, choose up to two target attacking creatures. For each of them, you may reselect which player or permanent that creature is attacking. (A creature can't attack its controller.)
+SVar:TrigChangeAttacker:DB$ ChangeCombatants | ValidTgts$ Creature.attacking | TgtPrompt$ Select up to two target attacking creatures | TargetMin$ 0 | TargetMax$ 2 | Optional$ True | Attacking$ True
+AI:RemoveDeck:All
+Oracle:Flash\nWhen Tuvok enters during the declare attackers step, choose up to two target attacking creatures. For each of them, you may reselect which player or permanent that creature is attacking. (A creature can't attack its controller.)
