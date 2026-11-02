@@ -1428,6 +1428,31 @@ public class ComputerUtilCard {
             return true;
         }
 
+        // EconomyDraft 2026-10-17: an instant has no business going off in
+        // its caster's own upkeep, draw step or main 1 -- that is where the
+        // AI spent Unsummon, Your Fate Ends Here and Extended Absence on
+        // whatever was untapped (5 of 8, 5 of 9 and 6 of 9 casts in prod
+        // logs), before the opponent had committed anything. Hold it for
+        // the opponent's combat or end step, which the branches below leave
+        // undamped; interrupt 1 above still fires when removing a blocker
+        // makes a bigger attack.
+        // 2026-11-02 (T-20261020-006): the hold now damps the tempo term
+        // too, not only a creature's threat -- a 6-drop's tempo alone
+        // (0.1 * 6 / 3) cleared the floor and was rolled at every window of
+        // the AI's own turn, after combat as much as before it. (A sorcery's
+        // next window is its own main 1 AFTER the creature has attacked, so
+        // a sorcery is never held -- see the sorcery rule below.)
+        final boolean ownAttackDeclared = phaseType == PhaseType.COMBAT_DECLARE_ATTACKERS
+                && game.getCombat() != null && !game.getCombat().getAttackers().isEmpty();
+        final boolean ownTurnInstant = ph.isPlayerTurn(ai) && !SpellAbilityAi.isSorcerySpeed(sa, ai);
+        final boolean holdOwnTurn = ownTurnInstant
+                && (phaseType.isAfter(PhaseType.COMBAT_DECLARE_BLOCKERS)
+                    || (phaseType.isBefore(PhaseType.COMBAT_DECLARE_BLOCKERS) && !ownAttackDeclared
+                        && holdRemovalThisTurn(ai, sa.getHostCard(), ph.getTurn())));
+        if (holdOwnTurn && REMOVAL_DECIDE) {
+            valueTempo *= 0.1f;
+        }
+
         //evaluate threat of targeted card
         float threat = 0;
         if (c.isCreature()) {
@@ -1438,27 +1463,9 @@ public class ComputerUtilCard {
                 threat += 1.0f * ComputerUtilCombat.damageIfUnblocked(c, ai, combat, true) / ai.getLife();
                 //TODO:add threat from triggers and other abilities (ie. Master of Cruelties)
             }
-            // (post-combat damp: an instant can wait for the opponent's turn; a
-            // sorcery's next window is its own main 1 AFTER the creature has
-            // attacked, so its threat stays whole -- see the sorcery rule below)
-            if (ph.isPlayerTurn(ai) && phaseType.isAfter(PhaseType.COMBAT_DECLARE_BLOCKERS)
-                    && !SpellAbilityAi.isSorcerySpeed(sa, ai)) {
-                threat *= 0.1f;
-            }
-            // EconomyDraft 2026-10-17: an instant has no business going off in
-            // its caster's own upkeep, draw step or main 1 -- that is where the
-            // AI spent Unsummon, Your Fate Ends Here and Extended Absence on
-            // whatever was untapped (5 of 8, 5 of 9 and 6 of 9 casts in prod
-            // logs), before the opponent had committed anything. Hold it for
-            // the opponent's combat or end step, which the branches below leave
-            // undamped; interrupt 1 above still fires when removing a blocker
-            // makes a bigger attack.
-            final boolean ownAttackDeclared = phaseType == PhaseType.COMBAT_DECLARE_ATTACKERS
-                    && game.getCombat() != null && !game.getCombat().getAttackers().isEmpty();
-            if (ph.isPlayerTurn(ai) && phaseType.isBefore(PhaseType.COMBAT_DECLARE_BLOCKERS)
-                    && !ownAttackDeclared
-                    && !SpellAbilityAi.isSorcerySpeed(sa, ai)
-                    && holdRemovalThisTurn(ai, sa.getHostCard(), ph.getTurn())) {
+            // (the own-turn hold, see holdOwnTurn above: an instant can wait
+            // for the opponent's turn)
+            if (holdOwnTurn) {
                 threat *= 0.1f;
             }
             if (!ph.isPlayerTurn(ai) &&
@@ -1558,8 +1565,35 @@ public class ComputerUtilCard {
         if (SpellAbilityAi.isSorcerySpeed(sa, ai)) {
             return phaseType == PhaseType.MAIN2;
         }
+        // EconomyDraft 2026-11-02 (T-20261020-006): an instant's answer is
+        // (a) decided, not rolled, at the opponent's end step: the mana
+        // untaps next turn whatever happens, so an answer that clears the
+        // floor is cast there rather than carried into another turn with the
+        // mana unused (the ticket's turn 14 ended "spare: 4" with an answer
+        // and two targets); (b) otherwise rolled ONCE per window -- a hash of
+        // card, turn, phase and player -- not once per consult: the candidate
+        // loop, the comparison's re-decision and handlePlayingSpellAbility
+        // each rolled afresh, so a 20% "use it" was tried three times a
+        // window and five windows a turn.
+        if (REMOVAL_DECIDE) {
+            if (!ph.isPlayerTurn(ai) && phaseType == PhaseType.END_OF_TURN && stack.isEmpty()) {
+                return true;
+            }
+            return windowRoll(ai, sa.getHostCard(), ph.getTurn(), phaseType) < valueNow;
+        }
         final float chance = MyRandom.getRandom().nextFloat();
         return chance < valueNow;
+    }
+
+    /** -Dbridge.removaldecide=off: the pre-2026-11-02 per-consult MyRandom roll, no end-step decision, no tempo hold. */
+    private static final boolean REMOVAL_DECIDE = !"off".equals(System.getProperty("bridge.removaldecide"));
+
+    /** A roll in [0, 1) that is the same for every consult within one priority window of one card. */
+    private static float windowRoll(final Player ai, final Card host, final int turn, final PhaseType phase) {
+        final long mix = (long) host.getId() * 1103515245L + (long) turn * 12345L
+                + (long) phase.ordinal() * 2246822519L
+                + (long) ai.getName().hashCode() * 2654435761L;
+        return Math.floorMod((int) (mix >>> 16), 1000) / 1000f;
     }
 
     /**
