@@ -173,6 +173,55 @@ public class GameSimulatorSpellChoiceTest extends SimulationTest {
         AssertJUnit.assertEquals(1, simulatedSecond.getCounters(CounterEnumType.P1P1));
     }
 
+    /**
+     * EconomyDraft 2026-10-20: CharmAi weighs each mode on its own, as the
+     * bare "Choices" entry. The simulator could not find that on the host
+     * card ("Simulation: SA not found!"), scored MIN_VALUE, and the one-play
+     * safety check waved every mode through. Perfected Theory on prod: base
+     * 1/1 on the human's 5/5 at the AI's own beginning of combat.
+     */
+    @Test
+    public void testSimulatesABareModeOfAModalSpell() {
+        Game game = createGame();
+        Player ai = game.getPlayers().get(1);
+
+        addCard("Island", ai);
+        Card bear = addCard("Runeclaw Bear", ai);
+        Card theory = addCardToZone("Perfected Theory", ai, ZoneType.Hand);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility spell = ability(theory, ai);
+        AbilitySub shrink = bareMode(spell, ai, "1/1");
+        shrink.getTargets().add(bear);
+        AbilitySub grow = bareMode(spell, ai, "4/5");
+        grow.getTargets().add(bear);
+
+        GameSimulator simulator = createSimulator(ai);
+        GameStateEvaluator.Score shrunk = simulator.simulateSpellAbility(shrink);
+        AssertJUnit.assertTrue("The mode must be found in the copy", shrunk.value != Integer.MIN_VALUE);
+        AssertJUnit.assertEquals("The 1/1 mode resolved on its target",
+                1, ((Card) simulator.getGameCopier().find(bear)).getNetPower());
+
+        simulator = createSimulator(ai);
+        GameStateEvaluator.Score grown = simulator.simulateSpellAbility(grow);
+        AssertJUnit.assertEquals("The 4/5 mode resolved on its target",
+                4, ((Card) simulator.getGameCopier().find(bear)).getNetPower());
+        AssertJUnit.assertTrue(grown.value > shrunk.value);
+
+        AssertJUnit.assertFalse("Shrinking its own bear is a loss the check must see",
+                OnePlaySafetyChecker.isAcceptable(ai, shrink));
+        AssertJUnit.assertTrue(OnePlaySafetyChecker.isAcceptable(ai, grow));
+    }
+
+    private AbilitySub bareMode(SpellAbility spell, Player player, String descriptionPart) {
+        AbilitySub mode = spell.getAdditionalAbilityList("Choices").stream()
+                .filter(option -> option.getParam("SpellDescription").contains(descriptionPart))
+                .findFirst()
+                .orElseThrow();
+        mode.setActivatingPlayer(player);
+        return mode;
+    }
+
     private Game createGame() {
         Game game = initAndCreateGame();
         moveToMain2(game, game.getPlayers().get(1));

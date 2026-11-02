@@ -74,6 +74,34 @@ public enum AiProps {
     // per line, and the time per decision after which it plays its best line.
     SEARCH_DEPTH ("2"),
     SEARCH_BUDGET_MS ("2500"),
+    // EconomyDraft 2026-10-21: the lookahead (forge.ai.Lookahead). On its own
+    // main phase with an empty stack, when the one-play scorer is likely to be
+    // wrong (a candidate whose enters effect it cannot use yet, a play that
+    // taps out with cards still in hand, a noncreature permanent, two
+    // candidates within the margin), a hybrid-sim seat plays "pass" and its
+    // best LOOKAHEAD_LINES candidates each on a copy of the game -- the
+    // opponent's hand redrawn from their unseen cards, both seats played by
+    // the plain rule-based AI -- through LOOKAHEAD_TURNS turns, and takes the
+    // line with the best board at the end when it beats the one-play answer
+    // by LOOKAHEAD_MARGIN (evaluator points: a card in hand is 5, a 1-mana
+    // artifact 80, a 3/3 about 150). 0 lines = off. The whole lookahead
+    // stops at LOOKAHEAD_BUDGET_MS and keeps the one-play answer: three
+    // lines took ~340 ms alone on the dev box and ran past 700 under three
+    // concurrent engines (the suite), and 1500 still did under the deploy
+    // gate's three engines plus a jar build -- a duel's AI_TIMEOUT is 5 s
+    // per decision and the one-play comparison before it is ~3 sims, so
+    // 2500 leaves a margin. The pace line's "look N/Ns (M changed, A over
+    // budget)" says what prod actually spends.
+    LOOKAHEAD_LINES ("2"),
+    LOOKAHEAD_TURNS ("2"),
+    LOOKAHEAD_BUDGET_MS ("2500"),
+    LOOKAHEAD_MARGIN ("30"),
+    // The end board's life term, W * (ln own life - ln opponent life), as in
+    // CombatSim but with its own weight: at CombatSim's 600 one extra point
+    // of damage at 17 life was worth 34 points, over the margin, so the AI
+    // held Ajani's Anguish every turn for one more X (test_scenario_ai_x_etb_
+    // damage). At 200 it takes three or more extra damage to move a decision.
+    LOOKAHEAD_LIFE_WEIGHT ("200"),
     // EconomyDraft 2026-10-19: combat by simulation (forge.ai.CombatSim). A
     // hybrid-sim seat plays its rule-based attack declaration and up to this
     // many alternatives (none, everything, one more, one fewer) through the
@@ -95,6 +123,18 @@ public enum AiProps {
     // orientations) chose: against CombatSim off, weight 1500 went 88-103
     // (46%), 0 went 96-96, 600 went 98-70 (58%, SPRT call at 90-62).
     SIM_COMBAT_LIFE_WEIGHT ("600"),
+    // EconomyDraft 2026-10-20 (prod: Samut chumped a 5/5 while an equipped
+    // Oculus with a spent ETB stayed home; Perfected Theory "1/1 until end
+    // of turn" cast on a creature that could not block). Which creature to
+    // lose (chump block, sacrifice) is scored WITHOUT its attached equipment
+    // -- the equipment stays and can move; a static ability that reaches
+    // past the creature (an anthem, "your instants have split second") is
+    // worth +20; a P/T change that ends this turn goes only on a creature
+    // that is in, or about to be in, this turn's combat. NoChumpCurse.ai is
+    // the A/B control with all three off.
+    CHUMP_LOSS_VALUE ("true"),
+    STATIC_ABILITY_VALUE ("true"),
+    TEMP_PT_NEEDS_COMBAT ("true"),
     ENABLE_RANDOM_FAVORABLE_TRADES_ON_BLOCK ("true"),
     RANDOMLY_TRADE_EVEN_WHEN_HAVE_LESS_CREATS ("false"),
     MAX_DIFF_IN_CREATURE_COUNT_TO_TRADE ("1"),
@@ -141,7 +181,13 @@ public enum AiProps {
     STRIPMINE_MIN_LANDS_OTB_FOR_NO_TEMPO_CHECK ("6"),
     STRIPMINE_MAX_LANDS_TO_ATTEMPT_MANALOCKING ("3"),
     STRIPMINE_HIGH_PRIORITY_ON_SKIPPED_LANDDROP ("false"),
-    TOKEN_GENERATION_ABILITY_CHANCE ("80"),
+    // EconomyDraft 2026-10-20: 100, was 80. The roll made the AI refuse a
+    // castable token spell one time in five for no reason (and the candidate
+    // comparison re-decides the chosen play, so the roll fired twice): the
+    // Germinate Recruits scenario flaked 3 times in 24, and Recursive
+    // Recruitment was cast in 41% of the AI's games against the human's 82%.
+    // The simulation and the handler's own rules decide; a coin does not.
+    TOKEN_GENERATION_ABILITY_CHANCE ("100"),
     TOKEN_GENERATION_ALWAYS_IF_FROM_PLANESWALKER ("true"),
     TOKEN_GENERATION_ALWAYS_IF_OPP_ATTACKS ("true"),
     SCRY_NUM_LANDS_TO_STILL_NEED_MORE ("4"),

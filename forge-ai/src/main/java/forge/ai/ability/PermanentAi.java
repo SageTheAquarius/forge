@@ -223,6 +223,16 @@ public class PermanentAi extends SpellAbilityAi {
             return new AiAbilityDecision(0, AiPlayDecision.CantPlayAi);
         }
 
+        // EconomyDraft 2026-10-21: a permanent whose enters effect would be
+        // wasted now (more mana than is left after the cast, or nothing of
+        // the opponent's to aim at) waits for a turn when it is not. Generic:
+        // read off the card's own triggers (ComputerUtil.etbUnusable). Lich's
+        // Relic went down on turn 2 with one land and an empty board in prod.
+        final String hold = ComputerUtil.holdForEtb(ai, sa);
+        if (hold != null) {
+            return new AiAbilityDecision(0, AiPlayDecision.AnotherTime);
+        }
+
         // check for specific AI preferences
         if (source.hasSVar("AICastPreference")) {
             String pref = source.getSVar("AICastPreference");

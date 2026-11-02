@@ -20,6 +20,7 @@ package forge.game.card;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
 import forge.card.*;
 import forge.card.mana.ManaCost;
 import forge.card.mana.ManaCostShard;
@@ -37,6 +38,7 @@ import forge.game.keyword.KeywordInterface;
 import forge.game.keyword.KeywordWithType;
 import forge.game.player.Player;
 import forge.game.replacement.ReplacementEffect;
+import forge.game.spellability.AbilitySub;
 import forge.game.spellability.LandAbility;
 import forge.game.spellability.SpellAbility;
 import forge.game.spellability.SpellPermanent;
@@ -875,6 +877,50 @@ public class CardState implements GameObject, IHasSVars, ITranslatable {
 
     public final void copyFrom(final CardState source, final boolean lki) {
         copyFrom(source, lki, null);
+    }
+
+    /**
+     * EconomyDraft 2026-10-20: forget what the source card's abilities had
+     * chosen in their own game. SpellAbility.copy keeps the targets and
+     * triggering objects, so a simulation copy (CardCopyService.copyStatesInto)
+     * held the live game's cards: the AI's simulated Equip attached the real
+     * creature to the copy's Equipment and the real creature kept the bonus.
+     */
+    final void clearCopiedChoices() {
+        Set<SpellAbility> seen = Sets.newIdentityHashSet();
+        for (SpellAbility sa : abilities) {
+            clearChoices(sa, seen);
+        }
+        for (SpellAbility sa : abilityForTrigger.values()) {
+            clearChoices(sa, seen);
+        }
+        for (Trigger tr : triggers) {
+            clearChoices(tr.getOverridingAbility(), seen);
+        }
+        for (KeywordInterface k : intrinsicKeywords.getValues()) {
+            for (SpellAbility sa : k.getAbilities()) {
+                clearChoices(sa, seen);
+            }
+            for (Trigger tr : k.getTriggers()) {
+                clearChoices(tr.getOverridingAbility(), seen);
+            }
+        }
+    }
+    private static void clearChoices(final SpellAbility sa, final Set<SpellAbility> seen) {
+        if (sa == null || !seen.add(sa)) {
+            return;
+        }
+        sa.resetTargets();
+        sa.resetTriggeringObjects();
+        clearChoices(sa.getSubAbility(), seen);
+        for (SpellAbility add : sa.getAdditionalAbilities().values()) {
+            clearChoices(add, seen);
+        }
+        for (List<AbilitySub> list : sa.getAdditionalAbilityLists().values()) {
+            for (AbilitySub sub : list) {
+                clearChoices(sub, seen);
+            }
+        }
     }
     public final void copyFrom(final CardState source, final boolean lki, final CardTraitBase ctb) {
         // Makes a "deeper" copy of a CardState object

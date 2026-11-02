@@ -103,7 +103,9 @@ public class DamageDealAi extends DamageAiBase {
         int dmg = calculateDamageAmount(sa, source, damage);
 
         if (damage.equals("X") || (dmg == 0 && source.getSVar("X").equals("Count$xPaid"))) {
-            if (sa.getSVar("X").equals("Count$xPaid") || sa.getSVar(damage).equals("Count$xPaid")) {
+            if ((sa.getSVar("X").equals("Count$xPaid") || sa.getSVar(damage).equals("Count$xPaid")) && xFixedByCast(sa)) {
+                // X was chosen when the spell was cast; calculateDamageAmount already read it.
+            } else if (sa.getSVar("X").equals("Count$xPaid") || sa.getSVar(damage).equals("Count$xPaid")) {
                 dmg = ComputerUtilCost.setMaxXValue(sa, ai, sa.isTrigger());
 
                 // Try not to waste spells like Blaze or Fireball on early targets, try to do more damage with them if possible
@@ -276,8 +278,8 @@ public class DamageDealAi extends DamageAiBase {
             return new AiAbilityDecision(0, AiPlayDecision.TargetingFailed);
         }
 
-        if ((damage.equals("X") && sa.getSVar(damage).equals("Count$xPaid")) ||
-                sourceName.equals("Crater's Claws")) {
+        if (((damage.equals("X") && sa.getSVar(damage).equals("Count$xPaid")) ||
+                sourceName.equals("Crater's Claws")) && !xFixedByCast(sa)) {
             // If I can kill my target by paying less mana, do it
             if (sa.usesTargeting() && !sa.getTargets().isTargetingAnyPlayer() && !sa.isDividedAsYouChoose()) {
                 int actualPay = dmg;
@@ -921,7 +923,7 @@ public class DamageDealAi extends DamageAiBase {
         final String damage = sa.getParam("NumDmg");
         int dmg = calculateDamageAmount(sa, source, damage);
 
-        if (damage.equals("X") && sa.getSVar(damage).equals("Count$xPaid")) {
+        if (damage.equals("X") && sa.getSVar(damage).equals("Count$xPaid") && !xFixedByCast(sa)) {
             dmg = ComputerUtilCost.setMaxXValue(sa, ai, true);
         }
 
@@ -940,7 +942,8 @@ public class DamageDealAi extends DamageAiBase {
                 return new AiAbilityDecision(0, AiPlayDecision.TargetingFailed);
             }
 
-            if (damage.equals("X") && sa.getSVar(damage).equals("Count$xPaid") && !sa.isDividedAsYouChoose()) {
+            if (damage.equals("X") && sa.getSVar(damage).equals("Count$xPaid") && !sa.isDividedAsYouChoose()
+                    && !xFixedByCast(sa)) {
                 // If I can kill my target by paying less mana, do it
                 int actualPay = 0;
                 final boolean noPrevention = sa.hasParam("NoPrevention");
@@ -961,6 +964,27 @@ public class DamageDealAi extends DamageAiBase {
         }
 
         return new AiAbilityDecision(100, AiPlayDecision.WillPlay);
+    }
+
+    /**
+     * EconomyDraft 2026-10-20: a triggered ability whose X is "Count$xPaid" and
+     * whose own cost has no X gets its X from the spell that was cast (CR 107.3k
+     * for an enters trigger, the cast trigger's spell for Hydroid Krasis). The
+     * engine reads that off the host's cast ability -- as long as nobody pins an
+     * X on the trigger itself, which AbilityUtils.xCount prefers. This handler
+     * did: setMaxXValue measured the mana left AFTER the cast (none) and
+     * setXManaCostPaid stored it on the trigger, so Ajani's Anguish cast for X=1
+     * at a player dealt 0 in prod (session_3 2026-10-20 20:28). For such a
+     * trigger the damage is what calculateDamageAmount read, and X is not ours
+     * to set.
+     */
+    static boolean xFixedByCast(final SpellAbility sa) {
+        final SpellAbility root = sa.getRootAbility();
+        if (root == null || !root.isTrigger()) {
+            return false;
+        }
+        final Cost cost = root.getPayCosts();
+        return cost == null || !cost.hasXInAnyCostPart();
     }
 
     private static int calculateDamageAmount(SpellAbility sa, Card source, String damage) {

@@ -116,6 +116,14 @@ public final class StateExporter {
         ZoneType.Exile, ZoneType.Graveyard, ZoneType.Command,
     };
 
+    // Another player's zones the human may be allowed to play out of: a card
+    // taken from an opponent's hand or library is exiled into ITS OWNER's
+    // exile (Null Summoner, Gonti, Lord of Luxury, Hostage Taker), and some
+    // effects cast from the opponent's graveyard. Command is theirs alone.
+    private static final ZoneType[] OTHERS_PLAY_FROM_ZONES = {
+        ZoneType.Exile, ZoneType.Graveyard,
+    };
+
     // The top card of the human's library, exported ONLY while something lets
     // them look at it ("You may look at the top card of your library any time"
     // -- Mm'menon, the Right Hand, which then also lets you cast artifacts from
@@ -465,6 +473,39 @@ public final class StateExporter {
                         if (!sa.isManaAbility()) {
                             elsewhere.add(c.getId());
                             break;
+                        }
+                    }
+                }
+            }
+            // The same verdict for cards in ANOTHER player's exile or
+            // graveyard. A card you steal out of an opponent's hand stays
+            // THEIR card: exile and graveyard belong to the owner, so Null
+            // Summoner's "you may cast the exiled card" (Threshold), Gonti,
+            // Lord of Luxury, Hostage Taker and every "cast spells from your
+            // opponents' graveyards" effect put the castable card in a zone
+            // the loop above never visits. Reported 2026-10-20: Null Summoner
+            // exiled Multiply by Zero, threshold was on, and nothing offered
+            // the cast. mayPlay(human) is the cheap gate -- it walks only the
+            // statics that grant permission, and is empty for almost every
+            // card -- so the full ability build runs for the handful that
+            // pass it, never for a 30-card exile.
+            Game game0 = human.getGame();
+            if (game0 != null) {
+                for (Player other : game0.getPlayers()) {
+                    if (other == null || other == human) {
+                        continue;
+                    }
+                    for (ZoneType zt : OTHERS_PLAY_FROM_ZONES) {
+                        for (Card c : other.getCardsIn(zt)) {
+                            if (c.mayPlay(human).isEmpty()) {
+                                continue;
+                            }
+                            for (SpellAbility sa : c.getAllPossibleAbilities(human, true)) {
+                                if (!sa.isManaAbility()) {
+                                    elsewhere.add(c.getId());
+                                    break;
+                                }
+                            }
                         }
                     }
                 }

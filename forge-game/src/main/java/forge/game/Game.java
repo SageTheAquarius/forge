@@ -104,6 +104,14 @@ public class Game {
     // (forge.ai.simulation.GameCopier), so a decision taken inside a copy
     // never starts a simulation of its own (forge.ai.CombatSim).
     public boolean SIMULATION_COPY = false;
+    /**
+     * EconomyDraft 2026-10-21: a copy forge.ai.Lookahead is playing forward.
+     * Both seats decide with the plain rule-based AI in it (no one-play
+     * simulation, no candidate comparison, no further lookahead), and the
+     * AI's performance counters ignore it. A game flag, not a thread-local:
+     * every AI decision runs on its own short-lived eval thread.
+     */
+    public boolean ROLLOUT = false;
     // While this is false here, its really set by the Match/Preferences
 
     // If this merges with LKI In the future, it will need to change forms

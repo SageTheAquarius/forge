@@ -119,11 +119,15 @@ public class AiController {
         return mood;
     }
 
+    // EconomyDraft 2026-10-21: inside a lookahead rollout (Game.ROLLOUT) both
+    // seats are the plain rule-based AI: no one-play simulation, no
+    // comparison, no search. A copy's controllers are fresh AiControllers
+    // with the lobby's options, so this is where the mode is taken away.
     public boolean usesHybridSimulation() {
-        return simMode == AIOption.USE_HYBRID_SIMULATION;
+        return simMode == AIOption.USE_HYBRID_SIMULATION && !game.ROLLOUT;
     }
     public boolean usesFullSimulation() {
-        return simMode == AIOption.USE_FULL_SIMULATION;
+        return simMode == AIOption.USE_FULL_SIMULATION && !game.ROLLOUT;
     }
     public void setUseSimulation(AIOption mode) {
         simMode = mode;
@@ -1003,6 +1007,9 @@ public class AiController {
         DECISION_TRACE.put(p, new java.util.concurrent.ConcurrentHashMap<>());
     }
 
+    /** -Dbridge.aitrace=true: print the trace of every main-loop decision as [AI-WHY] lines (diagnosis only). */
+    private static final boolean AITRACE = Boolean.getBoolean("bridge.aitrace");
+
     private static final List<Integer> NO_FREE_X = Collections.singletonList(null);
 
     /**
@@ -1631,6 +1638,10 @@ public class AiController {
         // If nothing this answer depends on has changed since this seat last
         // answered "nothing", answer "nothing" again without evaluating. Only
         // a null answer is remembered - a play is never replayed from memory.
+        if (game.ROLLOUT) {
+            // a lookahead line: no idle memo, no budget, no counters
+            return withChooseMemo();
+        }
         String fp = null;
         if (AiPerf.IDLE_PASS && !usesFullSimulation()) {
             fp = AiPerf.fingerprint(game, player);
@@ -1966,6 +1977,10 @@ public class AiController {
             // forge.game.card.CardTraitMemo. Thread-local: nothing else sees it.
             CardTraitMemo.begin();
             AiPerf.scopeBegin(player);
+            final boolean autoTrace = AITRACE && !game.ROLLOUT && !DECISION_TRACE.containsKey(player);
+            if (autoTrace) {
+                traceOn(player);
+            }
             try {
             //avoid ComputerUtil.aiLifeInDanger in loops as it slows down a lot.. call this outside loops will generally be fast...
             boolean isLifeInDanger = useLivingEnd && ComputerUtil.aiLifeInDanger(player, true, 0);
@@ -1984,6 +1999,8 @@ public class AiController {
             Integer lastEvaluatedX = null;
             Integer bestX = null;
             int accepted = 0;
+            // EconomyDraft 2026-10-21: every accepted, scored candidate, for the lookahead
+            final List<Lookahead.Cand> scored = new ArrayList<>();
             for (final SpellAbility sa : ComputerUtilAbility.getOriginalAndAltCostAbilities(all, player)) {
                 // Don't add Counterspells to the "normal" playcard lookups
                 if (skipCounter && sa.getApi() == ApiType.Counter) {
@@ -2094,6 +2111,7 @@ public class AiController {
                     stop = true;
                     break;
                 }
+                scored.add(new Lookahead.Cand(sa, x, simScore));
                 if (bestSa == null || simScore > bestScore) {
                     bestSa = sa;
                     bestScore = simScore;
@@ -2108,6 +2126,21 @@ public class AiController {
                 }
                 if (accepted >= compareK) {
                     break;
+                }
+            }
+
+            // EconomyDraft 2026-10-21: when the one-play scorer is likely to be
+            // wrong, play "pass" and the best lines a few turns ahead and let
+            // the end board decide (forge.ai.Lookahead). Null keeps the answer.
+            if (bestSa != null && compareK > 1 && !scored.isEmpty()) {
+                scored.sort((a, b) -> Integer.compare(b.score, a.score));   // stable: the chosen stays first among equals
+                final Lookahead.Result look = Lookahead.refine(this, player, scored);
+                if (look != null) {
+                    if (look.cand == null) {
+                        return null;   // hold everything this window
+                    }
+                    bestSa = look.cand.sa;
+                    bestX = look.cand.x;
                 }
             }
 
@@ -2130,12 +2163,31 @@ public class AiController {
                 if (Boolean.getBoolean("bridge.traitmemo.log")) {
                     System.out.println("[TRAIT-MEMO] hits/misses=" + memo);
                 }
+                if (autoTrace) {
+                    final Map<SpellAbility, String> t = traceOff(player);
+                    final forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+                    final StringBuilder sb = new StringBuilder("[AI-WHY] ").append(player.getName())
+                            .append(" turn ").append(ph.getTurn()).append(' ').append(ph.getPhase())
+                            .append(ph.isPlayerTurn(player) ? " (own)" : " (opp)")
+                            .append(" stack=").append(game.getStack().size()).append(" life=").append(player.getLife());
+                    if (t != null) {
+                        for (Map.Entry<SpellAbility, String> e : t.entrySet()) {
+                            sb.append("\n    ").append(e.getKey().getHostCard().getName()).append(" : ")
+                                    .append(e.getKey().getDescription().replace('\n', ' '), 0,
+                                            Math.min(40, e.getKey().getDescription().length()))
+                                    .append(" -> ").append(e.getValue());
+                        }
+                    }
+                    System.out.println(sb);
+                }
             }
         });
 
         Thread t = new Thread(future, "Game AI Eval");
         final long evalT0 = System.currentTimeMillis();
-        AiPerf.evals.increment();
+        if (!game.ROLLOUT) {
+            AiPerf.evals.increment();
+        }
         t.start();
         try {
             return future.get(game.getAITimeout(), TimeUnit.SECONDS);
