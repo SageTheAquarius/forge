@@ -1,5 +1,0 @@
-Name:Starfleet Crew
-ManaCost:1 W
-Types:Creature Officer
-PT:2/3
-Oracle:

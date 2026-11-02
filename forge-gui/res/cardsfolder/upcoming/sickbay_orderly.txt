@@ -1,6 +1,0 @@
-Name:Sickbay Orderly
-ManaCost:2 W
-Types:Creature Caitian Doctor
-PT:3/2
-K:Lifelink
-Oracle:Lifelink (Damage dealt by this creature also causes you to gain that much life.)
