@@ -1,0 +1,17 @@
+Name:H.M.S. Bounty, Unlikely Timeship
+ManaCost:4 U
+Types:Legendary Artifact Spacecraft
+PT:3/4
+K:Station:8
+T:Mode$ ChangesZone | Origin$ Any | Destination$ Battlefield | ValidCard$ Card.Self | Execute$ TrigChange | OptionalDecider$ You | TriggerDescription$ When NICKNAME enters, you may search your library for a Whale card, reveal it, put it into your hand, then shuffle.
+SVar:TrigChange:DB$ ChangeZone | Origin$ Library | Destination$ Hand | ChangeType$ Whale | ChangeNum$ 1 | ShuffleNonMandatory$ True
+S:Mode$ Continuous | AffectedDefined$ Self | Affected$ Card.counters_GE8_CHARGE | AddType$ Creature | AddKeyword$ Flying | Description$ STATION 8+ Flying
+T:Mode$ DamageDone | ValidSource$ Card.Self | ValidTarget$ Player | CombatDamage$ True | Execute$ TrigDraw | TriggerZones$ Battlefield | TriggerDescription$ Whenever NICKNAME deals combat damage to a player, draw a card. If you control a Whale and haven't begun an extra turn this game, take an extra turn after this one.
+SVar:TrigDraw:DB$ Draw | Defined$ You | NumCards$ 1 | SubAbility$ DBAddTurn
+SVar:DBAddTurn:DB$ AddTurn | Defined$ You | NumTurns$ 1 | ConditionCheckSVar$ X | ConditionSVarCompare$ EQ1 | SubAbility$ DBMark
+SVar:DBMark:DB$ Effect | Name$ Bounty Extra Turn | Duration$ Permanent | ConditionCheckSVar$ X | ConditionSVarCompare$ EQ1
+SVar:X:SVar$Y/Minus.Z
+SVar:Y:Count$Valid Whale.YouCtrl/LimitMax.1
+SVar:Z:Count$ValidCommand Effect.YouCtrl+namedBounty Extra Turn/LimitMax.1
+DeckHints:Type$Whale
+Oracle:When H.M.S. Bounty enters, you may search your library for a Whale card, reveal it, put it into your hand, then shuffle.\nStation\n8+ | Flying\nWhenever H.M.S. Bounty deals combat damage to a player, draw a card. If you control a Whale and haven't begun an extra turn this game, take an extra turn after this one.

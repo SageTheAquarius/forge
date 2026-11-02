@@ -1,0 +1,12 @@
+Name:The Naked Time
+ManaCost:1 R
+Types:Enchantment Saga
+K:Chapter:3:DBChangeZone,DBEffect,DBSacrifice
+SVar:DBChangeZone:DB$ ChangeZone | Origin$ Library | Destination$ Battlefield | Tapped$ True | ChangeType$ Mountain.Basic | ChangeTypeDesc$ basic Mountain | ChangeNum$ 1 | SpellDescription$ Search your library for a basic Mountain card, put it onto the battlefield tapped, then shuffle.
+SVar:DBEffect:DB$ Effect | Triggers$ CreatureETB | SpellDescription$ Whenever a creature you control enters this turn, put a +1/+1 counter on it and it gains haste until end of turn.
+SVar:CreatureETB:Mode$ ChangesZone | Origin$ Any | Destination$ Battlefield | ValidCard$ Creature.YouCtrl | TriggerZones$ Command | Execute$ TrigPutCounter | TriggerDescription$ Whenever a creature you control enters this turn, put a +1/+1 counter on it and it gains haste until end of turn.
+SVar:TrigPutCounter:DB$ PutCounter | Defined$ TriggeredCardLKICopy | CounterType$ P1P1 | SubAbility$ DBPump
+SVar:DBPump:DB$ Pump | Defined$ TriggeredCard | KW$ Haste
+SVar:DBSacrifice:DB$ Sacrifice | SacValid$ Land | Defined$ You | SpellDescription$ Sacrifice a land.
+DeckHas:Ability$Counters
+Oracle:(As this Saga enters and after your draw step, add a lore counter. Sacrifice after III.)\nI — Search your library for a basic Mountain card, put it onto the battlefield tapped, then shuffle.\nII — Whenever a creature you control enters this turn, put a +1/+1 counter on it and it gains haste until end of turn.\nIII — Sacrifice a land.

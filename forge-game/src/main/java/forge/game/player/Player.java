@@ -114,6 +114,7 @@ public class Player extends GameEntity implements Comparable<Player> {
     private List<Card> spellsCastSinceBeginningOfLastTurn = Lists.newArrayList();
     private int investigatedThisTurn;
     private int surveilThisTurn;
+    private int dilemmasFacedThisTurn;
     private int committedCrimeThisTurn;
     private int numFlipsThisTurn;
     private int numRollsThisTurn;
@@ -1111,6 +1112,16 @@ public class Player extends GameEntity implements Comparable<Player> {
 
     public void resetSurveilThisTurn() {
         surveilThisTurn = 0;
+    }
+
+    public int getDilemmasFacedThisTurn() {
+        return dilemmasFacedThisTurn;
+    }
+    public void incDilemmasFacedThisTurn() {
+        dilemmasFacedThisTurn++;
+    }
+    public void setDilemmasFacedThisTurn(int v) {
+        dilemmasFacedThisTurn = v;
     }
 
     public boolean canMulligan() {
@@ -2494,6 +2505,7 @@ public class Player extends GameEntity implements Comparable<Player> {
         resetLandsPlayedThisTurn();
         resetInvestigatedThisTurn();
         resetSurveilThisTurn();
+        dilemmasFacedThisTurn = 0;
         resetDiscardedThisTurn();
         resetSacrificedThisTurn();
         resetVenturedThisTurn();

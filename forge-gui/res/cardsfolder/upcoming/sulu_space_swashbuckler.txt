@@ -1,0 +1,10 @@
+Name:Sulu, Space Swashbuckler
+ManaCost:1 W
+Types:Legendary Creature Human Pilot
+PT:2/2
+K:First Strike
+T:Mode$ Taps | ValidCard$ Card.Self | CheckSVar$ X | Execute$ TrigDraw | TriggerDescription$ Whenever NICKNAME becomes tapped, if an Equipment or Spacecraft entered the battlefield under your control this turn, draw a card.
+SVar:TrigDraw:DB$ Draw
+SVar:X:Count$ThisTurnEntered_Battlefield_Equipment.YouCtrl,Spacecraft.YouCtrl
+DeckHints:Type$Equipment|Spacecraft
+Oracle:First strike\nWhenever Sulu becomes tapped, if an Equipment or Spacecraft entered the battlefield under your control this turn, draw a card.

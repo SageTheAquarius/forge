@@ -31,6 +31,7 @@ import forge.game.card.CardCollectionView;
 import forge.card.ICardFace;
 import forge.game.card.CardState;
 import forge.game.card.CounterType;
+import forge.game.ability.AbilityUtils;
 import forge.game.ability.ApiType;
 import forge.game.ability.effects.RollDiceEffect;
 import forge.game.GameObject;
@@ -1796,14 +1797,45 @@ public class PlayerControllerBridge extends PlayerControllerAi {
         } finally {
             promptSource = null;
         }
+        List<GameEntity> picked = new ArrayList<>();
         for (int idx : sel) {
             // Greyed rows sit past candidates.size() and are never assigned,
             // whatever the client sends back.
             if (idx >= 0 && idx < candidates.size()) {
                 sa.getTargets().add(candidates.get(idx));
+                picked.add(candidates.get(idx));
             }
         }
+        divideAmongTargets(sa, picked);
         return sa.isTargetNumberValid();
+    }
+
+    /**
+     * "Divided as you choose" (Pure Energy, Elven Rite, Fireball-style damage):
+     * Forge's human UI asks for an amount per target as each is clicked;
+     * without an allocation the effect's getDividedValue(target) is null and
+     * CountersPutEffect / DamageDealEffect throw at resolution (TRK sweep,
+     * 2026-11-02: Pure Energy on one Grizzly Bears killed the game). Split the
+     * amount evenly, the remainder to the targets picked first -- the one
+     * target case, by far the common one, gets everything.
+     */
+    private static void divideAmongTargets(SpellAbility sa, List<GameEntity> picked) {
+        if (!sa.isDividedAsYouChoose() || picked.isEmpty()) {
+            return;
+        }
+        // clearTargets() is what seeds the total; this path only resetTargets(),
+        // so read the amount off the parameter when the total was never set.
+        int left = sa.getDividedValue() != null ? sa.getStillToDivide()
+                : AbilityUtils.calculateAmount(sa.getHostCard(), sa.getParam("DividedAsYouChoose"), sa);
+        if (left <= 0) {
+            return;
+        }
+        int n = picked.size();
+        int each = left / n, extra = left % n;
+        for (int i = 0; i < n; i++) {
+            int amount = each + (i < extra ? 1 : 0);
+            sa.addDividedAllocation(picked.get(i), amount);
+        }
     }
 
     /**

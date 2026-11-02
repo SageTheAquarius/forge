@@ -1,0 +1,14 @@
+Name:The Inner Light
+ManaCost:3 G W
+Types:Enchantment Saga
+K:Chapter:3:DBReturn,DBEffect,DBGainLife
+SVar:DBReturn:DB$ ChangeZone | Origin$ Graveyard | Destination$ Battlefield | ValidTgts$ Creature.Green+YouOwn,Creature.White+YouOwn | TgtPrompt$ Select target green or white creature card in your graveyard | SpellDescription$ Return target green or white creature card from your graveyard to the battlefield.
+SVar:DBEffect:DB$ Effect | ValidTgts$ Creature | TgtPrompt$ Select target creature | Triggers$ TrigDamage | RememberObjects$ Targeted | SpellDescription$ Choose target creature. Whenever it deals combat damage to a player this turn, you draw that many cards.
+SVar:TrigDamage:Mode$ DamageDone | ValidSource$ Creature.IsRemembered | ValidTarget$ Player | Execute$ TrigDraw | CombatDamage$ True | TriggerDescription$ Whenever it deals combat damage to a player this turn, you draw that many cards.
+SVar:TrigDraw:DB$ Draw | Defined$ You | NumCards$ X
+SVar:X:TriggerCount$DamageAmount
+SVar:DBGainLife:DB$ GainLife | Defined$ You | LifeAmount$ Y | SubAbility$ DBTreasure | SpellDescription$ You gain life equal to the greatest power among creatures you control. Create a Treasure token.
+SVar:Y:Count$Valid Creature.YouCtrl$GreatestCardPower
+SVar:DBTreasure:DB$ Token | TokenScript$ c_a_treasure_sac
+DeckHas:Ability$Graveyard|LifeGain|Token & Type$Treasure|Artifact
+Oracle:(As this Saga enters and after your draw step, add a lore counter. Sacrifice after III.)\nI — Return target green or white creature card from your graveyard to the battlefield.\nII — Choose target creature. Whenever it deals combat damage to a player this turn, you draw that many cards.\nIII — You gain life equal to the greatest power among creatures you control. Create a Treasure token.

@@ -1,0 +1,6 @@
+Name:Energize
+ManaCost:1 U
+Types:Sorcery
+K:Beam me up:3 U
+A:SP$ ChangeZone | ValidTgts$ Creature.OppCtrl | TgtPrompt$ Select target creature an opponent controls | Origin$ Battlefield | Destination$ Hand | SpellDescription$ Return target creature an opponent controls to its owner's hand.
+Oracle:Return target creature an opponent controls to its owner's hand.\nBeam me up {3}{U} (You may cast this card from your graveyard for {3}{U} if you also return a creature you control to its owner's hand. Then exile this spell.)

@@ -1,0 +1,8 @@
+Name:Stray from History
+ManaCost:2 B
+Types:Sorcery
+A:SP$ Charm | Choices$ DBReturn,DBExile
+SVar:DBReturn:DB$ ChangeZone | ValidTgts$ Creature.YouOwn,Spacecraft.YouOwn | TgtPrompt$ Select one or two target creature and/or Spacecraft cards in your graveyard | TargetMin$ 1 | TargetMax$ 2 | TgtZone$ Graveyard | Origin$ Graveyard | Destination$ Hand | SpellDescription$ Rewrite the Past — Return one or two target creature and/or Spacecraft cards from your graveyard to your hand.
+SVar:DBExile:DB$ ChangeZone | Origin$ Hand | Destination$ Exile | DefinedPlayer$ Targeted | ValidTgts$ Opponent | Chooser$ You | ChangeType$ Card.nonLand | ChangeNum$ 1 | IsCurse$ True | Mandatory$ True | StackDescription$ SpellDescription | SpellDescription$ Repair the Timeline — Target opponent reveals their hand. You choose a nonland card from it. Exile that card.
+DeckHas:Ability$Graveyard
+Oracle:Choose one —\n• Rewrite the Past — Return one or two target creature and/or Spacecraft cards from your graveyard to your hand.\n• Repair the Timeline — Target opponent reveals their hand. You choose a nonland card from it. Exile that card.

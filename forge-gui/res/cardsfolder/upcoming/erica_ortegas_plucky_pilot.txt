@@ -1,0 +1,11 @@
+Name:Erica Ortegas, Plucky Pilot
+ManaCost:3 R
+Types:Legendary Creature Human Pilot
+PT:3/3
+K:Haste
+T:Mode$ Taps | ValidCard$ Card.Self | OptionalDecider$ You | TriggerZones$ Battlefield | Execute$ TrigChange | TriggerDescription$ Whenever NICKNAME becomes tapped, you may put a land card from your hand onto the battlefield. If you do, return a land you control to its owner's hand at the beginning of the next end step.
+SVar:TrigChange:DB$ ChangeZone | Origin$ Hand | Destination$ Battlefield | ChangeType$ Land | ChangeNum$ 1 | RememberChanged$ True | SubAbility$ DBDelTrig
+SVar:DBDelTrig:DB$ DelayedTrigger | Mode$ Phase | Phase$ End of Turn | Execute$ TrigBounce | ConditionDefined$ Remembered | ConditionPresent$ Card | TriggerDescription$ At the beginning of the next end step, return a land you control to its owner's hand. | SubAbility$ DBCleanup
+SVar:TrigBounce:DB$ ChangeZone | Origin$ Battlefield | Destination$ Hand | Hidden$ True | Mandatory$ True | ChangeType$ Land.YouCtrl
+SVar:DBCleanup:DB$ Cleanup | ClearRemembered$ True
+Oracle:Haste\nWhenever Erica Ortegas becomes tapped, you may put a land card from your hand onto the battlefield. If you do, return a land you control to its owner's hand at the beginning of the next end step.

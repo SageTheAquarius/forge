@@ -1,0 +1,11 @@
+Name:Subcommander T'Pol
+ManaCost:2 U
+Types:Legendary Creature Vulcan Scientist
+PT:3/1
+K:Flash
+T:Mode$ ChangesZone | Origin$ Any | Destination$ Battlefield | ValidCard$ Card.Self | Execute$ TrigCharm | TriggerDescription$ When NICKNAME enters, ABILITY
+SVar:TrigCharm:DB$ Charm | Choices$ DBCounter,DBTap
+SVar:DBCounter:DB$ Counter | TgtPrompt$ Select target activated or triggered ability | ValidTgts$ Card,Emblem | TargetType$ Activated,Triggered | SpellDescription$ Counter target activated or triggered ability.
+SVar:DBTap:DB$ Tap | ValidTgts$ Artifact,Creature | TargetMin$ 0 | TargetMax$ 1 | TgtPrompt$ Select up to one target artifact or creature | SubAbility$ DBPutCounter | SpellDescription$ Tap up to one target artifact or creature. Put a stun counter on it. (If a permanent with a stun counter would become untapped, remove one from it instead.)
+SVar:DBPutCounter:DB$ PutCounter | Defined$ Targeted | CounterType$ STUN
+Oracle:Flash\nWhen Subcommander T'Pol enters, choose one —\n• Counter target activated or triggered ability.\n• Tap up to one target artifact or creature. Put a stun counter on it. (If a permanent with a stun counter would become untapped, remove one from it instead.)

@@ -1,0 +1,10 @@
+Name:Daniels, Temporal Agent
+ManaCost:2 BG BG
+Types:Legendary Creature Human Advisor
+PT:3/1
+T:Mode$ ChangesZone | Origin$ Any | Destination$ Battlefield | ValidCard$ Card.Self | Execute$ TrigChangeZone | TriggerDescription$ When NICKNAME enters, return target creature card from your graveyard to your hand.
+SVar:TrigChangeZone:DB$ ChangeZone | Origin$ Graveyard | Destination$ Hand | ValidTgts$ Creature.YouOwn | TgtPrompt$ Select target creature card in your graveyard
+A:AB$ GainLife | Cost$ 2 PutCardToLibFromGrave<1/-1/CARDNAME> | ActivationZone$ Graveyard | Defined$ You | LifeAmount$ 2 | SpellDescription$ You gain 2 life.
+DeckHas:Ability$LifeGain|Graveyard
+DeckHints:Ability$Graveyard
+Oracle:When Daniels enters, return target creature card from your graveyard to your hand.\n{2}, Put this card from your graveyard on the bottom of your library: You gain 2 life.

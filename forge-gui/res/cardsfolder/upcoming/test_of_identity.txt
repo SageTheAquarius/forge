@@ -1,0 +1,11 @@
+Name:Test of Identity
+ManaCost:1 R
+Types:Instant
+A:SP$ Charm | Choices$ DBPump,DBDiscard
+SVar:DBPump:DB$ Pump | ValidTgts$ Creature.Klingon | TgtPrompt$ Select target Klingon | NumAtt$ +1 | NumDef$ +1 | KW$ Double Strike | SpellDescription$ I Am Klingon — Target Klingon gets +1/+1 and gains double strike until end of turn.
+SVar:DBDiscard:DB$ Discard | Defined$ You | Mode$ TgtChoose | NumCards$ 1 | RememberDiscarded$ True | SubAbility$ DBDraw | SpellDescription$ I Am Starfleet — Discard a card. If you do, draw two cards.
+SVar:DBDraw:DB$ Draw | Defined$ You | NumCards$ 2 | ConditionDefined$ Remembered | ConditionPresent$ Card | ConditionCompare$ GE1 | SubAbility$ DBCleanup
+SVar:DBCleanup:DB$ Cleanup | ClearRemembered$ True
+DeckHas:Ability$Discard
+DeckHints:Type$Klingon
+Oracle:Choose one —\n• I Am Klingon — Target Klingon gets +1/+1 and gains double strike until end of turn.\n• I Am Starfleet — Discard a card. If you do, draw two cards.
