@@ -5,6 +5,7 @@ import forge.LobbyPlayer;
 import forge.ai.AIOption;
 import forge.ai.LobbyPlayerAi;
 import forge.card.CardRarity;
+import forge.card.CardStateName;
 import forge.card.CardRules;
 import forge.card.CardType;
 import forge.game.*;
@@ -14,6 +15,8 @@ import forge.game.card.CardCloneStates;
 import forge.game.card.CardCopyService;
 import forge.game.card.CardFactory;
 import forge.game.card.CounterType;
+import forge.game.replacement.ReplacementEffect;
+import forge.game.trigger.Trigger;
 import forge.game.card.token.TokenInfo;
 import forge.game.combat.Combat;
 import forge.game.mana.Mana;
@@ -42,6 +45,11 @@ public class GameCopier {
         ZoneType.Exile,
         ZoneType.Stack,
         ZoneType.Command,
+        // EconomyDraft 2026-11-02: the bridge ships every seat's draft leftovers
+        // as a sideboard, and checkStaticAbilities walks sideboards, so a
+        // characteristic-defining static there (a */* creature) has a live
+        // StaticEffect whose source the copy could not map (T-20261103-001).
+        ZoneType.Sideboard,
     };
 
     private Game origGame;
@@ -327,7 +335,30 @@ public class GameCopier {
                 // TODO would it be safe to simply reuse the prototype?
                 otherCard.setCopiedPermanent(new CardCopyService(card.getCopiedPermanent()).copyCard(false));
             }
+            if (card.getPrepared() != null) {
+                // The creature's link to its Prepare effect card; without it the
+                // copy reads as unprepared (the upkeep "if it isn't prepared"
+                // trigger re-prepares it, and a cast never unprepares it).
+                Card eff = cardMap.get(card.getPrepared());
+                if (eff != null) {
+                    otherCard.setPrepared(eff);
+                }
+            }
             // TODO: Verify that the above relationships are preserved bi-directionally or not.
+        }
+
+        // Command-zone effect cards name the permanent (or spell host) that made
+        // them: Defined$ EffectSource and MayPlayPlayer$ EffectSourceController
+        // resolve through it, and the battlefield loop above only wires it for
+        // permanents.
+        for (Card card : origGame.getCardsIn(ZoneType.Command)) {
+            Card otherCard = cardMap.get(card);
+            if (otherCard != null && card.getEffectSource() != null && otherCard.getEffectSource() == null) {
+                Card src = cardMap.get(card.getEffectSource());
+                if (src != null) {
+                    otherCard.setEffectSource(src);
+                }
+            }
         }
     }
 
@@ -372,7 +403,48 @@ public class GameCopier {
                     + checkBad.get() + " differing (fastcopy=" + FAST_COPY + ")");
         }
     }
+    /** True for the parked copy of a Prepare creature's spell face: a token
+     *  built from the creature's paper card with its PreparedSpell state up. */
+    private static boolean isPreparedSpellCopy(Card c) {
+        return c.isToken() && c.getPaperCard() != null && c.hasState(CardStateName.PreparedSpell);
+    }
+
+    private Card fastCopy(Game newGame, Player newOwner, Card c) {
+        // EconomyDraft 2026-10-17: copy the printed states from the live card
+        // (ability objects copied) instead of parsing the card's script again
+        // (CardFactory.getCard), which was nearly all of a copy's 5.3 ms and
+        // 4.1 MB. Built in the new game from the start, so nothing registers
+        // with the original game's tracker. -Dbridge.fastcopy=false: old path.
+        Card newCard = new Card(c.getId(), c.getPaperCard(), newGame);
+        newCard.setOwner(newOwner);
+        CardCopyService.copyStatesInto(c, newCard);
+        newCard.setSetCode(c.getSetCode());
+        newCard.setGamePieceType(c.getGamePieceType());
+        newCard.setCommander(c.isCommander());
+        // Copied abilities still name the original game's players.
+        for (SpellAbility sa : newCard.getAllSpellAbilities()) {
+            Player ap = sa.getActivatingPlayer();
+            if (ap != null && ap.getGame() != newGame) {
+                Player mapped = playerMap.get(ap);
+                sa.setActivatingPlayer(mapped != null ? mapped : newOwner);
+            }
+        }
+        return newCard;
+    }
+
     private Card createCardCopy(Game newGame, Player newOwner, Card c, Player aiPlayer) {
+        if (isPreparedSpellCopy(c) && !c.isImmutable()) {
+            // EconomyDraft 2026-11-02 (T-20261103-002): TokenInfo flattens the
+            // parked copy to one Original state named after the spell face, so
+            // the copy's SBA 704.5d ("a token outside the battlefield ceases to
+            // exist", which spares only the PreparedSpell state) deleted it from
+            // the copied exile in every simulation. The effect card then
+            // remembered a card in no zone, nested copies logged "skipping
+            // unmapped remembered", and the AI could never cast its own
+            // prepared spell in a lookahead. Copy its states like a card;
+            // addCard puts the PreparedSpell state back up.
+            return fastCopy(newGame, newOwner, c);
+        }
         if (c.isToken() && !c.isImmutable()) {
             // The token's own SVars go on first: a keyword that names one
             // (a token copy of an "enters prepared" creature) throws without
@@ -382,26 +454,7 @@ public class GameCopier {
             return result;
         }
         if (FAST_COPY && !c.isImmutable() && c.getPaperCard() != null && !(c instanceof DetachedCardEffect)) {
-            // EconomyDraft 2026-10-17: copy the printed states from the live card
-            // (ability objects copied) instead of parsing the card's script again
-            // (CardFactory.getCard), which was nearly all of a copy's 5.3 ms and
-            // 4.1 MB. Built in the new game from the start, so nothing registers
-            // with the original game's tracker. -Dbridge.fastcopy=false: old path.
-            Card newCard = new Card(c.getId(), c.getPaperCard(), newGame);
-            newCard.setOwner(newOwner);
-            CardCopyService.copyStatesInto(c, newCard);
-            newCard.setSetCode(c.getSetCode());
-            newCard.setGamePieceType(c.getGamePieceType());
-            newCard.setCommander(c.isCommander());
-            // Copied abilities still name the original game's players.
-            for (SpellAbility sa : newCard.getAllSpellAbilities()) {
-                Player ap = sa.getActivatingPlayer();
-                if (ap != null && ap.getGame() != newGame) {
-                    Player mapped = playerMap.get(ap);
-                    sa.setActivatingPlayer(mapped != null ? mapped : newOwner);
-                }
-            }
-            return newCard;
+            return fastCopy(newGame, newOwner, c);
         }
         if (USE_FROM_PAPER_CARD && !c.isImmutable() && c.getPaperCard() != null) {
             Card newCard;
@@ -430,6 +483,7 @@ public class GameCopier {
         newCard.setName(c.getName());
         newCard.setCommander(c.isCommander());
         newCard.setType(new CardType(c.getType()));
+        newCard.setSVars(c.getSVars());
         for (StaticAbility stAb : c.getStaticAbilities()) {
             newCard.addStaticAbility(stAb.copy(newCard, true));
         }
@@ -440,6 +494,19 @@ public class GameCopier {
             } else {
                 System.err.println(sa.toString());
             }
+        }
+        // EconomyDraft 2026-11-02: command-zone effect cards (no paper card)
+        // land here, and they lost their triggers and replacement effects in
+        // the copy. A Prepare effect's "SpellCast -> unprepare" trigger is
+        // what lets a simulation unprepare the creature after casting the
+        // parked spell; without it the sim could cast it every turn and the
+        // stale effect kept a dead remembered card. Emblems and "until end
+        // of turn" effects with a cleanup trigger behave the same way.
+        for (Trigger t : c.getTriggers()) {
+            newCard.addTrigger(t.copy(newCard, true));
+        }
+        for (ReplacementEffect re : c.getReplacementEffects()) {
+            newCard.addReplacementEffect(re.copy(newCard, true));
         }
 
         return newCard;
@@ -548,6 +615,13 @@ public class GameCopier {
             newCard.copyChangedSVarsFrom(c);
         }
 
+        if (zone != ZoneType.Battlefield && c.getCurrentStateName() != newCard.getCurrentStateName()
+                && newCard.hasState(c.getCurrentStateName())) {
+            // A parked Prepare copy sits in exile with its spell face up; the
+            // battlefield loop below restores states only for permanents.
+            newCard.setState(c.getCurrentStateName(), false);
+        }
+
         if (zone == ZoneType.Exile && c.isFaceDown()) {
             // Face-down exile state (foretell, "exile face down" effects) must
             // survive the copy: cards rebuilt from their paper card default to
@@ -607,7 +681,11 @@ public class GameCopier {
             if (result != null) {
                 return result;
             } else {
-                System.out.println("Couldn't map " + o + "/" + System.identityHashCode(o));
+                // The zone says which walk missed it: a card in no zone ceased
+                // to exist (a token the copy's SBAs removed), a zone outside
+                // ZONES is a walk gap (the sideboard was one until 2026-11-02).
+                System.out.println("Couldn't map " + o + "/" + System.identityHashCode(o)
+                        + " zone=" + ((Card) o).getZone() + " state=" + ((Card) o).getCurrentStateName());
             }
         } else if (o instanceof Player) {
             result = (T) playerMap.get(o);
