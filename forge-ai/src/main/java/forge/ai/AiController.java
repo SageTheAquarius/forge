@@ -1053,8 +1053,16 @@ public class AiController {
             // "AI failed to play" for every such card on every decision (ticket
             // T-20260924-006). Targets and X are already set here, as they are for
             // the check it replaces. Kill switch: -Dbridge.simafford=false.
-            if (AiPerf.SIM_AFFORD && sa == AFFORD_BEFORE_SIM.get()
-                    && !ComputerUtilCost.canPayCost(sa, player, sa.isTrigger())) {
+            // A modal spell's MODE arrives here too (CharmAi.chooseOptionsAi
+            // asks canPlaySa per mode) while the thread-local holds the spell,
+            // so until 2026-11-03 every unaffordable dilemma mode still got a
+            // game copy whose real payment failed ("AI failed to play" 3,060
+            // times in 224 Star Trek ladder games, from turn 1). Judge the mode
+            // by its spell's cost.
+            final SpellAbility affordCheck = AFFORD_BEFORE_SIM.get();
+            if (AiPerf.SIM_AFFORD && affordCheck != null
+                    && (sa == affordCheck || sa.getRootAbility() == affordCheck)
+                    && !ComputerUtilCost.canPayCost(affordCheck, player, affordCheck.isTrigger())) {
                 return AiPlayDecision.CantAfford;
             }
             return OnePlaySafetyChecker.isAcceptable(player, sa) ? AiPlayDecision.WillPlay : AiPlayDecision.HybridSimRejected;
