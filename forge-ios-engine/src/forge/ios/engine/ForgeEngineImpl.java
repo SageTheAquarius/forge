@@ -63,6 +63,20 @@ public class ForgeEngineImpl extends NSObject implements ForgeEngineApi {
         if (System.getProperty("ai.sacache") == null) {
             System.setProperty("ai.sacache", "");
         }
+        // The Arena Best-of-One rules prod runs with since release 2026-11-02
+        // (deploy/fly.prod.toml BRIDGE_JAVA_OPTS): every mulligan tucks a card,
+        // Arena's opening-hand smoother, the toss winner on the play with no
+        // play/draw prompt. The phone has no command line, so the defaults are
+        // set here; a value already present (a test harness) wins.
+        if (System.getProperty("bridge.freemulligan") == null) {
+            System.setProperty("bridge.freemulligan", "off");
+        }
+        if (System.getProperty("bridge.handsmoother") == null) {
+            System.setProperty("bridge.handsmoother", "on");
+        }
+        if (System.getProperty("bridge.autoplayfirst") == null) {
+            System.setProperty("bridge.autoplayfirst", "on");
+        }
         GuiBase.setInterface(new GuiHeadless(assets, false));
         port = port0;
         ready = false;
