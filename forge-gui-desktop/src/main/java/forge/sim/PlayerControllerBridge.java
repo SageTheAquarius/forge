@@ -282,6 +282,16 @@ public class PlayerControllerBridge extends PlayerControllerAi {
                 + StateExporter.toJson(me.getGame().getView(), me) + "}");
 
         String compact = reply.replaceAll("\\s", "");
+        if (compact.contains("\"action\":\"hint\"")) {
+            // The Claude seat (mtg_sim/claude_seat.py) wants Forge's own AI's
+            // opinion before it decides: compute it on a copy (AiHint) and
+            // ask this same window again with it attached. A person's client
+            // never sends this verb.
+            String hint = AiHint.priority(me);
+            reply = ask("{\"kind\":\"priority\",\"hint\":" + (hint != null ? hint : "{}")
+                    + ",\"state\":" + StateExporter.toJson(me.getGame().getView(), me) + "}");
+            compact = reply.replaceAll("\\s", "");
+        }
         if (compact.contains("\"action\":\"sandbox\"")) {
             // A Practice-game cheat: apply it, then ask this same window again
             // (as a rejected click does) so the player sees the result and
@@ -587,6 +597,22 @@ public class PlayerControllerBridge extends PlayerControllerAi {
     @Override
     public boolean playChosenSpellAbility(SpellAbility sa) {
         if (sa == null) return false;
+        if (TARGET_LOG) {
+            try {
+                StringBuilder sb = new StringBuilder("[target] chain for ")
+                        .append(sa.getHostCard() != null ? sa.getHostCard().getName() : "?").append(':');
+                for (SpellAbility s = sa; s != null; s = s.getSubAbility()) {
+                    sb.append("\n    ").append(s.getClass().getSimpleName()).append(" api=").append(s.getApi())
+                      .append(" targets=").append(s.usesTargeting())
+                      .append(s.usesTargeting() ? " valid=" + java.util.Arrays.toString(s.getTargetRestrictions().getValidTgts())
+                              + " min=" + s.getMinTargets() + " max=" + s.getMaxTargets() : "")
+                      .append(" params=").append(s.getMapParams().keySet());
+                }
+                System.out.println(sb);
+            } catch (Exception e) {
+                System.out.println("[target] chain log failed: " + e);
+            }
+        }
         // Refuse a spell the mana cannot cover BEFORE its questions. Forge
         // asks optional costs, modes and targets first and pays mana last, so
         // an unaffordable Atlantis Attacks walked a phone player through
@@ -1724,10 +1750,23 @@ public class PlayerControllerBridge extends PlayerControllerAi {
      * scroll past to find the one that is hexproof.
      */
     private static final int NEAR_MISS_CAP = 12;
+    /** -Dbridge.target.log=true: one stdout line per targeted part this seat is asked about. */
+    private static final boolean TARGET_LOG = Boolean.getBoolean("bridge.target.log");
 
     /** Prompt the client for one targeted ability's targets; assign the picks. */
     private boolean pickTargetsForSA(SpellAbility sa) {
         sa.resetTargets();
+        if (TARGET_LOG) {
+            try {
+                System.out.println("[target] " + (sa.getHostCard() != null ? sa.getHostCard().getName() : "?")
+                        + " part=" + sa.getDescription() + " sub=" + (sa.getParent() != null)
+                        + " min=" + sa.getMinTargets() + " max=" + sa.getMaxTargets()
+                        + " zone=" + sa.getTargetRestrictions().getZone()
+                        + " candidates=" + sa.getTargetRestrictions().getAllCandidates(sa).size());
+            } catch (Exception e) {
+                System.out.println("[target] log failed: " + e);
+            }
+        }
         // A target count that evaluates to zero is "this clause has no target
         // this time", not "any number": Cruel Alliance's two target clauses are
         // TargetMin$/TargetMax$ Count$Teamwork.0.1 and .1.0, so one of them is
@@ -4497,6 +4536,18 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             return;
         }
         String compact = reply.replaceAll("\\s", "");
+        if (compact.contains("\"hint\":true")) {
+            // The Claude seat asks what Forge's AI would attack with (AiHint)
+            // before deciding; re-ask the same window with the answer attached.
+            String hint = AiHint.attack(attacker, combat);
+            reply = ask("{\"kind\":\"declare_attackers\",\"hint\":" + (hint != null ? hint : "{}")
+                    + ",\"eligible\":" + idList(eligible)
+                    + ",\"defenders\":" + defenderList(combat) + ",\"state\":" + state + "}");
+            if (endIfAbandoned()) {
+                return;
+            }
+            compact = reply.replaceAll("\\s", "");
+        }
         boolean all = compact.contains("\"attackers\":\"all\"");
         List<String> notes = new ArrayList<>();
         for (Card c : eligible) {
@@ -5108,6 +5159,17 @@ public class PlayerControllerBridge extends PlayerControllerAi {
             return;   // client gone: end the game now rather than at the next priority
         }
         String compact = reply.replaceAll("\\s", "");
+        if (compact.contains("\"hint\":true")) {
+            // The Claude seat asks what Forge's AI would block with (AiHint)
+            // before deciding; re-ask the same window with the answer attached.
+            String hint = AiHint.blocks(defender, combat);
+            reply = ask("{\"kind\":\"declare_blockers\",\"hint\":" + (hint != null ? hint : "{}")
+                    + ",\"legal\":" + legal + ",\"state\":" + state + "}");
+            if (endIfAbandoned()) {
+                return;
+            }
+            compact = reply.replaceAll("\\s", "");
+        }
         if (compact.contains("\"blocks\":\"none\"") || !compact.contains("blocker")) {
             return; // no blocks
         }
