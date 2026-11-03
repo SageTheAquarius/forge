@@ -8,14 +8,20 @@ import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import com.google.common.eventbus.Subscribe;
 
+import forge.ai.ComputerUtilMana;
 import forge.game.Game;
 import forge.game.GameLogEntryType;
 import forge.game.GameState;
+import forge.game.ability.ApiType;
+import forge.game.ability.effects.CharmEffect;
 import forge.game.card.Card;
 import forge.game.combat.CombatUtil;
 import forge.game.event.GameEventAddLog;
@@ -23,6 +29,10 @@ import forge.game.event.GameEventGameOutcome;
 import forge.game.event.GameEventPlayerPriority;
 import forge.game.phase.PhaseType;
 import forge.game.player.Player;
+import forge.game.spellability.SpellAbility;
+import forge.game.trigger.Trigger;
+import forge.game.trigger.TriggerType;
+import forge.game.zone.ZoneType;
 
 /**
  * Board snapshots at decision points, for the offline correctness evaluator.
@@ -55,6 +65,7 @@ public final class DecisionSnapshots {
     private Writer out;
     private int seq = 0;
     private final Map<String, Integer> lastHash = new HashMap<>();
+    private final Set<String> respondSeen = new HashSet<>();
     private long msSpent = 0;
 
     public static boolean enabled() {
@@ -93,6 +104,15 @@ public final class DecisionSnapshots {
             boolean blockWindow = phase == PhaseType.COMBAT_DECLARE_ATTACKERS && duel
                     && !ev.priority().equals(ev.turn())
                     && game.getCombat() != null && !game.getCombat().getAttackers().isEmpty();
+            // The response decision: the defender's first priority with the
+            // attackers declared, whether or not it has a blocker. Not a
+            // snapshot (the evaluator has no forced-cast hook yet): one evt
+            // line with the instants the defender could cast now and which
+            // attackers each could target, so the play review can tell
+            // "held the removal and took the hit" from "had no answer".
+            if (blockWindow && game.getStack().isEmpty()) {
+                respond(game.getPlayer(ev.priority()));
+            }
             if (phase != PhaseType.MAIN1 && phase != PhaseType.MAIN2 && !attackWindow && !blockWindow) return;
             if (!blockWindow && !ev.priority().equals(ev.turn())) return;   // the active player's own choice
             if (!game.getStack().isEmpty()) return;
@@ -129,13 +149,141 @@ public final class DecisionSnapshots {
             out.write(j.toString());
             out.write('\n');
             out.flush();
+            PlayEvents.Json w = new PlayEvents.Json().s("e", "window").n("n", seq).n("turn", turn)
+                    .s("phase", phase.name()).s("kind", kind).s("seat", p.getName());
+            if (kind.equals("main")) {
+                // What the seat could cast from here, by the engine's own
+                // questions (timing, restrictions, a mandatory target, mana);
+                // the review's "ended the turn with X castable" reads this
+                // instead of comparing mana values with a mana estimate.
+                w.n("mana", openMana(p)).raw("ok", okRows(p, null));
+            }
             msSpent += System.currentTimeMillis() - t0;
-            game.fireEvent(new GameEventAddLog(GameLogEntryType.INFORMATION,
-                    "evt " + new PlayEvents.Json().s("e", "window").n("n", seq).n("turn", turn)
-                            .s("phase", phase.name()).s("kind", kind).s("seat", p.getName())));
+            game.fireEvent(new GameEventAddLog(GameLogEntryType.INFORMATION, "evt " + w));
         } catch (Exception ignore) {
             // a snapshot must never cost a game
         }
+    }
+
+    /** The response window, once per combat and defender. */
+    private void respond(Player p) {
+        try {
+            if (p == null || game.getCombat() == null) return;
+            int turn = game.getPhaseHandler().getTurn();
+            if (!respondSeen.add(turn + "/" + p.getName())) return;
+            long t0 = System.currentTimeMillis();
+            List<Card> atk = new ArrayList<>(game.getCombat().getAttackers());
+            List<String> rows = new ArrayList<>();
+            for (Card a : atk) {
+                rows.add(new PlayEvents.Json().s("c", a.getName()).n("id", a.getId())
+                        .n("p", a.getNetPower()).n("t", a.getNetToughness()).toString());
+            }
+            PlayEvents.Json j = new PlayEvents.Json().s("e", "respond").n("turn", turn)
+                    .s("seat", p.getName()).n("mana", openMana(p))
+                    .raw("ok", okRows(p, atk)).raw("atk", "[" + String.join(",", rows) + "]");
+            msSpent += System.currentTimeMillis() - t0;
+            game.fireEvent(new GameEventAddLog(GameLogEntryType.INFORMATION, "evt " + j));
+        } catch (Exception ignore) {
+            // never cost a game
+        }
+    }
+
+    private static int openMana(Player p) {
+        try {
+            return Math.max(0, ComputerUtilMana.getAvailableManaEstimate(p, true));
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /**
+     * The hand cards the player could play right now: one row per card with
+     * a playable non-mana ability (the bridge's own questions, the ones the
+     * client's greying and the refused-click explanation ask). With
+     * {@code attackers} null (a main window) a card whose own enters trigger
+     * needs a target and has none is left out: the spell is legal, the card
+     * would do nothing. With attackers (a response window) each row carries
+     * the attacker ids the card's modes could target.
+     */
+    private static String okRows(Player p, List<Card> attackers) {
+        List<String> rows = new ArrayList<>();
+        try {
+            for (Card c : p.getCardsIn(ZoneType.Hand)) {
+                if (c.isLand()) continue;
+                List<SpellAbility> sas = playable(c, p);
+                if (sas.isEmpty()) continue;
+                if (attackers == null) {
+                    if (etbHasNoTarget(c, p)) continue;
+                    rows.add(PlayEvents.Json.q(c.getName()));
+                    continue;
+                }
+                Set<Integer> ids = new LinkedHashSet<>();
+                for (SpellAbility sa : sas) {
+                    for (SpellAbility m : modes(sa)) {
+                        if (!m.usesTargeting()) continue;
+                        if (m.getActivatingPlayer() == null) m.setActivatingPlayer(p);
+                        for (Card a : attackers) {
+                            if (m.canTarget(a)) ids.add(a.getId());
+                        }
+                    }
+                }
+                List<String> idRows = new ArrayList<>();
+                for (Integer id : ids) idRows.add(String.valueOf(id));
+                rows.add(new PlayEvents.Json().s("c", c.getName())
+                        .raw("tgts", "[" + String.join(",", idRows) + "]").toString());
+            }
+        } catch (Exception ignore) {
+            // a card the checks cannot examine is not listed
+        }
+        return "[" + String.join(",", rows) + "]";
+    }
+
+    /** The card's abilities that pass every playability question right now. */
+    private static List<SpellAbility> playable(Card c, Player p) {
+        List<SpellAbility> out = new ArrayList<>();
+        try {
+            for (SpellAbility sa : c.getAllPossibleAbilities(p, true)) {
+                if (sa == null || sa.isManaAbility() || sa.isLandAbility()) continue;
+                List<SpellAbility> one = new ArrayList<>();
+                one.add(sa);
+                if (TargetReasons.unplayableReason(one, p) == null) out.add(sa);
+            }
+        } catch (Exception ignore) {
+            // not playable as far as this can tell
+        }
+        return out;
+    }
+
+    /** A charm's modes, or the ability itself. */
+    private static List<SpellAbility> modes(SpellAbility sa) {
+        List<SpellAbility> out = new ArrayList<>();
+        try {
+            if (sa.getApi() == ApiType.Charm) out.addAll(CharmEffect.makePossibleOptions(sa));
+        } catch (Exception ignore) {
+            // fall back to the ability itself
+        }
+        if (out.isEmpty()) out.add(sa);
+        return out;
+    }
+
+    /** True when the card's own enters trigger needs a target and nothing is one. */
+    private static boolean etbHasNoTarget(Card c, Player p) {
+        try {
+            for (Trigger t : c.getTriggers()) {
+                if (t.getMode() != TriggerType.ChangesZone) continue;
+                if (!"Battlefield".equals(t.getParam("Destination"))) continue;
+                if (!t.getParamOrDefault("ValidCard", "").contains("Card.Self")) continue;
+                SpellAbility ta = t.ensureAbility();
+                if (ta == null || !ta.usesTargeting()) continue;
+                if (ta.getActivatingPlayer() == null) ta.setActivatingPlayer(p);
+                if (ta.getMinTargets() > 0 && ta.getTargetRestrictions().getNumCandidates(ta) == 0) {
+                    return true;
+                }
+            }
+        } catch (Exception ignore) {
+            // cannot tell: treat the card as castable
+        }
+        return false;
     }
 
     private static String cardRows(List<Card> cards) {
