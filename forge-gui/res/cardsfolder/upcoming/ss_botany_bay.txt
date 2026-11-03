@@ -1,0 +1,12 @@
+Name:S.S. Botany Bay
+ManaCost:3
+Types:Legendary Artifact Spacecraft
+PT:3/5
+A:AB$ ChangeZone | Cost$ T | Origin$ Graveyard | Destination$ Exile | ChangeType$ Card | ChangeNum$ 1 | Mandatory$ True | Hidden$ True | DefinedPlayer$ Player.Opponent | IsCurse$ True | SubAbility$ DBExileOwn | SpellDescription$ Each opponent exiles a card from their graveyard. You may exile a card from your graveyard.
+SVar:DBExileOwn:DB$ ChangeZone | Origin$ Graveyard | Destination$ Exile | ChangeType$ Card | ChangeNum$ 1 | Hidden$ True | DefinedPlayer$ You
+K:Station:8
+S:Mode$ Continuous | AffectedDefined$ Self | Affected$ Card.counters_GE8_CHARGE | AddType$ Creature | AddKeyword$ Flying | AddTrigger$ BayTrig | Description$ STATION 8+ Flying Whenever CARDNAME deals combat damage to a player, return each creature card you own exiled with it to the battlefield.
+SVar:BayTrig:Mode$ DamageDone | ValidSource$ Card.Self | ValidTarget$ Player | CombatDamage$ True | TriggerZones$ Battlefield | Execute$ TrigReturn | TriggerDescription$ Whenever CARDNAME deals combat damage to a player, return each creature card you own exiled with it to the battlefield.
+SVar:TrigReturn:DB$ ChangeZoneAll | ChangeType$ Creature.YouOwn+ExiledWithSource | Origin$ Exile | Destination$ Battlefield
+DeckHas:Ability$Graveyard
+Oracle:{T}: Each opponent exiles a card from their graveyard. You may exile a card from your graveyard.\nStation\n8+ | Flying\nWhenever S.S. Botany Bay deals combat damage to a player, return each creature card you own exiled with it to the battlefield.

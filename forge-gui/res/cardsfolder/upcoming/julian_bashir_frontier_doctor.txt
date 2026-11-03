@@ -1,0 +1,12 @@
+Name:Julian Bashir, Frontier Doctor
+ManaCost:2 W
+Types:Legendary Creature Human Doctor
+PT:1/1
+T:Mode$ Drawn | ValidCard$ Card.YouCtrl | Number$ 2 | TriggerZones$ Battlefield | Execute$ TrigPutCounter | TriggerDescription$ Seek out — Whenever you draw your second card each turn, put a +1/+1 counter on NICKNAME.
+SVar:TrigPutCounter:DB$ PutCounter | Defined$ Self | CounterType$ P1P1 | CounterNum$ 1
+T:Mode$ Attacks | ValidCard$ Card.Self | TriggerZones$ Battlefield | Execute$ TrigReturn | TriggerDescription$ Whenever NICKNAME attacks, return target creature card with mana value X or less from your graveyard to the battlefield, where X is NICKNAME's power.
+SVar:TrigReturn:DB$ ChangeZone | Origin$ Graveyard | Destination$ Battlefield | ValidTgts$ Creature.YouOwn+cmcLEX | TgtPrompt$ Select target creature card in your graveyard with mana value X or less, where X is Julian Bashir's power
+SVar:X:Count$CardPower
+SVar:HasAttackEffect:TRUE
+DeckHas:Ability$Counters|Graveyard
+Oracle:Seek out — Whenever you draw your second card each turn, put a +1/+1 counter on Julian Bashir.\nWhenever Julian Bashir attacks, return target creature card with mana value X or less from your graveyard to the battlefield, where X is Julian Bashir's power.

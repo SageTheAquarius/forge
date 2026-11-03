@@ -697,9 +697,15 @@ public class ComputerUtil {
 
         if (sa.isKeyword(Keyword.STATION)) {
             typeList.removeAll(CardLists.filter(typeList, c -> c.getNetPower() <= 0));
+            if (typeList.size() < amount) {
+                return null;
+            }
+            // counters equal the tapped creature's power: the creature that
+            // cannot attack this turn anyway, biggest first, then the biggest
+            sortForStation(typeList);
+        } else {
+            CardLists.sortByPowerAsc(typeList);
         }
-
-        CardLists.sortByPowerAsc(typeList);
         // TODO prefer noncreatures without tap abilities
 
         final CardCollection tapList = new CardCollection();
@@ -708,6 +714,30 @@ public class ComputerUtil {
             tapList.add(typeList.get(i));
         }
         return tapList;
+    }
+
+    /** Could this creature be declared as an attacker this turn (not sick, no defender, untapped, no "can't attack")? */
+    public static boolean canAttackThisTurn(final Card c, final Player ai) {
+        if (c == null || !c.isCreature() || c.isTapped() || c.isSick()) {
+            return false;
+        }
+        if (!ai.getGame().getPhaseHandler().isPlayerTurn(ai)
+                || ai.getGame().getPhaseHandler().getPhase().isAfter(PhaseType.COMBAT_DECLARE_ATTACKERS)) {
+            return false;   // its attack for this turn is over (or it is not our turn)
+        }
+        return CombatUtil.canAttack(c);
+    }
+
+    /** Station order: creatures that cannot attack this turn first, each group biggest power first. */
+    public static void sortForStation(final CardCollection creatures) {
+        final Player ai = creatures.isEmpty() ? null : creatures.getFirst().getController();
+        creatures.sort((a, b) -> {
+            final boolean fa = !canAttackThisTurn(a, ai), fb = !canAttackThisTurn(b, ai);
+            if (fa != fb) {
+                return fa ? -1 : 1;
+            }
+            return Integer.compare(b.getNetPower(), a.getNetPower());
+        });
     }
 
     public static CardCollection chooseTapTypeAccumulatePower(final Player ai, final String type, final SpellAbility sa,

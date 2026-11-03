@@ -1,0 +1,12 @@
+Name:Planet Killer
+ManaCost:8
+Types:Artifact Creature Construct
+PT:9/9
+K:Flying
+K:Indestructible
+S:Mode$ MustAttack | ValidCreature$ Card.Self | Description$ This creature attacks each combat if able.
+T:Mode$ DamageDone | ValidSource$ Card.Self | ValidTarget$ Player | CombatDamage$ True | Execute$ TrigPutCounter | TriggerZones$ Battlefield | TriggerDescription$ Whenever this creature deals combat damage to a player, put a +1/+1 counter on it for each land that player controls.
+SVar:TrigPutCounter:DB$ PutCounter | Defined$ Self | CounterType$ P1P1 | CounterNum$ X
+SVar:X:Count$Valid Land.ControlledBy TriggeredTarget
+DeckHas:Ability$Counters
+Oracle:Flying, indestructible\nThis creature attacks each combat if able.\nWhenever this creature deals combat damage to a player, put a +1/+1 counter on it for each land that player controls.

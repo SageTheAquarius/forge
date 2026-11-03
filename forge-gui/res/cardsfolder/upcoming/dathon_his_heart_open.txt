@@ -1,0 +1,11 @@
+Name:Dathon, His Heart Open
+ManaCost:G U R
+Types:Legendary Creature Tamarian Officer
+PT:3/3
+T:Mode$ SpellCast | ValidCard$ Enchantment | ValidActivatingPlayer$ You | TriggerZones$ Battlefield | Execute$ TrigDraw | TriggerDescription$ Whenever you cast an enchantment spell, draw a card. If it's a Saga spell, NICKNAME deals 2 damage to each opponent.
+SVar:TrigDraw:DB$ Draw | Defined$ You | NumCards$ 1 | SubAbility$ DBDamage
+SVar:DBDamage:DB$ DealDamage | Defined$ Player.Opponent | NumDmg$ 2 | ConditionDefined$ TriggeredCard | ConditionPresent$ Card.Saga
+A:AB$ PutCounter | Cost$ 2 | ValidTgts$ Enchantment.YouCtrl | TgtPrompt$ Select target enchantment you control | CounterType$ ExistingCounter | CounterNum$ 1 | SorcerySpeed$ True | SpellDescription$ Choose a counter on target enchantment you control. Put another counter of that kind on it. Activate only as a sorcery.
+DeckHas:Ability$Counters
+DeckHints:Type$Enchantment|Saga
+Oracle:Whenever you cast an enchantment spell, draw a card. If it's a Saga spell, Dathon deals 2 damage to each opponent.\n{2}: Choose a counter on target enchantment you control. Put another counter of that kind on it. Activate only as a sorcery.

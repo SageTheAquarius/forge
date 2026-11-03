@@ -1,0 +1,12 @@
+Name:U.S.S. Prometheus, Prototype
+ManaCost:5
+Types:Legendary Artifact Spacecraft
+PT:6/6
+K:Station:4
+S:Mode$ Continuous | AffectedDefined$ Self | Affected$ Card.counters_GE4_CHARGE | AddType$ Creature | AddKeyword$ Flying | Description$ STATION 4+ Flying
+S:Mode$ Continuous | AffectedDefined$ Self | Affected$ Card.counters_GE8_CHARGE | AddTrigger$ TrigDamage | Description$ STATION 8+ Multivector Assault Mode — Whenever NICKNAME deals combat damage to an opponent, it deals that much damage to each other opponent.
+SVar:TrigDamage:Mode$ DamageDone | ValidSource$ Card.Self | ValidTarget$ Opponent | CombatDamage$ True | Execute$ TrigDmg | TriggerZones$ Battlefield | TriggerDescription$ Multivector Assault Mode — Whenever NICKNAME deals combat damage to an opponent, it deals that much damage to each other opponent.
+SVar:TrigDmg:DB$ DamageAll | ValidPlayers$ OppNonTriggeredTarget | NumDmg$ X
+SVar:X:TriggerCount$DamageAmount
+DeckHas:Ability$Counters
+Oracle:Station (Tap another creature you control: Put charge counters equal to its power on this Spacecraft. Station only as a sorcery. It's an artifact creature at 4+.)\n4+ | Flying\n8+ | Multivector Assault Mode — Whenever U.S.S. Prometheus deals combat damage to an opponent, it deals that much damage to each other opponent.

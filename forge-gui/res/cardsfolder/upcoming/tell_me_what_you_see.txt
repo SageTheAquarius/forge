@@ -1,0 +1,12 @@
+Name:Tell Me What You See
+ManaCost:1 B
+Types:Enchantment
+T:Mode$ ChangesZone | Origin$ Any | Destination$ Battlefield | ValidCard$ Card.Self | Execute$ TrigChoice | TriggerDescription$ When this enchantment enters, target opponent may have you draw a card. If they don't, they lose 4 life and you surveil 1.
+SVar:TrigChoice:DB$ GenericChoice | ValidTgts$ Opponent | TgtPrompt$ Select target opponent | Choices$ DBDraw,DBLoseLife
+SVar:DBDraw:DB$ Draw | Defined$ You | NumCards$ 1 | SpellDescription$ CARDNAME's controller draws a card.
+SVar:DBLoseLife:DB$ LoseLife | Defined$ ParentTarget | LifeAmount$ 4 | SubAbility$ DBSurveil | SpellDescription$ You lose 4 life and CARDNAME's controller surveils 1.
+SVar:DBSurveil:DB$ Surveil | Defined$ You | Amount$ 1
+T:Mode$ FacesDilemma | ValidPlayer$ You | TriggerZones$ Battlefield | OptionalDecider$ You | Execute$ TrigBounce | TriggerDescription$ Whenever you face a dilemma, you may return this enchantment to its owner's hand. (You face a dilemma as you choose one or more modes for a spell or ability.)
+SVar:TrigBounce:DB$ ChangeZone | Defined$ Self | Origin$ Battlefield | Destination$ Hand
+DeckHas:Ability$Surveil|Graveyard
+Oracle:When this enchantment enters, target opponent may have you draw a card. If they don't, they lose 4 life and you surveil 1.\nWhenever you face a dilemma, you may return this enchantment to its owner's hand. (You face a dilemma as you choose one or more modes for a spell or ability.)

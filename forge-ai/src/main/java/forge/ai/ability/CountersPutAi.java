@@ -1206,18 +1206,34 @@ public class CountersPutAi extends CountersAi {
             return new AiAbilityDecision(0, AiPlayDecision.CantPlayAi);
         }
 
-        CardLists.sortByPowerAsc(canTap); // Note: matches the way chooseTapType sorts them; maybe worth sorting in descending order for Station?
+        // ComputerUtil.chooseTapType puts the creatures that cannot attack this
+        // turn first (summoning sick, defender, "can't attack"), biggest first,
+        // then the rest biggest first -- so the first of this list is the one
+        // the cost will actually tap.
+        ComputerUtil.sortForStation(canTap);
 
-        // TODO: make this smarter so that the AI is better at predicting conditions when this is safe
-        // (also needs a modification to willPayCosts and ComputerUtil.chooseTapType to make better choices for what exactly to tap)
+        // EconomyDraft 2026-11-02: before this, the AI stationed only when ONE
+        // creature no bigger than the ship finished the threshold in main 1,
+        // and in main 2 everything had attacked, so a Spacecraft stayed an
+        // inert artifact all game (U.S.S. Enterprise-D with Craw Wurm + Bears:
+        // never a counter). A creature that cannot attack this turn anyway is
+        // free to tap, so station with it whenever the ship still wants
+        // counters -- in either main phase.
+        if (numCharge < numStation) {
+            Card free = canTap.getFirst();
+            if (!ComputerUtil.canAttackThisTurn(free, ai)) {
+                return new AiAbilityDecision(100, AiPlayDecision.WillPlay);
+            }
+        }
 
         // If a single creature is enough to turn an untapped station into a creature, allow it
         if (ph.is(PhaseType.MAIN1, ai)) {
-            Card firstToTap = canTap.getFirst();
-            if (source.getType().hasSubtype("Spacecraft") && !source.isCreature() && source.isUntapped()) {
-                if (numCharge < numStation && numCharge + firstToTap.getNetPower() >= numStation
-                        && firstToTap.getNetPower() <= source.getBasePower()) {
-                    return new AiAbilityDecision(100, AiPlayDecision.WillPlay);
+            if (source.getType().hasSubtype("Spacecraft") && !source.isCreature() && source.isUntapped()
+                    && numCharge < numStation) {
+                for (Card c : canTap) {
+                    if (numCharge + c.getNetPower() >= numStation && c.getNetPower() <= source.getBasePower()) {
+                        return new AiAbilityDecision(100, AiPlayDecision.WillPlay);
+                    }
                 }
             }
         }

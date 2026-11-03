@@ -1,0 +1,12 @@
+Name:Sarek, Federation Ambassador
+ManaCost:1 G W U
+Types:Legendary Creature Vulcan Advisor
+PT:0/5
+T:Mode$ Phase | Phase$ BeginCombat | ValidPlayer$ You | TriggerZones$ Battlefield | Execute$ TrigDraw | TriggerDescription$ Federation — At the beginning of combat on your turn, draw a card for every five creature types among non-Borg creatures you control. If you draw three or more cards this way, put two +1/+1 counters on each creature you control.
+SVar:TrigDraw:DB$ Draw | Defined$ You | NumCards$ X | RememberDrawn$ True | SubAbility$ DBPutCounterAll
+SVar:DBPutCounterAll:DB$ PutCounterAll | ValidCards$ Creature.YouCtrl | CounterType$ P1P1 | CounterNum$ 2 | ConditionCheckSVar$ Y | ConditionSVarCompare$ GE3 | SubAbility$ DBCleanup
+SVar:DBCleanup:DB$ Cleanup | ClearRemembered$ True
+SVar:X:Count$Valid Creature.nonBorg+YouCtrl$CreatureType/DivideEvenlyDown.5
+SVar:Y:Remembered$Amount
+DeckHas:Ability$Counters
+Oracle:Federation — At the beginning of combat on your turn, draw a card for every five creature types among non-Borg creatures you control. If you draw three or more cards this way, put two +1/+1 counters on each creature you control.

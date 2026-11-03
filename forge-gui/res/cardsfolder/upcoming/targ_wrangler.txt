@@ -1,0 +1,9 @@
+Name:Targ Wrangler
+ManaCost:2 R
+Types:Creature Klingon Warrior
+PT:5/3
+K:Menace
+T:Mode$ Phase | Phase$ End of Turn | ValidPlayer$ You | TriggerZones$ Battlefield | IsPresent$ Card.Self+attackedThisTurn | Execute$ TrigSac | TriggerDescription$ At the beginning of your end step, if this creature attacked this turn, sacrifice a nonland permanent.
+SVar:TrigSac:DB$ Sacrifice | Defined$ You | SacValid$ Permanent.nonLand
+DeckHas:Ability$Sacrifice
+Oracle:Menace (This creature can't be blocked except by two or more creatures.)\nAt the beginning of your end step, if this creature attacked this turn, sacrifice a nonland permanent.

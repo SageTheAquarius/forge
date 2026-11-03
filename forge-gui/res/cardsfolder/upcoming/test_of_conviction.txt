@@ -1,0 +1,9 @@
+Name:Test of Conviction
+ManaCost:1 W
+Types:Sorcery
+A:SP$ Charm | Choices$ DBPutCounterAll,DBDraw
+SVar:DBPutCounterAll:DB$ PutCounterAll | ValidCards$ Creature.YouCtrl | CounterType$ P1P1 | CounterNum$ 1 | SpellDescription$ Battle Stations — Put a +1/+1 counter on each creature you control.
+SVar:DBDraw:DB$ Draw | ValidTgts$ Opponent | TgtPrompt$ Select target opponent | NumCards$ 1 | SubAbility$ DBDrawYou | SpellDescription$ Begin Negotiations — Target opponent draws a card. You draw two cards.
+SVar:DBDrawYou:DB$ Draw | Defined$ You | NumCards$ 2 | StackDescription$ None
+DeckHas:Ability$Counters
+Oracle:Choose one —\n• Battle Stations — Put a +1/+1 counter on each creature you control.\n• Begin Negotiations — Target opponent draws a card. You draw two cards.

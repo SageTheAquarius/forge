@@ -138,6 +138,10 @@ public abstract class SpellAbilityAi extends SpellAbilityEffect {
             return new AiAbilityDecision(0, AiPlayDecision.StopRunawayActivations);
         }
 
+        if (heldInOwnUpkeep(ai, sa)) {
+            return new AiAbilityDecision(0, AiPlayDecision.AnotherTime);
+        }
+
         AiAbilityDecision decision = checkApiLogic(ai, sa);
         if (!decision.willingToPlay()) {
             return decision;
@@ -159,6 +163,44 @@ public abstract class SpellAbilityAi extends SpellAbilityEffect {
             }
         }
         return decision;
+    }
+
+    /** -Dbridge.upkeephold=off: let instants go off in the AI's own upkeep and draw step again. */
+    private static final boolean UPKEEP_HOLD = !"off".equals(System.getProperty("bridge.upkeephold"));
+
+    /**
+     * EconomyDraft 2026-11-02 (T-20261020-006): an instant-speed spell has no
+     * business going off in its caster's own upkeep or draw step with an empty
+     * stack. Nothing is known there that is not known better in main 1, after
+     * the draw, and better still on the opponent's turn. The removal hold in
+     * ComputerUtilCard.useRemovalNow damps only the creature-threat term, so
+     * a planeswalker target (threat 1), a 6-drop (the tempo term alone clears
+     * the floor) and a charm's pump mode (PumpAllAi never asks useRemovalNow)
+     * all went off in the AI's upkeep in prod logs (Your Fate Ends Here on
+     * turn 10, Fatehold Charm +1/+2 on turn 14). One rule for every handler,
+     * asked before the API logic is. A spell whose script names its window
+     * (ActivationPhases) and anything cast while something resolves (a free
+     * cast off a trigger) are left alone; a response to a stack item too.
+     */
+    static boolean heldInOwnUpkeep(final Player ai, final SpellAbility sa) {
+        if (!UPKEEP_HOLD || ai == null || sa == null) {
+            return false;
+        }
+        final SpellAbility root = sa.getRootAbility();
+        if (!root.isSpell() || root.isTrigger() || isSorcerySpeed(root, ai)) {
+            return false;
+        }
+        final PhaseHandler ph = ai.getGame().getPhaseHandler();
+        if (!ph.isPlayerTurn(ai) || ph.getPhase() == null || !ph.getPhase().isBefore(PhaseType.MAIN1)) {
+            return false;
+        }
+        if (!ai.getGame().getStack().isEmpty() || ai.getGame().getStack().isResolving()) {
+            return false;
+        }
+        if (root.getRestrictions() != null && !root.getRestrictions().getPhases().isEmpty()) {
+            return false;
+        }
+        return true;
     }
 
     protected boolean checkConditions(final Player ai, final SpellAbility sa) {

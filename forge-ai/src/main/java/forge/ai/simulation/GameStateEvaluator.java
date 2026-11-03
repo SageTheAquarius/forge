@@ -311,6 +311,19 @@ public class GameStateEvaluator {
         if (c.isPlaneswalker()) {
             value += 2 * c.getCounters(CounterEnumType.LOYALTY);
         }
+        if (c.hasKeyword(forge.game.keyword.Keyword.STATION)) {
+            // EconomyDraft 2026-11-02 (Star Trek): a Spacecraft below its
+            // threshold is worth its progress. Stationing with a creature that
+            // could not attack anyway changed nothing the evaluator could see
+            // (6 charge counters on U.S.S. Enterprise-D: "HybridSimRejected
+            // sim=517"), so the one-play simulation vetoed every Station the
+            // logic approved and the ship stayed an inert artifact all game.
+            // Counters already past the threshold buy nothing more; at the
+            // threshold the card is a creature and is valued as one above.
+            int threshold = Math.max(1, c.getKeywordMagnitude(forge.game.keyword.Keyword.STATION));
+            int charge = Math.min(threshold, c.getCounters(CounterEnumType.CHARGE));
+            value += (120 * charge) / threshold;
+        }
         return value;
     }
 

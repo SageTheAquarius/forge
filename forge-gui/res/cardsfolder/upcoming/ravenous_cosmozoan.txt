@@ -1,0 +1,10 @@
+Name:Ravenous Cosmozoan
+ManaCost:5 R
+Types:Creature Fish
+PT:3/3
+S:Mode$ ReduceCost | ValidCard$ Card.Self | Type$ Spell | Amount$ X | EffectZone$ All | Description$ This spell costs {1} less to cast for each noncreature, nonland card in your graveyard.
+SVar:X:Count$ValidGraveyard Card.nonCreature+nonLand+YouOwn
+K:Flying
+K:Haste
+DeckHints:Type$Instant|Sorcery
+Oracle:This spell costs {1} less to cast for each noncreature, nonland card in your graveyard.\nFlying, haste

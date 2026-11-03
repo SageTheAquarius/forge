@@ -1,0 +1,12 @@
+Name:Janice Rand, Essential Aide
+ManaCost:3 G
+Types:Legendary Creature Human Advisor
+PT:3/3
+T:Mode$ ChangesZone | Origin$ Any | Destination$ Battlefield | ValidCard$ Card.IsCommander+YouCtrl | TriggerZones$ Battlefield | Execute$ TrigPutCounterEnters | TriggerDescription$ Whenever a commander you control enters or attacks, put a +1/+1 counter on it, then reveal cards from the top of your library until you reveal a land card. Put that card onto the battlefield tapped and the rest on the bottom of your library in a random order.
+T:Mode$ Attacks | ValidCard$ Card.IsCommander+YouCtrl | TriggerZones$ Battlefield | Execute$ TrigPutCounterAttacks | Secondary$ True | TriggerDescription$ Whenever a commander you control enters or attacks, put a +1/+1 counter on it, then reveal cards from the top of your library until you reveal a land card. Put that card onto the battlefield tapped and the rest on the bottom of your library in a random order.
+SVar:TrigPutCounterEnters:DB$ PutCounter | Defined$ TriggeredCardLKICopy | CounterType$ P1P1 | CounterNum$ 1 | SubAbility$ DBDigUntil
+SVar:TrigPutCounterAttacks:DB$ PutCounter | Defined$ TriggeredAttackerLKICopy | CounterType$ P1P1 | CounterNum$ 1 | SubAbility$ DBDigUntil
+SVar:DBDigUntil:DB$ DigUntil | Valid$ Land | ValidDescription$ land | FoundDestination$ Battlefield | Tapped$ True | RevealedDestination$ Library | RevealedLibraryPosition$ -1 | RevealRandomOrder$ True
+DeckHas:Ability$Counters
+AI:RemoveDeck:NonCommander
+Oracle:Whenever a commander you control enters or attacks, put a +1/+1 counter on it, then reveal cards from the top of your library until you reveal a land card. Put that card onto the battlefield tapped and the rest on the bottom of your library in a random order.

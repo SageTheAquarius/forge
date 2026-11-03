@@ -1,0 +1,10 @@
+Name:Vulcan Mind-Meld
+ManaCost:U
+Types:Sorcery
+A:SP$ Pump | ValidTgts$ Opponent | TgtPrompt$ Select target opponent | SubAbility$ DBDigYou | StackDescription$ {p:Targeted} | SpellDescription$ Target opponent
+SVar:DBDigYou:DB$ Dig | Defined$ You | DigNum$ 1 | ChangeNum$ All | DestinationZone$ Exile | ExileFaceDown$ True | DefinedExiler$ ParentTarget | RememberChanged$ True | SubAbility$ DBDigThem | SpellDescription$ looks at the top card of your library, then exiles it face down.
+SVar:DBDigThem:DB$ Dig | Defined$ ParentTarget | DigNum$ 2 | ChangeNum$ All | DestinationZone$ Exile | ExileFaceDown$ True | WithMayLook$ True | RememberChanged$ True | SubAbility$ DBEffect | SpellDescription$ You look at the top two cards of their library, then exile them face down.
+SVar:DBEffect:DB$ Effect | RememberObjects$ RememberedCard | StaticAbilities$ STPlay | ForgetOnMoved$ Exile | Duration$ Permanent | SubAbility$ DBCleanup | SpellDescription$ For each card exiled this way, the player who exiled it may play it for as long as it remains exiled. Mana of any type can be spent to cast spells this way.
+SVar:STPlay:Mode$ Continuous | MayPlayPlayer$ Exiler | MayLookAt$ True | MayPlay$ True | MayPlayIgnoreType$ True | Affected$ Card.IsRemembered | AffectedZone$ Exile | Description$ For each card exiled this way, the player who exiled it may play it for as long as it remains exiled. Mana of any type can be spent to cast spells this way.
+SVar:DBCleanup:DB$ Cleanup | ClearRemembered$ True
+Oracle:Target opponent looks at the top card of your library, then exiles it face down. You look at the top two cards of their library, then exile them face down. For each card exiled this way, the player who exiled it may play it for as long as it remains exiled. Mana of any type can be spent to cast spells this way.
