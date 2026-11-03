@@ -30,6 +30,7 @@ import forge.game.player.Player;
 import forge.game.player.PlayerActionConfirmMode;
 import forge.game.spellability.SpellAbility;
 import forge.game.zone.ZoneType;
+import forge.item.IPaperCard;
 import forge.item.PaperCard;
 
 public class CopyPermanentEffect extends TokenEffectBase {
@@ -286,7 +287,21 @@ public class CopyPermanentEffect extends TokenEffectBase {
 
             int id = newOwner == null ? 0 : newOwner.getGame().nextCardId();
             // need to create a physical card first, i need the original card faces
-            copy = CardFactory.getCard(original.getPaperCard(), newOwner, id, host.getGame());
+            final IPaperCard paper = original.getPaperCard();
+            if (paper != null) {
+                copy = CardFactory.getCard(paper, newOwner, id, host.getGame());
+            } else {
+                // EconomyDraft 2026-11-03: a token the AI's look-ahead rebuilt
+                // (GameCopier -> TokenInfo.toCard) has no paper card, so a copy
+                // of a token inside a simulation (Replicator, a Troubling
+                // Tribbles copy copying itself) threw NullPointerException out
+                // of the AI's decision thread, and the AI passed that window
+                // with its mana up (76 times in one five-turn game). The clone
+                // states below carry every copiable value; the prototype only
+                // needs an empty card to hold them.
+                copy = new Card(id, host.getGame());
+                copy.setOwner(newOwner);
+            }
 
             copy.setStates(CardFactory.getCloneStates(original, copy, sa));
             // force update the now set State
