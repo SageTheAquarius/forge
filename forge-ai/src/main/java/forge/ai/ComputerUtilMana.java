@@ -1311,7 +1311,12 @@ public class ComputerUtilMana {
                 ma.setActivatingPlayer(p);
                 if (!checkPlayable || ma.canPlay()) {
                     int costsToActivate = ma.getPayCosts().getCostMana() != null ? ma.getPayCosts().getCostMana().convertAmount() : 0;
-                    int producedMana = ma.getParamOrDefault("Produced", "").split(" ").length;
+                    // "Produced$ Combo U B" is ONE mana of either colour, not three: the
+                    // word count read every dual land as 3 (and "Combo W U B G R" as 6),
+                    // so the AI overestimated open mana on both sides of the table
+                    // (attack and block decisions, the human's "mana up" review).
+                    String produced = ma.getParamOrDefault("Produced", "").trim();
+                    int producedMana = produced.startsWith("Combo") ? 1 : produced.split(" ").length;
                     int producedAmount = AbilityUtils.calculateAmount(src, ma.getParamOrDefault("Amount", "1"), ma);
 
                     int producedTotal = producedMana * producedAmount - costsToActivate;
