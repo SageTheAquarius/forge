@@ -164,6 +164,24 @@ public final class ForgeServer {
                 humanSeats = 1;   // a malformed flag means the old single-human game
             }
         }
+        // _ai_seats.txt (2026-11-02): the AI seat count on its own. Until now
+        // it came from _commander.txt alone, so a table that was not Commander
+        // always had exactly one AI seat -- and a Constructed game of two
+        // bridged humans with no AI (the Claude seat, mtg_sim/claude_seat.py)
+        // came out as three players, the third on a stale _bridge_opp.dck.
+        // The relay writes it whenever it was told an explicit AI deck list
+        // (forge_match_sync.write_ai_seats_flag); absent, the rules above stand.
+        // The "never a one-player game" guard below still applies.
+        File aiSeatsFlag = new File(deckDir + "_ai_seats.txt");
+        if (aiSeatsFlag.exists()) {
+            try {
+                String raw = new String(java.nio.file.Files.readAllBytes(
+                        aiSeatsFlag.toPath()), "UTF-8").trim();
+                aiSeats = Math.max(0, Math.min(3, Integer.parseInt(raw)));
+            } catch (Exception e) {
+                // malformed: keep what _commander.txt (or its absence) said
+            }
+        }
         // One display name per human seat, in seat order. Absent for a solo
         // game, in which case the seat keeps its old "you" label.
         List<String> seatNames = new ArrayList<>();
