@@ -163,15 +163,28 @@ public abstract class TapAiBase extends SpellAbilityAi {
 
                 if (!attackers.isEmpty() && !creatureList.isEmpty()) {
                     choice = ComputerUtilCard.getBestCreatureAI(creatureList);
+                    goodTargets = choice != null;   // a blocker out of the way IS the point
                 } else if (sa.isTrigger() || ComputerUtil.castSpellInMain1(ai, sa)) {
                     choice = ComputerUtilCard.getMostExpensivePermanentAI(tapList);
                 }
             } else if (phase.isPlayerTurn(opp)
                     && phase.getPhase().isBefore(PhaseType.COMBAT_DECLARE_ATTACKERS)) {
-                // Tap creatures possible blockers before combat during AI's turn.
+                // Tap the opponent's attackers before combat during THEIR turn.
+                // EconomyDraft 2026-11-03: this asked whether the opponent's
+                // creature could attack `opp` -- the opponent itself -- which
+                // is never true, so the list was always empty and every tap /
+                // stun instant was refused on the opponent's turn (Frost Breath
+                // and Consider the Prime Directive both passed on an untapped
+                // 7/5 at the opponent's beginning of combat). It attacks us.
                 if (tapList.anyMatch(CardPredicates.CREATURES)) {
-                    List<Card> creatureList = CardLists.filter(tapList, c -> c.isCreature() && CombatUtil.canAttack(c, opp));
+                    List<Card> creatureList = CardLists.filter(tapList, c -> c.isCreature() && CombatUtil.canAttack(c, ai));
                     choice = ComputerUtilCard.getBestCreatureAI(creatureList);
+                    // Same date: an attacker tapped down is a good target by
+                    // itself. Without this an "up to two" tap (Frost Breath)
+                    // facing ONE attacker chose it, ran out of targets on the
+                    // next pass and bailed below as "less than max" -- the lone
+                    // big attacker was never tapped.
+                    goodTargets = choice != null;
                 } else { // no creatures available
                     choice = ComputerUtilCard.getMostExpensivePermanentAI(tapList);
                 }
@@ -186,7 +199,7 @@ public abstract class TapAiBase extends SpellAbilityAi {
                     }
                     return false;
                 } else {
-                    if (!ComputerUtil.shouldCastLessThanMax(ai, source)) {
+                    if (!goodTargets && !ComputerUtil.shouldCastLessThanMax(ai, source)) {
                         return false;
                     }
                     break;
